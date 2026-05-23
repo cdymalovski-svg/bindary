@@ -1,13 +1,14 @@
-from fastapi import FastAPI, APIRouter
+from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
+import uuid
+import requests
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
-from typing import List
-import uuid
+from typing import List, Optional, Any
 from datetime import datetime, timezone
 
 
@@ -19,54 +20,265 @@ mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
-# Create the main app without a prefix
-app = FastAPI()
+# Storage configuration
+STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
+EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY")
+APP_NAME = "booktemplate"
+storage_key: Optional[str] = None
 
-# Create a router with the /api prefix
+
+def init_storage():
+    global storage_key
+    if storage_key:
+        return storage_key
+    resp = requests.post(
+        f"{STORAGE_URL}/init",
+        json={"emergent_key": EMERGENT_KEY},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    storage_key = resp.json()["storage_key"]
+    return storage_key
+
+
+def put_object(path: str, data: bytes, content_type: str) -> dict:
+    key = init_storage()
+    resp = requests.put(
+        f"{STORAGE_URL}/objects/{path}",
+        headers={"X-Storage-Key": key, "Content-Type": content_type},
+        data=data,
+        timeout=120,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def get_object(path: str):
+    key = init_storage()
+    resp = requests.get(
+        f"{STORAGE_URL}/objects/{path}",
+        headers={"X-Storage-Key": key},
+        timeout=60,
+    )
+    resp.raise_for_status()
+    return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
+
+
+MIME_TYPES = {
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "gif": "image/gif",
+    "webp": "image/webp",
+}
+
+
+# ===== Models =====
+def _now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+class Block(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    type: str  # 'text' | 'image'
+    x: float = 40
+    y: float = 40
+    width: float = 300
+    height: float = 120
+    z_index: int = 1
+    # Text block
+    html: Optional[str] = ""
+    font_family: Optional[str] = "Cormorant Garamond"
+    font_size: Optional[int] = 18
+    text_align: Optional[str] = "left"
+    color: Optional[str] = "#1C1B19"
+    # Image block
+    image_url: Optional[str] = None
+    image_path: Optional[str] = None
+
+
+class Page(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    blocks: List[Block] = []
+    background_color: Optional[str] = "#F9F6F0"
+    show_page_number: bool = True
+
+
+class Book(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    title: str = "Untitled Book"
+    author: Optional[str] = ""
+    page_size: str = "a4"  # a4 | letter | square | book6x9
+    pages: List[Page] = []
+    created_at: str = Field(default_factory=_now_iso)
+    updated_at: str = Field(default_factory=_now_iso)
+
+
+class BookCreate(BaseModel):
+    title: str = "Untitled Book"
+    author: Optional[str] = ""
+    page_size: str = "a4"
+
+
+class BookUpdate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    title: Optional[str] = None
+    author: Optional[str] = None
+    page_size: Optional[str] = None
+    pages: Optional[List[Page]] = None
+
+
+class BookSummary(BaseModel):
+    id: str
+    title: str
+    author: Optional[str] = ""
+    page_size: str
+    page_count: int
+    updated_at: str
+    cover_image_url: Optional[str] = None
+
+
+# ===== App =====
+app = FastAPI()
 api_router = APIRouter(prefix="/api")
 
 
-# Define Models
-class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")  # Ignore MongoDB's _id field
-    
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+@app.on_event("startup")
+async def startup():
+    try:
+        init_storage()
+        logging.info("Storage initialized")
+    except Exception as e:
+        logging.error(f"Storage init failed: {e}")
 
-class StatusCheckCreate(BaseModel):
-    client_name: str
 
-# Add your routes to the router instead of directly to app
+@app.on_event("shutdown")
+async def shutdown_db_client():
+    client.close()
+
+
+# ===== Routes =====
 @api_router.get("/")
 async def root():
-    return {"message": "Hello World"}
+    return {"message": "Book Template API"}
 
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.model_dump()
-    status_obj = StatusCheck(**status_dict)
-    
-    # Convert to dict and serialize datetime to ISO string for MongoDB
-    doc = status_obj.model_dump()
-    doc['timestamp'] = doc['timestamp'].isoformat()
-    
-    _ = await db.status_checks.insert_one(doc)
-    return status_obj
 
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    # Exclude MongoDB's _id field from the query results
-    status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
-    
-    # Convert ISO string timestamps back to datetime objects
-    for check in status_checks:
-        if isinstance(check['timestamp'], str):
-            check['timestamp'] = datetime.fromisoformat(check['timestamp'])
-    
-    return status_checks
+@api_router.post("/books", response_model=Book)
+async def create_book(payload: BookCreate):
+    # Start with one blank page
+    book = Book(
+        title=payload.title or "Untitled Book",
+        author=payload.author or "",
+        page_size=payload.page_size or "a4",
+        pages=[Page()],
+    )
+    doc = book.model_dump()
+    await db.books.insert_one(doc)
+    return book
 
-# Include the router in the main app
+
+@api_router.get("/books", response_model=List[BookSummary])
+async def list_books():
+    books = await db.books.find({}, {"_id": 0}).sort("updated_at", -1).to_list(1000)
+    summaries: List[BookSummary] = []
+    for b in books:
+        cover_url = None
+        pages = b.get("pages") or []
+        if pages:
+            for blk in pages[0].get("blocks", []):
+                if blk.get("type") == "image" and blk.get("image_url"):
+                    cover_url = blk["image_url"]
+                    break
+        summaries.append(
+            BookSummary(
+                id=b["id"],
+                title=b.get("title", "Untitled Book"),
+                author=b.get("author", ""),
+                page_size=b.get("page_size", "a4"),
+                page_count=len(pages),
+                updated_at=b.get("updated_at", _now_iso()),
+                cover_image_url=cover_url,
+            )
+        )
+    return summaries
+
+
+@api_router.get("/books/{book_id}", response_model=Book)
+async def get_book(book_id: str):
+    doc = await db.books.find_one({"id": book_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Book not found")
+    return Book(**doc)
+
+
+@api_router.put("/books/{book_id}", response_model=Book)
+async def update_book(book_id: str, payload: BookUpdate):
+    existing = await db.books.find_one({"id": book_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "Book not found")
+    update_data = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
+    if "pages" in update_data:
+        # Validate via Page model
+        update_data["pages"] = [Page(**p).model_dump() if not isinstance(p, dict) or "id" not in p else Page(**p).model_dump() for p in update_data["pages"]]
+    update_data["updated_at"] = _now_iso()
+    await db.books.update_one({"id": book_id}, {"$set": update_data})
+    doc = await db.books.find_one({"id": book_id}, {"_id": 0})
+    return Book(**doc)
+
+
+@api_router.delete("/books/{book_id}")
+async def delete_book(book_id: str):
+    res = await db.books.delete_one({"id": book_id})
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Book not found")
+    return {"deleted": True}
+
+
+@api_router.post("/upload")
+async def upload_image(file: UploadFile = File(...)):
+    ext = (file.filename or "bin").rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else "bin"
+    content_type = file.content_type or MIME_TYPES.get(ext, "application/octet-stream")
+    if not content_type.startswith("image/"):
+        raise HTTPException(400, "Only image uploads are supported")
+    path = f"{APP_NAME}/uploads/{uuid.uuid4()}.{ext}"
+    data = await file.read()
+    if len(data) > 10 * 1024 * 1024:
+        raise HTTPException(413, "File too large (max 10MB)")
+    result = put_object(path, data, content_type)
+    canonical_path = result["path"]
+    await db.files.insert_one({
+        "id": str(uuid.uuid4()),
+        "storage_path": canonical_path,
+        "original_filename": file.filename,
+        "content_type": content_type,
+        "size": result.get("size", len(data)),
+        "is_deleted": False,
+        "created_at": _now_iso(),
+    })
+    return {
+        "path": canonical_path,
+        "url": f"/api/files/{canonical_path}",
+        "content_type": content_type,
+        "size": result.get("size", len(data)),
+    }
+
+
+@api_router.get("/files/{path:path}")
+async def serve_file(path: str):
+    record = await db.files.find_one({"storage_path": path, "is_deleted": False})
+    if not record:
+        raise HTTPException(404, "File not found")
+    data, content_type = get_object(path)
+    return Response(
+        content=data,
+        media_type=record.get("content_type", content_type),
+        headers={"Cache-Control": "public, max-age=31536000"},
+    )
+
+
 app.include_router(api_router)
 
 app.add_middleware(
@@ -77,13 +289,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()
