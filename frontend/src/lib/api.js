@@ -20,6 +20,9 @@ export const uploadImage = async (file) => {
   return res.data;
 };
 
+export const listAssets = () => api.get('/assets').then((r) => r.data);
+export const deleteAsset = (id) => api.delete(`/assets/${id}`).then((r) => r.data);
+
 export const fileUrl = (urlOrPath) => {
   if (!urlOrPath) return null;
   if (urlOrPath.startsWith('http://') || urlOrPath.startsWith('https://')) return urlOrPath;

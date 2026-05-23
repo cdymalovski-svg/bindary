@@ -266,6 +266,37 @@ async def upload_image(file: UploadFile = File(...)):
     }
 
 
+@api_router.get("/assets")
+async def list_assets():
+    docs = await db.files.find(
+        {"is_deleted": False},
+        {"_id": 0, "id": 1, "storage_path": 1, "original_filename": 1, "content_type": 1, "size": 1, "created_at": 1},
+    ).sort("created_at", -1).to_list(2000)
+    return [
+        {
+            "id": d["id"],
+            "path": d["storage_path"],
+            "url": f"/api/files/{d['storage_path']}",
+            "original_filename": d.get("original_filename"),
+            "content_type": d.get("content_type"),
+            "size": d.get("size"),
+            "created_at": d.get("created_at"),
+        }
+        for d in docs
+    ]
+
+
+@api_router.delete("/assets/{asset_id}")
+async def delete_asset(asset_id: str):
+    res = await db.files.update_one(
+        {"id": asset_id, "is_deleted": False},
+        {"$set": {"is_deleted": True}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(404, "Asset not found")
+    return {"deleted": True}
+
+
 @api_router.get("/files/{path:path}")
 async def serve_file(path: str):
     record = await db.files.find_one({"storage_path": path, "is_deleted": False})

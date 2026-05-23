@@ -50,7 +50,7 @@ export default function BlockProperties({
   const isText = block.type === 'text';
   return (
     <div
-      className="fixed top-20 right-6 z-30 w-72 bg-paper border border-rule rounded-sm shadow-xl p-4 space-y-3"
+      className="p-4 space-y-3"
       data-testid="block-properties-panel"
     >
       <div className="flex items-center justify-between">

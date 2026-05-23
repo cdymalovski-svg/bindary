@@ -13,17 +13,20 @@ import {
   Eye,
   EyeOff,
   Loader2,
+  SlidersHorizontal,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { getBook, updateBook, uploadImage } from '@/lib/api';
 import { PAGE_SIZES, getPageSize } from '@/lib/pageSizes';
 import { exportBookToPdf } from '@/lib/pdfExport';
 import CanvasBlock from '@/components/CanvasBlock';
 import BlockProperties from '@/components/BlockProperties';
+import AssetsPanel, { ASSET_DRAG_MIME } from '@/components/AssetsPanel';
 
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 
@@ -37,6 +40,7 @@ export default function Editor() {
   const [activePageIndex, setActivePageIndex] = useState(0);
   const [selectedBlockId, setSelectedBlockId] = useState(null);
   const [editingTextId, setEditingTextId] = useState(null);
+  const [rightTab, setRightTab] = useState('assets'); // 'assets' | 'block'
   const fileInputRef = useRef(null);
   const exportContainerRef = useRef(null);
 
@@ -58,6 +62,12 @@ export default function Editor() {
   const activePage = book?.pages?.[activePageIndex];
   const selectedBlock = activePage?.blocks?.find((b) => b.id === selectedBlockId);
   const pageSize = book ? getPageSize(book.page_size) : PAGE_SIZES.a4;
+
+  // Auto-switch right tab when selection changes.
+  useEffect(() => {
+    if (selectedBlock) setRightTab('block');
+    else setRightTab('assets');
+  }, [selectedBlockId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // --- Save ---
   const saveBook = useCallback(async (showToast = true) => {
@@ -130,28 +140,44 @@ export default function Editor() {
       toast.loading('Uploading…', { id: 'upload' });
       const res = await uploadImage(file);
       toast.dismiss('upload');
-      // Fit image within page roughly
-      const maxW = Math.min(500, pageSize.width - 80);
-      const block = {
-        id: uid(),
-        type: 'image',
-        x: 60,
-        y: 60,
-        width: maxW,
-        height: maxW * 0.66,
-        z_index: 1,
-        image_url: res.url,
-        image_path: res.path,
-      };
-      updatePages((pages) =>
-        pages.map((p, i) => (i === activePageIndex ? { ...p, blocks: [...p.blocks, block] } : p))
-      );
-      setSelectedBlockId(block.id);
+      addImageBlockFromAsset({ url: res.url, path: res.path });
       toast.success('Image added');
     } catch (e) {
       toast.dismiss('upload');
       toast.error('Upload failed');
     }
+  };
+
+  // Add an image block from an asset (dragged in or just uploaded).
+  // If x/y not provided, places near top-left and centers.
+  const addImageBlockFromAsset = (asset, position = null) => {
+    const maxW = Math.min(500, pageSize.width - 80);
+    const width = maxW;
+    const height = maxW * 0.66;
+    let x;
+    let y;
+    if (position) {
+      x = Math.max(0, Math.min(pageSize.width - width, position.x - width / 2));
+      y = Math.max(0, Math.min(pageSize.height - height, position.y - height / 2));
+    } else {
+      x = 60;
+      y = 60;
+    }
+    const block = {
+      id: uid(),
+      type: 'image',
+      x,
+      y,
+      width,
+      height,
+      z_index: 1,
+      image_url: asset.url,
+      image_path: asset.path,
+    };
+    updatePages((pages) =>
+      pages.map((p, i) => (i === activePageIndex ? { ...p, blocks: [...p.blocks, block] } : p))
+    );
+    setSelectedBlockId(block.id);
   };
 
   const changeZ = (delta) => {
@@ -380,20 +406,51 @@ export default function Editor() {
               onChangeBlock={updateBlock}
               onStartTextEdit={(blockId) => { setSelectedBlockId(blockId); setEditingTextId(blockId); }}
               onStopTextEdit={() => setEditingTextId(null)}
+              onAssetDrop={(asset, pos) => addImageBlockFromAsset(asset, pos)}
             />
           </div>
         </main>
 
-        {/* Properties */}
-        {selectedBlock && (
-          <BlockProperties
-            block={selectedBlock}
-            onChange={(patch) => updateBlock(selectedBlock.id, patch)}
-            onDelete={() => deleteBlock(selectedBlock.id)}
-            onTextCommand={onTextCommand}
-            onZ={changeZ}
-          />
-        )}
+        {/* Right sidebar: Assets / Block tabs */}
+        <aside className="w-72 bg-ink text-paper border-l border-rule-dark flex flex-col" data-testid="right-sidebar">
+          <Tabs value={rightTab} onValueChange={setRightTab} className="flex flex-col h-full">
+            <TabsList className="w-full grid grid-cols-2 rounded-none bg-rule-dark/40 border-b border-rule-dark h-10 p-1">
+              <TabsTrigger
+                value="assets"
+                data-testid="right-tab-assets"
+                className="rounded-sm data-[state=active]:bg-ink data-[state=active]:text-paper text-ink-mute text-xs tracking-[0.18em] uppercase"
+              >
+                <ImageIcon className="w-3.5 h-3.5 mr-1.5" /> Assets
+              </TabsTrigger>
+              <TabsTrigger
+                value="block"
+                disabled={!selectedBlock}
+                data-testid="right-tab-block"
+                className="rounded-sm data-[state=active]:bg-ink data-[state=active]:text-paper text-ink-mute text-xs tracking-[0.18em] uppercase disabled:opacity-40"
+              >
+                <SlidersHorizontal className="w-3.5 h-3.5 mr-1.5" /> Block
+              </TabsTrigger>
+            </TabsList>
+            <TabsContent value="assets" className="flex-1 m-0 overflow-hidden">
+              <AssetsPanel
+                onAssetUploaded={() => { /* refresh handled inside */ }}
+              />
+            </TabsContent>
+            <TabsContent value="block" className="flex-1 m-0 overflow-y-auto sidebar-scroll bg-paper text-ink">
+              {selectedBlock ? (
+                <BlockProperties
+                  block={selectedBlock}
+                  onChange={(patch) => updateBlock(selectedBlock.id, patch)}
+                  onDelete={() => deleteBlock(selectedBlock.id)}
+                  onTextCommand={onTextCommand}
+                  onZ={changeZ}
+                />
+              ) : (
+                <div className="p-6 text-ink-mute text-sm font-serif italic">Select a block to edit its properties.</div>
+              )}
+            </TabsContent>
+          </Tabs>
+        </aside>
       </div>
 
       {/* Offscreen export container - renders all pages at full size for PDF capture */}
@@ -439,17 +496,19 @@ function PageCanvas({
   onChangeBlock,
   onStartTextEdit,
   onStopTextEdit,
+  onAssetDrop,
   forExport = false,
 }) {
   // Scale to fit viewport for editing mode (export uses full size)
   const [scale, setScale] = useState(1);
+  const [dropHover, setDropHover] = useState(false);
   const wrapperRef = useRef(null);
 
   useEffect(() => {
     if (forExport) { setScale(1); return; }
     const compute = () => {
       const padding = 96; // px padding around
-      const availW = window.innerWidth - 224 /* sidebar */ - 320 /* properties + buffer */ - padding;
+      const availW = window.innerWidth - 224 /* left sidebar */ - 288 /* right sidebar */ - padding;
       const availH = window.innerHeight - 56 /* topbar */ - padding;
       const s = Math.min(1, availW / pageSize.width, availH / pageSize.height);
       setScale(Math.max(0.25, s));
@@ -461,6 +520,31 @@ function PageCanvas({
 
   if (!page) return null;
 
+  const handleDragOver = (e) => {
+    if (forExport || !onAssetDrop) return;
+    if (Array.from(e.dataTransfer.types || []).includes(ASSET_DRAG_MIME)) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      setDropHover(true);
+    }
+  };
+  const handleDragLeave = () => setDropHover(false);
+  const handleDrop = (e) => {
+    if (forExport || !onAssetDrop) return;
+    const raw = e.dataTransfer.getData(ASSET_DRAG_MIME) || e.dataTransfer.getData('text/plain');
+    if (!raw) return;
+    e.preventDefault();
+    setDropHover(false);
+    let asset;
+    try { asset = JSON.parse(raw); } catch { return; }
+    if (!asset?.url) return;
+    // Position relative to the scaled outer container, then un-scale.
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / scale;
+    const y = (e.clientY - rect.top) / scale;
+    onAssetDrop(asset, { x, y });
+  };
+
   return (
     <div
       style={{
@@ -469,7 +553,14 @@ function PageCanvas({
         position: 'relative',
       }}
       onMouseDown={(e) => e.stopPropagation()}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      data-testid={`page-drop-zone-${pageIndex}`}
     >
+      {dropHover && (
+        <div className="absolute inset-0 z-50 border-2 border-dashed border-terracotta bg-terracotta/5 pointer-events-none" />
+      )}
       <div
         ref={wrapperRef}
         className="book-page"
