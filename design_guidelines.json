@@ -1,0 +1,90 @@
+{
+  "theme_archetype": {
+    "theme": "Light",
+    "archetype": "1 (Organic & Earthy) blended with Editorial Structuralism",
+    "vibe": "Old Money Tech, Book Bindery, Craftsmanship, Tactile"
+  },
+  "colors": {
+    "background_app": "#E5E2DC",
+    "background_sidebar": "#1C1B19",
+    "background_page": "#F9F6F0",
+    "text_primary_dark": "#1C1B19",
+    "text_secondary_dark": "#4A4843",
+    "text_primary_light": "#F9F6F0",
+    "text_secondary_light": "#A19E97",
+    "accent_primary": "#9E4532",
+    "accent_hover": "#873B2A",
+    "border_subtle": "#D1CEC7",
+    "border_dark": "#2E2D2B"
+  },
+  "typography": {
+    "primary_font_heading": "Cormorant Garamond, serif",
+    "primary_font_body": "Outfit, sans-serif",
+    "font_pairings": {
+      "book_title": "font-serif text-5xl tracking-tighter text-[#1C1B19]",
+      "ui_heading": "font-sans font-medium text-xs tracking-[0.2em] uppercase text-[#A19E97]",
+      "body": "font-sans text-base leading-relaxed text-[#4A4843]"
+    }
+  },
+  "spacing_and_layout": {
+    "app_structure": "Three-pane layout. Left: Book Hierarchy (Dark theme). Center: The Desk (Neutral Canvas) with centered Book Page. Right/Top: Floating Properties Toolbar.",
+    "page_container": "bg-[#F9F6F0] shadow-2xl ring-1 ring-[#1C1B19]/5 mx-auto relative overflow-hidden",
+    "padding_rules": "Use generous padding. Desk should have p-12 or p-20 to frame the book page.",
+    "radius": "Minimal. rounded-sm or rounded-none to emulate physical paper and structural editorial tools."
+  },
+  "interactions_and_motion": {
+    "drag_drop": "Blocks on canvas should have subtle scale-up on drag (scale: 1.02).",
+    "hover_states": "Buttons and list items should transition background color smoothly. Focus states require ring-2 ring-[#9E4532] ring-offset-2.",
+    "page_transitions": "Smooth fade for page switching."
+  },
+  "components": {
+    "buttons": "Flat solid, slightly rounded (rounded-sm), crisp edges. Primary: bg-[#9E4532] text-[#F9F6F0] hover:bg-[#873B2A]. Secondary: bg-transparent border border-[#D1CEC7] text-[#1C1B19].",
+    "sidebar": "Dark mode. bg-[#1C1B19] text-[#F9F6F0] border-r border-[#2E2D2B]. Active page highlighted with bg-[#2E2D2B].",
+    "canvas_blocks": "Text and image blocks require bounding boxes on hover/focus (border-dashed border-2 border-[#9E4532]/50). Resize handles at corners.",
+    "toolbars": "Floating glass or solid pill. bg-white/95 backdrop-blur-md shadow-md border border-[#D1CEC7] px-4 py-2 rounded-full."
+  },
+  "image_urls": [
+    {
+      "category": "illustration",
+      "description": "Treasure Map on Mountain (Children's Book)",
+      "url": "https://static.prod-images.emergentagent.com/jobs/25d092a0-7948-47fb-aeee-c2abcccc3b5e/images/33f795900711724641c6b97dbc5f652a995d8c932ab6e4a8fa2a7b561b370f08.png"
+    },
+    {
+      "category": "illustration",
+      "description": "Animals Holding Golden Coins",
+      "url": "https://static.prod-images.emergentagent.com/jobs/25d092a0-7948-47fb-aeee-c2abcccc3b5e/images/bab59a26bdca6426579e15bd6e54f59f8c6d90ff6308e4aecf1ded72d263bb7e.png"
+    },
+    {
+      "category": "illustration",
+      "description": "Glowing Treasure Chest in Forest",
+      "url": "https://static.prod-images.emergentagent.com/jobs/25d092a0-7948-47fb-aeee-c2abcccc3b5e/images/6605eae472de629cacc7d21eb000360114f4ae05acaa91f4e15d9c4479921fbf.png"
+    }
+  ],
+  "testing_attributes": {
+    "rule": "All interactive elements MUST include a data-testid attribute in kebab-case, role-based naming.",
+    "examples": [
+      "data-testid='add-text-button'",
+      "data-testid='export-pdf-button'",
+      "data-testid='page-thumbnail-1'"
+    ]
+  },
+  "instructions_to_main_agent": {
+    "dependencies_to_add": [
+      "@phosphor-icons/react",
+      "framer-motion",
+      "react-rnd",
+      "html2canvas",
+      "jspdf"
+    ],
+    "critical_steps": [
+      "Set up Tailwind config with the specified colors and fonts (Cormorant Garamond and Outfit).",
+      "Implement a robust drag-and-drop canvas using react-rnd or framer-motion for absolute positioning of text/image blocks.",
+      "Ensure the book page dimensions reflect physical aspect ratios (e.g., A4 is 210x297, scale proportionally via aspect-ratio classes).",
+      "Do NOT use generic select inputs; use Shadcn UI customized with our stark/editorial theme.",
+      "Use html2canvas and jspdf for client-side PDF export.",
+      "Do not use generic SaaS layouts. The left sidebar must be dark and structural, while the main desk is warm, tactile, and spacious.",
+      "Implement data-testid on every clickable UI element.",
+      "Mock API functions locally (localStorage/IndexedDB or simple Node backend) if MongoDB integration requires bridging."
+    ]
+  }
+}
