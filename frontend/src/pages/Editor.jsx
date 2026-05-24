@@ -257,12 +257,39 @@ export default function Editor() {
   };
 
   // Resize the selected text block height to hug its current content.
+  // Uses an off-DOM clone for measurement so we capture the true content height
+  // even when the original is bound to a fixed parent height.
   const frameTextBlockToContent = () => {
     if (!selectedBlock || selectedBlock.type !== 'text') return;
     const el = document.querySelector(`[data-testid="text-block-content-${selectedBlock.id}"]`);
     if (!el) return;
-    // scrollHeight gives the content height. Include the px-2 py-1 (~8px top+bot) inner padding.
-    const newHeight = Math.max(32, el.scrollHeight + 8);
+    const cs = window.getComputedStyle(el);
+    const probe = document.createElement('div');
+    probe.innerHTML = el.innerHTML;
+    // Copy critical typography + box rules so the measured height matches the live render.
+    probe.style.cssText = [
+      `position:fixed`,
+      `top:-99999px`,
+      `left:-99999px`,
+      `width:${el.clientWidth}px`,
+      `font-family:${cs.fontFamily}`,
+      `font-size:${cs.fontSize}`,
+      `font-weight:${cs.fontWeight}`,
+      `font-style:${cs.fontStyle}`,
+      `line-height:${cs.lineHeight}`,
+      `letter-spacing:${cs.letterSpacing}`,
+      `text-align:${cs.textAlign}`,
+      `padding:${cs.paddingTop} ${cs.paddingRight} ${cs.paddingBottom} ${cs.paddingLeft}`,
+      `box-sizing:${cs.boxSizing}`,
+      `white-space:normal`,
+      `word-wrap:break-word`,
+      `overflow:visible`,
+      `visibility:hidden`,
+    ].join(';');
+    document.body.appendChild(probe);
+    const measured = probe.offsetHeight;
+    document.body.removeChild(probe);
+    const newHeight = Math.max(32, Math.ceil(measured));
     updateBlock(selectedBlock.id, { height: newHeight });
     toast.success('Frame fit to text');
   };
