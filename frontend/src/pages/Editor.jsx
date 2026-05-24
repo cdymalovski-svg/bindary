@@ -258,6 +258,59 @@ export default function Editor() {
     toast.success(`Chapter ${number} added`);
   };
 
+  // Build a Table of Contents text block from every chapter heading in the book.
+  // The "page number" matches the displayed page-number rule (start offset + back-cover hide).
+  const addTocBlock = () => {
+    const start = book?.page_number_start || 1;
+    const last = (book?.pages?.length || 1) - 1;
+    const entries = [];
+    (book?.pages || []).forEach((p, pi) => {
+      (p.blocks || []).forEach((b) => {
+        if (!b.is_chapter) return;
+        const tmp = document.createElement('div');
+        tmp.innerHTML = b.html || '';
+        const title = (tmp.textContent || '').trim() || `Chapter ${entries.length + 1}`;
+        const oneBased = pi + 1;
+        const displayed = pi === last ? '' : oneBased >= start ? String(oneBased - start + 1) : '';
+        entries.push({ title, displayed });
+      });
+    });
+    if (entries.length === 0) {
+      toast.error('Add chapters first');
+      return;
+    }
+    const rows = entries
+      .map((e) =>
+        `<p style="display:flex;justify-content:space-between;gap:1em;margin:0 0 .35em 0;">` +
+        `<span>${e.title}</span><span>${e.displayed}</span>` +
+        `</p>`
+      ).join('');
+    const headerHtml = `<p style="text-align:center;font-size:1.4em;margin:0 0 .6em 0;">Contents</p>`;
+    const pageW = pageSize.width;
+    const margin = activePage?.full_bleed ? 0 : PAGE_MARGIN_PX;
+    const width = Math.min(pageW - margin * 2 - 40, 540);
+    const height = Math.max(180, 60 + entries.length * 28);
+    const block = {
+      id: uid(),
+      type: 'text',
+      x: (pageW - width) / 2,
+      y: margin + 80,
+      width,
+      height,
+      z_index: 1,
+      html: headerHtml + rows,
+      font_family: 'Cormorant Garamond',
+      font_size: 20,
+      text_align: 'left',
+      color: '#000000',
+    };
+    updatePages((pages) =>
+      pages.map((p, i) => (i === activePageIndex ? { ...p, blocks: [...p.blocks, block] } : p))
+    );
+    setSelectedBlockId(block.id);
+    toast.success(`Contents inserted (${entries.length} chapter${entries.length === 1 ? '' : 's'})`);
+  };
+
   const handleImageUpload = async (file) => {
     if (!file) return;
     try {
