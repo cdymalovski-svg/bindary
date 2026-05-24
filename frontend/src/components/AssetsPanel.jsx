@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input';
 
 export const ASSET_DRAG_MIME = 'application/x-bindery-asset';
 
-export default function AssetsPanel({ onAssetUploaded }) {
+export default function AssetsPanel({ bookId, onAssetUploaded }) {
   const [assets, setAssets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
@@ -16,14 +16,14 @@ export default function AssetsPanel({ onAssetUploaded }) {
 
   const refresh = useCallback(async () => {
     try {
-      const data = await listAssets();
+      const data = await listAssets(bookId);
       setAssets(data);
     } catch (e) {
       toast.error('Could not load assets');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [bookId]);
 
   useEffect(() => { refresh(); }, [refresh]);
 
@@ -35,7 +35,7 @@ export default function AssetsPanel({ onAssetUploaded }) {
     for (const file of files) {
       try {
         // eslint-disable-next-line no-await-in-loop
-        const uploaded = await uploadImage(file);
+        const uploaded = await uploadImage(file, bookId);
         success += 1;
         onAssetUploaded?.(uploaded);
       } catch (e) {

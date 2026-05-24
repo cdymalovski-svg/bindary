@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, Response
+from fastapi import FastAPI, APIRouter, UploadFile, File, Form, HTTPException, Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -286,6 +286,20 @@ async def duplicate_book(book_id: str):
         pages=new_pages,
     )
     await db.books.insert_one(copy.model_dump())
+    # Clone asset records (point to same storage paths) so the duplicate's
+    # Assets panel mirrors the original book's library.
+    src_assets = await db.files.find({"book_id": book_id, "is_deleted": False}).to_list(2000)
+    for a in src_assets:
+        await db.files.insert_one({
+            "id": str(uuid.uuid4()),
+            "storage_path": a["storage_path"],
+            "original_filename": a.get("original_filename"),
+            "content_type": a.get("content_type"),
+            "size": a.get("size"),
+            "is_deleted": False,
+            "created_at": _now_iso(),
+            "book_id": copy.id,
+        })
     return copy
 
 
@@ -294,6 +308,9 @@ async def delete_book(book_id: str):
     res = await db.books.delete_one({"id": book_id})
     if res.deleted_count == 0:
         raise HTTPException(404, "Book not found")
+    # Soft-delete asset records scoped to this book so they no longer surface
+    # in any asset panel (other books are unaffected — assets are now book-scoped).
+    await db.files.update_many({"book_id": book_id}, {"$set": {"is_deleted": True}})
     return {"deleted": True}
 
 
@@ -327,7 +344,7 @@ async def delete_template(template_id: str):
 
 
 @api_router.post("/upload")
-async def upload_image(file: UploadFile = File(...)):
+async def upload_image(file: UploadFile = File(...), book_id: Optional[str] = Form(None)):
     ext = (file.filename or "bin").rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else "bin"
     content_type = file.content_type or MIME_TYPES.get(ext, "application/octet-stream")
     if not content_type.startswith("image/"):
@@ -346,6 +363,7 @@ async def upload_image(file: UploadFile = File(...)):
         "size": result.get("size", len(data)),
         "is_deleted": False,
         "created_at": _now_iso(),
+        "book_id": book_id,
     })
     return {
         "path": canonical_path,
@@ -356,10 +374,13 @@ async def upload_image(file: UploadFile = File(...)):
 
 
 @api_router.get("/assets")
-async def list_assets():
+async def list_assets(book_id: Optional[str] = None):
+    query: dict = {"is_deleted": False}
+    if book_id:
+        query["book_id"] = book_id
     docs = await db.files.find(
-        {"is_deleted": False},
-        {"_id": 0, "id": 1, "storage_path": 1, "original_filename": 1, "content_type": 1, "size": 1, "created_at": 1},
+        query,
+        {"_id": 0, "id": 1, "storage_path": 1, "original_filename": 1, "content_type": 1, "size": 1, "created_at": 1, "book_id": 1},
     ).sort("created_at", -1).to_list(2000)
     return [
         {
@@ -370,6 +391,7 @@ async def list_assets():
             "content_type": d.get("content_type"),
             "size": d.get("size"),
             "created_at": d.get("created_at"),
+            "book_id": d.get("book_id"),
         }
         for d in docs
     ]

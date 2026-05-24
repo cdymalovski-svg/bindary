@@ -12,16 +12,18 @@ export const duplicateBook = (id) => api.post(`/books/${id}/duplicate`).then((r)
 export const updateBook = (id, data) => api.put(`/books/${id}`, data).then((r) => r.data);
 export const deleteBook = (id) => api.delete(`/books/${id}`).then((r) => r.data);
 
-export const uploadImage = async (file) => {
+export const uploadImage = async (file, bookId) => {
   const form = new FormData();
   form.append('file', file);
+  if (bookId) form.append('book_id', bookId);
   const res = await api.post('/upload', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
   });
   return res.data;
 };
 
-export const listAssets = () => api.get('/assets').then((r) => r.data);
+export const listAssets = (bookId) =>
+  api.get('/assets', { params: bookId ? { book_id: bookId } : undefined }).then((r) => r.data);
 export const deleteAsset = (id) => api.delete(`/assets/${id}`).then((r) => r.data);
 
 export const listTemplates = () => api.get('/templates').then((r) => r.data);

@@ -220,7 +220,7 @@ export default function Editor() {
     if (!file) return;
     try {
       toast.loading('Uploading…', { id: 'upload' });
-      const res = await uploadImage(file);
+      const res = await uploadImage(file, book?.id);
       toast.dismiss('upload');
       addImageBlockFromAsset({ url: res.url, path: res.path });
       toast.success('Image added');
@@ -672,7 +672,7 @@ export default function Editor() {
               </TabsTrigger>
             </TabsList>
             <TabsContent value="assets" className="flex-1 m-0 overflow-hidden">
-              <AssetsPanel onAssetUploaded={() => { /* refresh inside */ }} />
+              <AssetsPanel bookId={book.id} onAssetUploaded={() => { /* refresh inside */ }} />
             </TabsContent>
             <TabsContent value="page" className="flex-1 m-0 overflow-y-auto sidebar-scroll bg-paper text-ink">
               <PagePanel
