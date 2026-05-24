@@ -140,6 +140,7 @@ class BookSummary(BaseModel):
     author: Optional[str] = ""
     page_size: str
     page_count: int
+    created_at: str
     updated_at: str
     cover_image_url: Optional[str] = None
 
@@ -231,6 +232,7 @@ async def list_books():
                 author=b.get("author", ""),
                 page_size=b.get("page_size", "a4"),
                 page_count=len(pages),
+                created_at=b.get("created_at", _now_iso()),
                 updated_at=b.get("updated_at", _now_iso()),
                 cover_image_url=cover_url,
             )

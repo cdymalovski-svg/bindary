@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { Plus, BookOpen, Trash2, FileText, Bookmark, Copy } from 'lucide-react';
+import { Plus, BookOpen, Trash2, FileText, Bookmark, Copy, Search } from 'lucide-react';
 import {
   listBooks, createBook, deleteBook, fileUrl,
   listTemplates, deleteTemplate, updateBook,
@@ -44,6 +44,8 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
   const [form, setForm] = useState({ title: '', author: '', page_size: 'a4', template_id: 'none' });
+  const [search, setSearch] = useState('');
+  const [sortBy, setSortBy] = useState('updated'); // 'updated' | 'created'
   const navigate = useNavigate();
 
   const refresh = async () => {
@@ -276,6 +278,41 @@ export default function Dashboard() {
 
       {/* Library */}
       <section className="max-w-6xl mx-auto px-8 pb-24" data-testid="books-library">
+        {!loading && books.length > 0 && (
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6">
+            <div className="relative w-full sm:max-w-xs">
+              <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-mute" />
+              <Input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search by title or author…"
+                data-testid="library-search-input"
+                className="pl-8 h-9 bg-paper border-rule rounded-sm text-sm focus-visible:ring-1 focus-visible:ring-terracotta"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="label-caps">Sort</span>
+              <div className="flex items-center bg-paper border border-rule rounded-sm p-0.5" data-testid="library-sort-toggle">
+                <button
+                  type="button"
+                  onClick={() => setSortBy('updated')}
+                  data-testid="sort-by-updated"
+                  className={`h-7 px-2.5 text-xs tracking-wide rounded-sm transition-colors ${sortBy === 'updated' ? 'bg-ink text-paper' : 'text-ink-soft hover:bg-desk'}`}
+                >
+                  Recently edited
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSortBy('created')}
+                  data-testid="sort-by-created"
+                  className={`h-7 px-2.5 text-xs tracking-wide rounded-sm transition-colors ${sortBy === 'created' ? 'bg-ink text-paper' : 'text-ink-soft hover:bg-desk'}`}
+                >
+                  Created
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         {loading ? (
           <div className="text-ink-mute font-serif italic text-xl">Opening the shelves…</div>
         ) : books.length === 0 ? (
@@ -292,17 +329,40 @@ export default function Dashboard() {
             </Button>
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
-            {books.map((b) => (
-              <BookCard
-                key={b.id}
-                book={b}
-                onOpen={() => navigate(`/editor/${b.id}`)}
-                onDelete={() => onDelete(b.id)}
-                onDuplicate={() => onDuplicate(b.id)}
-              />
-            ))}
-          </div>
+          (() => {
+            const q = search.trim().toLowerCase();
+            const filtered = q
+              ? books.filter((b) =>
+                  (b.title || '').toLowerCase().includes(q) ||
+                  (b.author || '').toLowerCase().includes(q)
+                )
+              : books;
+            const sorted = [...filtered].sort((a, b) => {
+              const af = sortBy === 'created' ? a.created_at : a.updated_at;
+              const bf = sortBy === 'created' ? b.created_at : b.updated_at;
+              return (bf || '').localeCompare(af || '');
+            });
+            if (sorted.length === 0) {
+              return (
+                <div className="text-ink-mute italic" data-testid="empty-search-result">
+                  No books match "{search}".
+                </div>
+              );
+            }
+            return (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
+                {sorted.map((b) => (
+                  <BookCard
+                    key={b.id}
+                    book={b}
+                    onOpen={() => navigate(`/editor/${b.id}`)}
+                    onDelete={() => onDelete(b.id)}
+                    onDuplicate={() => onDuplicate(b.id)}
+                  />
+                ))}
+              </div>
+            );
+          })()
         )}
       </section>
     </div>
