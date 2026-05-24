@@ -243,6 +243,13 @@ export default function Editor() {
     const maxW = pageSize.width - margin * 2 - 40;
     const width = preset === 'body' ? Math.min(420, maxW) : Math.min(560, maxW);
     const height = Math.max(60, Math.round(cfg.font_size * cfg.lineFactor));
+    // On the cover page, prefill the Title preset with the book's title so
+    // authors can drop a formatted title into place without retyping.
+    const isCover = activePageIndex === 0;
+    let prefillHtml = '';
+    if (preset === 'title' && isCover && book.title) {
+      prefillHtml = `<p>${book.title.replace(/</g, '&lt;')}</p>`;
+    }
     const block = {
       id: uid(),
       type: 'text',
@@ -251,7 +258,7 @@ export default function Editor() {
       width,
       height,
       z_index: 1,
-      html: '',
+      html: prefillHtml,
       font_family: cfg.font_family,
       font_size: cfg.font_size,
       text_align: cfg.text_align,
@@ -261,7 +268,8 @@ export default function Editor() {
       pages.map((p, i) => (i === activePageIndex ? { ...p, blocks: [...p.blocks, block] } : p))
     );
     setSelectedBlockId(block.id);
-    setEditingTextId(block.id);
+    // Skip auto-edit when prefilled so the user sees the formatted title first.
+    if (!prefillHtml) setEditingTextId(block.id);
   };
 
   // Add a chapter-heading text block. Auto-numbers based on existing chapter blocks
