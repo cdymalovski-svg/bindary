@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Eye, EyeOff, AlignLeft, AlignCenter, AlignRight } from 'lucide-react';
+import { Eye, EyeOff, AlignLeft, AlignCenter, AlignRight, Copy } from 'lucide-react';
 import {
   Popover, PopoverContent, PopoverTrigger,
 } from '@/components/ui/popover';
@@ -29,14 +29,21 @@ const PAGE_COLORS = [
 
 const PAGE_NUMBER_SIZES = [10, 12, 14, 16, 18, 20, 24, 28, 32];
 
-export default function PagePanel({ page, pageIndex, onChange }) {
+export default function PagePanel({ page, pageIndex, totalPages = 1, onChange, onApplyToInterior }) {
   if (!page) {
     return <div className="p-6 text-ink-mute text-sm font-serif italic">Select a page to edit its properties.</div>;
   }
+  const isCover = pageIndex === 0;
+  const isBackCover = totalPages > 1 && pageIndex === totalPages - 1;
+  const isFirstOrLast = isCover || isBackCover;
+  const interiorCount = Math.max(0, totalPages - 2);
   return (
     <div className="p-4 space-y-4" data-testid="page-properties-panel">
       <div className="flex items-center justify-between">
-        <p className="label-caps">Page {pageIndex + 1}</p>
+        <p className="label-caps">
+          Page {pageIndex + 1}
+          {isCover ? ' · Cover' : isBackCover ? ' · Back cover' : ''}
+        </p>
       </div>
 
       <div className="space-y-2">
@@ -131,6 +138,27 @@ export default function PagePanel({ page, pageIndex, onChange }) {
         )}
         <p className="text-[10px] text-ink-mute leading-relaxed">
           The page number sits inside the colored area. A 1cm white margin frames the page for safe printing.
+        </p>
+      </div>
+
+      <div className="pt-2 border-t border-rule space-y-2">
+        <button
+          type="button"
+          onClick={onApplyToInterior}
+          disabled={interiorCount === 0 || isFirstOrLast}
+          data-testid="apply-to-interior-button"
+          className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-ink hover:bg-ink-soft text-paper rounded-sm text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          title="Copy these settings to all interior pages"
+        >
+          <Copy className="w-4 h-4" />
+          Apply to all interior pages
+        </button>
+        <p className="text-[10px] text-ink-mute leading-relaxed">
+          {isFirstOrLast
+            ? 'Select an interior page to copy its settings out to the other interior pages.'
+            : interiorCount === 0
+            ? 'Add a middle page first — covers stay independent.'
+            : `Copies color, bleed and page-number settings to ${interiorCount} page${interiorCount === 1 ? '' : 's'} (skipping the front and back covers).`}
         </p>
       </div>
     </div>

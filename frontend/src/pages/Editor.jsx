@@ -141,6 +141,29 @@ export default function Editor() {
     );
   };
 
+  // Copy this page's appearance to every page EXCEPT the front cover (index 0)
+  // and the back cover (last index). Only style/layout fields are copied — blocks are not touched.
+  const applyPageToInterior = () => {
+    if (!book || !activePage) return;
+    const total = book.pages.length;
+    if (total < 3) {
+      toast.error('Add a middle page first');
+      return;
+    }
+    const src = activePage;
+    const patch = {
+      background_color: src.background_color,
+      full_bleed: !!src.full_bleed,
+      show_page_number: !!src.show_page_number,
+      page_number_align: src.page_number_align || 'right',
+      page_number_size: src.page_number_size || 14,
+    };
+    updatePages((pages) =>
+      pages.map((p, i) => (i === 0 || i === pages.length - 1 ? p : { ...p, ...patch }))
+    );
+    toast.success(`Applied to ${total - 2} page${total - 2 === 1 ? '' : 's'}`);
+  };
+
   const deleteBlock = (blockId, pageIdx = activePageIndex) => {
     updatePages((pages) =>
       pages.map((p, i) =>
@@ -632,7 +655,9 @@ export default function Editor() {
               <PagePanel
                 page={activePage}
                 pageIndex={activePageIndex}
+                totalPages={book.pages.length}
                 onChange={(patch) => updatePage(patch)}
+                onApplyToInterior={applyPageToInterior}
               />
             </TabsContent>
             <TabsContent value="block" className="flex-1 m-0 overflow-y-auto sidebar-scroll bg-paper text-ink">
