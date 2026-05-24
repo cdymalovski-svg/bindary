@@ -18,6 +18,10 @@ export default function CanvasBlock({
   const isImage = block.type === 'image';
   const editingThisText = isText && editingTextId === block.id;
   const editorRef = useRef(null);
+  // Track pointer position on mousedown so we can detect "click without drag"
+  // on mouseup. We use mouseup-with-threshold instead of onClick because
+  // react-rnd swallows synthetic clicks once any small drag is detected.
+  const downPosRef = useRef(null);
 
   // Initialize / sync DOM innerHTML when NOT editing.
   // While editing, we don't touch the DOM so the user's typing & caret stay intact.
@@ -85,23 +89,29 @@ export default function CanvasBlock({
             e.stopPropagation();
             return;
           }
+          downPosRef.current = { x: e.clientX, y: e.clientY };
           if (!selected) {
             e.stopPropagation();
             onSelect(block.id);
           }
         }}
-        onClick={(e) => {
-          // Single click on a text block always enters edit mode.
-          // React-rnd swallows the synthetic click when a real drag has occurred,
-          // so dragging continues to work. This avoids racing with React 18's batched
-          // state updates between mousedown and click.
-          if (isText && !editingThisText) {
+        onMouseUp={(e) => {
+          // Mouseup-based click detection: only enter edit mode if the pointer
+          // didn't move (i.e. not a drag). This bypasses react-rnd's click
+          // swallowing on drag.
+          if (!isText || editingThisText) return;
+          const start = downPosRef.current;
+          downPosRef.current = null;
+          if (!start) return;
+          const dx = Math.abs(e.clientX - start.x);
+          const dy = Math.abs(e.clientY - start.y);
+          if (dx < 4 && dy < 4) {
             e.stopPropagation();
             onStartTextEdit(block.id);
           }
         }}
         onDoubleClick={(e) => {
-          if (isText) {
+          if (isText && !editingThisText) {
             e.stopPropagation();
             onStartTextEdit(block.id);
           }

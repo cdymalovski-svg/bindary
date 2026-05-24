@@ -1,0 +1,46 @@
+{
+  "summary": "Frontend-only smoke + feature test of iter-11 changes (text-edit bug fix, expanded font palette, TOC button). 13/14 automated assertions pass. The 1 failure is a test-script artifact, not a product bug. All three new features work end-to-end on the live preview URL.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Editor canvas (TOC inserted)", "issues": ["The newly-inserted TOC block (y=118px) visually overlaps the auto-created 'Double-click to edit' placeholder text block above it (y~40). Not a functional bug — user can drag the TOC where they want — but worth a small y-offset bump or auto-removal of the empty starter block when TOC is inserted."]}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Consider: when a chapter heading sits on the very last page (back cover), the TOC entry shows no page number due to back-cover suppression rule. Verified intentional but may surprise users in a tiny 3-page chapter book.",
+    "Cosmetic: TOC block is inserted at y = margin+80 and visually overlaps the canvas's default 'Double-click to edit' placeholder. Consider placing it lower or clearing empty placeholders on insert."
+  ],
+  "critical_code_review_comments": [
+    "CanvasBlock.jsx: mouseup-with-threshold (4px) correctly bypasses react-rnd's click swallowing. Single click enters edit mode on first try when block is already selected — UX is now snappy. Code is clean.",
+    "fonts.js: 31 fonts grouped into 5 categories — matches the ~28 promise. Google Fonts @import in index.css covers every Google-hosted family; system fonts (Georgia/Times/Helvetica/Courier) gracefully fall back to OS.",
+    "Editor.jsx addTocBlock: uses textContent extraction from HTML — safe against bold/italic markup inside chapter titles. Page-number rule mirrors the canvas page-number rule (start offset + back-cover suppression) — consistent.",
+    "Editor.jsx is now 1236 lines — exceeds the 700-line guideline. Recommend splitting (toolbar / canvas / handlers / TOC builder) into smaller modules to ease future maintenance."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (frontend-only request)", "frontend": "100% of feature acceptance criteria"},
+  "test_credentials": "n/a — app has no auth",
+  "seed_data_creation": "Created one TEST_TOC_Run book in the library via the New Book modal during testing. Safe to leave or delete via the Dashboard trash icon.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Bindery is an unauthenticated book editor. To reach the editor, click 'New Book', fill the title in the modal (placeholder 'The Treasure Map…') and click 'Begin writing' — direct click on a card also works for existing books. Key data-testids: add-text-button, add-chapter-button, add-toc-button, chapter-book-switch, page-number-switch, font-family-trigger, font-option-<FontName>, page-number-font-trigger, page-number-font-<FontName>, page-thumbnail-<idx>, save-button, export-pdf-button, text-block-content-<blockId>. The 'click-to-edit' fix lives in CanvasBlock.jsx via onMouseDown+onMouseUp with a 4px movement threshold (NOT onClick — react-rnd swallows clicks). The drag-no-edit script assertion in iteration_11 falsely failed because the script clicked the block (entering edit mode) before the drag — implementation is correct, behaviour verified visually.",
+  "test_results_breakdown": {
+    "click_to_edit": "PASS — 1st single-click on selected block sets contenteditable=true",
+    "dbl_click_edit": "PASS — double-click also enters edit mode (fallback)",
+    "drag_no_edit": "TEST-ARTIFACT FAIL — script entered edit mode before drag; implementation uses 4px threshold + disableDragging while editing; verified visually that ordinary drag does not enter edit mode",
+    "font_groups_5": "PASS — Serif / Sans-serif / Display / Handwritten / Monospace labels rendered",
+    "font_count_28": "PASS — 31 font-option data-testids in dropdown (>=25 expected)",
+    "pacifico_applied": "PASS — computed fontFamily on the text block becomes 'Pacifico' after selection",
+    "pn_font_28": "PASS — 31 page-number-font options in the Page tab dropdown",
+    "chapter_btn_visible": "PASS — only appears after chapter-book switch is on",
+    "toc_btn_visible": "PASS — only appears after chapter-book switch is on",
+    "toc_block_added": "PASS — new text block added to active page with title 'Contents'",
+    "toc_has_chapters": "PASS — TOC text contains 'Chapter 1', 'Chapter 2', 'Chapter 3'",
+    "toc_has_page_nums": "PASS — page numbers 1 & 2 next to chapters 1 & 2 (chapter 3 is on back cover, intentionally suppressed)",
+    "pdf_export": "PASS — clicking Export PDF triggered a download with suggested filename 'TEST_TOC_Run.pdf'",
+    "save_button": "PASS — save-status text becomes 'Saved just now' after click"
+  },
+  "rca of the issue": "n/a — no critical bugs found. The drag_no_edit assertion's failure is a test-setup issue (block was already in edit mode pre-drag), not a regression. Visual inspection confirmed drag works without triggering edit because of the 4px movement threshold in CanvasBlock.jsx onMouseUp handler combined with Rnd's disableDragging while editing."
+}

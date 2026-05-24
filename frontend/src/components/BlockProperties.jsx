@@ -17,6 +17,8 @@ import { Button } from '@/components/ui/button';
 import {
   Select,
   SelectContent,
+  SelectGroup,
+  SelectLabel,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -26,15 +28,9 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover';
+import { FONT_GROUPS } from '@/lib/fonts';
 
-const FONTS = [
-  'Cormorant Garamond',
-  'Outfit',
-  'Georgia',
-  'Times New Roman',
-  'Helvetica',
-  'Courier New',
-];
+const FONT_GROUPS_LIST = FONT_GROUPS;
 
 const SIZES = [10, 12, 14, 16, 18, 20, 24, 28, 32, 36, 42, 48, 56, 64, 72];
 
@@ -92,9 +88,14 @@ export default function BlockProperties({
               <SelectTrigger data-testid="font-family-trigger" className="bg-white border-rule rounded-sm h-8 text-sm">
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent>
-                {FONTS.map((f) => (
-                  <SelectItem key={f} value={f} style={{ fontFamily: f }} data-testid={`font-option-${f}`}>{f}</SelectItem>
+              <SelectContent className="max-h-72">
+                {FONT_GROUPS_LIST.map((g) => (
+                  <SelectGroup key={g.label}>
+                    <SelectLabel className="text-[10px] tracking-[0.18em] uppercase text-ink-mute">{g.label}</SelectLabel>
+                    {g.fonts.map((f) => (
+                      <SelectItem key={f} value={f} style={{ fontFamily: f }} data-testid={`font-option-${f}`}>{f}</SelectItem>
+                    ))}
+                  </SelectGroup>
                 ))}
               </SelectContent>
             </Select>

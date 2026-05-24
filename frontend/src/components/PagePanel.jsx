@@ -5,8 +5,9 @@ import {
 } from '@/components/ui/popover';
 import { Switch } from '@/components/ui/switch';
 import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+  Select, SelectContent, SelectGroup, SelectLabel, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
+import { FONT_GROUPS } from '@/lib/fonts';
 
 const PAGE_COLORS = [
   '#FFF8DC', // light yellow (default)
@@ -28,15 +29,6 @@ const PAGE_COLORS = [
 ];
 
 const PAGE_NUMBER_SIZES = [10, 12, 14, 16, 18, 20, 24, 28, 32];
-
-const PAGE_NUMBER_FONTS = [
-  'Cormorant Garamond',
-  'Outfit',
-  'Georgia',
-  'Times New Roman',
-  'Helvetica',
-  'Courier New',
-];
 
 export default function PagePanel({ page, pageIndex, totalPages = 1, pageNumberStart = 1, isChapterBook = false, onChange, onPageNumberStyleAll, onPageNumberStartChange, onChapterBookToggle, onApplyToInterior }) {
   if (!page) {
@@ -175,9 +167,14 @@ export default function PagePanel({ page, pageIndex, totalPages = 1, pageNumberS
                 <SelectTrigger className="bg-white border-rule rounded-sm h-8 text-sm" data-testid="page-number-font-trigger">
                   <SelectValue />
                 </SelectTrigger>
-                <SelectContent>
-                  {PAGE_NUMBER_FONTS.map((f) => (
-                    <SelectItem key={f} value={f} style={{ fontFamily: f }} data-testid={`page-number-font-${f}`}>{f}</SelectItem>
+                <SelectContent className="max-h-72">
+                  {FONT_GROUPS.map((g) => (
+                    <SelectGroup key={g.label}>
+                      <SelectLabel className="text-[10px] tracking-[0.18em] uppercase text-ink-mute">{g.label}</SelectLabel>
+                      {g.fonts.map((f) => (
+                        <SelectItem key={f} value={f} style={{ fontFamily: f }} data-testid={`page-number-font-${f}`}>{f}</SelectItem>
+                      ))}
+                    </SelectGroup>
                   ))}
                 </SelectContent>
               </Select>

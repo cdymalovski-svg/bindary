@@ -18,6 +18,7 @@ import {
   Square,
   Palette,
   Heading,
+  List,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -657,6 +658,11 @@ export default function Editor() {
         {book.is_chapter_book && (
           <Button onClick={addChapterBlock} className="bg-ink hover:bg-ink-soft text-paper rounded-sm h-8" data-testid="add-chapter-button">
             <Heading className="w-4 h-4 mr-1" /> Chapter
+          </Button>
+        )}
+        {book.is_chapter_book && (
+          <Button onClick={addTocBlock} className="bg-ink hover:bg-ink-soft text-paper rounded-sm h-8" data-testid="add-toc-button" title="Insert Table of Contents from chapter headings">
+            <List className="w-4 h-4 mr-1" /> Contents
           </Button>
         )}
         <Button
