@@ -306,7 +306,14 @@ export default function Editor() {
       color: '#000000',
     };
     updatePages((pages) =>
-      pages.map((p, i) => (i === activePageIndex ? { ...p, blocks: [...p.blocks, block] } : p))
+      pages.map((p, i) => {
+        if (i !== activePageIndex) return p;
+        // Drop any empty starter text blocks so the TOC isn't visually buried.
+        const filtered = p.blocks.filter(
+          (b) => !(b.type === 'text' && (!b.html || !b.html.trim()) && !b.is_chapter)
+        );
+        return { ...p, blocks: [...filtered, block] };
+      })
     );
     setSelectedBlockId(block.id);
     toast.success(`Contents inserted (${entries.length} chapter${entries.length === 1 ? '' : 's'})`);

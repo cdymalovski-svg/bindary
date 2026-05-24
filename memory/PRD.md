@@ -36,19 +36,24 @@ Build me a book template app to be able to add texts and illustrations, page num
 - Image upload via Emergent Object Storage, served through `/api/files/{path}`.
 - Client-side PDF export (html2canvas + jsPDF).
 
+## What's been implemented (2026-02 / iteration 11)
+- Fixed: single-click on existing text block now reliably enters edit mode (mouseup-with-4px-threshold replaces unreliable onClick).
+- Expanded font palette from 6 → 31 curated Google Fonts in 5 categories (Serif / Sans-serif / Display / Handwritten / Monospace) for both text blocks and page numbers; all fonts loaded via index.css @import.
+- New "Contents" toolbar button (visible in Chapter-book mode) auto-inserts a TOC text block aggregating every chapter heading with its displayed page number. Empty placeholder blocks are auto-cleared on insert.
+- Verified end-to-end via testing agent (iteration_11): click-to-edit, double-click edit, font groups, Pacifico application, page-number font, chapter visibility gating, TOC contents, PDF export, save status — all PASS.
+
 ## Prioritized Backlog
 ### P1
-- Per-page background color & cover page template.
-- Drag-drop image directly onto the canvas (currently file picker only).
+- Refactor `Editor.jsx` (1236 lines): split into toolbar / canvas / TOC builder modules.
 - Multi-select + alignment guides + snapping.
 - Undo/Redo history.
 
 ### P2
+- Live-sync TOC (currently a one-shot insert; auto-update when chapters change).
 - Reorder pages by drag in the sidebar.
 - Text on path / shape blocks / decorative dividers.
-- Theme templates ("Children's book", "Photo book", "Manuscript").
+- More page templates ("Children's book", "Photo book", "Manuscript").
 - Share read-only preview link.
-- Auto-save with debounce.
 
 ### P3
 - AI-assisted illustration generation per page (Nano Banana).
@@ -56,6 +61,6 @@ Build me a book template app to be able to add texts and illustrations, page num
 - Multi-user accounts + library sharing.
 
 ## Next Tasks
-- Drag-and-drop image upload onto the page canvas.
-- Sidebar page reorder via drag.
-- Auto-save with debounce + dirty-state indicator.
+- Refactor `Editor.jsx` for maintainability.
+- Live-sync TOC.
+- Undo/Redo history.
