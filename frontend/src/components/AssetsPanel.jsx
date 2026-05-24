@@ -146,17 +146,35 @@ export default function AssetsPanel({ bookId, onAssetUploaded }) {
 
 function AssetTile({ asset, onRemove }) {
   const url = fileUrl(asset.url);
+  const [hovered, setHovered] = useState(false);
+  const [previewTop, setPreviewTop] = useState(0);
+  const tileRef = useRef(null);
   const handleDragStart = (e) => {
     e.dataTransfer.effectAllowed = 'copy';
     const payload = JSON.stringify({ url: asset.url, path: asset.path });
     e.dataTransfer.setData(ASSET_DRAG_MIME, payload);
     e.dataTransfer.setData('text/plain', payload);
+    // Suppress the preview while the user is actively dragging.
+    setHovered(false);
+  };
+  const showPreview = () => {
+    if (!tileRef.current) return;
+    const r = tileRef.current.getBoundingClientRect();
+    // Vertically center the preview on the thumbnail, but clamp to the viewport.
+    const previewSize = 320;
+    const idealTop = r.top + r.height / 2 - previewSize / 2;
+    const clamped = Math.max(16, Math.min(window.innerHeight - previewSize - 16, idealTop));
+    setPreviewTop(clamped);
+    setHovered(true);
   };
   return (
     <div
+      ref={tileRef}
       className="group relative aspect-square bg-rule-dark/40 border border-rule-dark rounded-sm overflow-hidden cursor-grab active:cursor-grabbing"
       draggable
       onDragStart={handleDragStart}
+      onMouseEnter={showPreview}
+      onMouseLeave={() => setHovered(false)}
       data-testid={`asset-tile-${asset.id}`}
       title={asset.original_filename || 'image'}
     >
@@ -175,6 +193,32 @@ function AssetTile({ asset, onRemove }) {
       >
         <Trash2 className="w-3 h-3" />
       </button>
+      {hovered && (
+        <div
+          // Floats to the left of the right-side Assets panel (which is 288px wide).
+          // Pointer-events disabled so the popup never interferes with dragging.
+          className="hidden lg:block fixed z-50 pointer-events-none animate-in fade-in zoom-in-95 duration-150"
+          style={{ right: 296, top: previewTop }}
+          data-testid={`asset-preview-${asset.id}`}
+        >
+          <div className="bg-paper border border-rule rounded-sm shadow-2xl p-2" style={{ width: 320 }}>
+            <div className="bg-desk rounded-sm overflow-hidden" style={{ height: 280 }}>
+              <img
+                src={url}
+                alt={asset.original_filename || ''}
+                className="w-full h-full object-contain"
+                crossOrigin="anonymous"
+                draggable={false}
+              />
+            </div>
+            {asset.original_filename && (
+              <p className="text-[11px] text-ink-soft truncate pt-1.5 px-0.5" title={asset.original_filename}>
+                {asset.original_filename}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
