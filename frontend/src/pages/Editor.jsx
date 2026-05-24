@@ -208,7 +208,7 @@ export default function Editor() {
 
   // --- Page actions ---
   const addPage = () => {
-    updatePages((pages) => [...pages, { id: uid(), blocks: [], background_color: '#F9F6F0', show_page_number: true }]);
+    updatePages((pages) => [...pages, { id: uid(), blocks: [], background_color: '#FFF8DC', show_page_number: true, page_number_align: 'right', page_number_size: 14 }]);
     setActivePageIndex((book?.pages?.length || 0));
     setSelectedBlockId(null);
   };
