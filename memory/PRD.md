@@ -40,7 +40,8 @@ Build me a book template app to be able to add texts and illustrations, page num
 - Fixed: single-click on existing text block now reliably enters edit mode (mouseup-with-4px-threshold replaces unreliable onClick).
 - Expanded font palette from 6 → 31 curated Google Fonts in 5 categories (Serif / Sans-serif / Display / Handwritten / Monospace) for both text blocks and page numbers; all fonts loaded via index.css @import.
 - New "Contents" toolbar button (visible in Chapter-book mode) auto-inserts a TOC text block aggregating every chapter heading with its displayed page number. Empty placeholder blocks are auto-cleared on insert.
-- Verified end-to-end via testing agent (iteration_11): click-to-edit, double-click edit, font groups, Pacifico application, page-number font, chapter visibility gating, TOC contents, PDF export, save status — all PASS.
+- New "Design cover" toolbar button (visible on page 1): one-click cover composer — sets full bleed, hides the page number, resizes the existing illustration to fill the page as a backdrop, and places a centered Playfair Display title + italic Cormorant author. Title font scales down for long titles. Replaces any prior text blocks on the cover.
+- Verified end-to-end via testing agent (iteration_11) and main-agent smoke tests.
 
 ## Prioritized Backlog
 ### P1

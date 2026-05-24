@@ -19,6 +19,7 @@ import {
   Palette,
   Heading,
   List,
+  Wand2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -257,6 +258,94 @@ export default function Editor() {
     );
     setSelectedBlockId(block.id);
     toast.success(`Chapter ${number} added`);
+  };
+
+  // One-click cover designer: lays out the active page as a polished cover.
+  // - Forces full bleed, hides page number.
+  // - Keeps any existing image block and resizes it to fill the page (background art).
+  // - Sends images to the back, places a centered title + author over the top.
+  // Existing text blocks on the cover page are replaced.
+  const designCover = () => {
+    if (!activePage) return;
+    const pageW = pageSize.width;
+    const pageH = pageSize.height;
+    const existingImages = (activePage.blocks || []).filter((b) => b.type === 'image' && b.image_url);
+    const hasArt = existingImages.length > 0;
+
+    // Resize the first image to fill the whole page; subsequent images keep their layout.
+    const reshapedImages = existingImages.map((b, i) => {
+      if (i !== 0) return { ...b, z_index: 0 };
+      return { ...b, x: 0, y: 0, width: pageW, height: pageH, z_index: 0 };
+    });
+
+    // Pick text colors that read well over the background.
+    const bg = activePage.background_color || '#FFF8DC';
+    const onDark = hasArt || isDarkHex(bg);
+    const titleColor = onDark ? '#F9F6F0' : '#1C1B19';
+    const authorColor = onDark ? '#E8E2D4' : '#4A4843';
+
+    // Title sits in the upper third; author below it.
+    const titleText = book.title || 'Untitled';
+    const titleWidth = Math.min(pageW - 80, 640);
+    // Scale title font down for longer titles so it stays on 1-2 lines.
+    const baseTitleSize = Math.round(pageW * 0.11);
+    const lengthScale = titleText.length > 28 ? 28 / titleText.length : 1;
+    const titleFontSize = Math.max(28, Math.round(baseTitleSize * lengthScale));
+    // Give the title room for up to 3 wrapped lines.
+    const titleLineHeight = titleFontSize * 1.15;
+    const titleHeight = Math.round(titleLineHeight * 3 + 12);
+    const titleY = Math.round(pageH * 0.18);
+    const titleBlock = {
+      id: uid(),
+      type: 'text',
+      x: (pageW - titleWidth) / 2,
+      y: titleY,
+      width: titleWidth,
+      height: titleHeight,
+      z_index: 10,
+      html: `<p>${titleText.replace(/</g, '&lt;')}</p>`,
+      font_family: 'Playfair Display',
+      font_size: titleFontSize,
+      text_align: 'center',
+      color: titleColor,
+    };
+
+    const authorText = book.author ? `by ${book.author}` : '';
+    const authorWidth = Math.min(pageW - 120, 480);
+    const authorFontSize = Math.max(16, Math.round(titleFontSize * 0.32));
+    const authorBlock = authorText
+      ? {
+          id: uid(),
+          type: 'text',
+          x: (pageW - authorWidth) / 2,
+          y: titleY + titleHeight + 20,
+          width: authorWidth,
+          height: authorFontSize * 2,
+          z_index: 10,
+          html: `<p><em>${authorText.replace(/</g, '&lt;')}</em></p>`,
+          font_family: 'Cormorant Garamond',
+          font_size: authorFontSize,
+          text_align: 'center',
+          color: authorColor,
+        }
+      : null;
+
+    const newBlocks = [...reshapedImages, titleBlock, ...(authorBlock ? [authorBlock] : [])];
+
+    updatePages((pages) =>
+      pages.map((p, i) =>
+        i === activePageIndex
+          ? {
+              ...p,
+              full_bleed: true,
+              show_page_number: false,
+              blocks: newBlocks,
+            }
+          : p
+      )
+    );
+    setSelectedBlockId(titleBlock.id);
+    toast.success(hasArt ? 'Cover designed with your artwork' : 'Cover designed — drop in art for a backdrop');
   };
 
   // Build a Table of Contents text block from every chapter heading in the book.
@@ -662,6 +751,16 @@ export default function Editor() {
         <Button onClick={addTextBlock} className="bg-ink hover:bg-ink-soft text-paper rounded-sm h-8" data-testid="add-text-button">
           <TypeIcon className="w-4 h-4 mr-1" /> Text
         </Button>
+        {activePageIndex === 0 && (
+          <Button
+            onClick={designCover}
+            className="bg-terracotta/90 hover:bg-terracotta text-paper rounded-sm h-8"
+            data-testid="design-cover-button"
+            title="Auto-arrange a cover from your title, author and any artwork on this page"
+          >
+            <Wand2 className="w-4 h-4 mr-1" /> Design cover
+          </Button>
+        )}
         {book.is_chapter_book && (
           <Button onClick={addChapterBlock} className="bg-ink hover:bg-ink-soft text-paper rounded-sm h-8" data-testid="add-chapter-button">
             <Heading className="w-4 h-4 mr-1" /> Chapter
