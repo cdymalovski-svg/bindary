@@ -131,7 +131,7 @@ export default function BlockProperties({
               <FmtBtn testId="align-center" active={block.text_align === 'center'} onClick={() => onChange({ text_align: 'center' })}><AlignCenter className="w-4 h-4" /></FmtBtn>
               <FmtBtn testId="align-right" active={block.text_align === 'right'} onClick={() => onChange({ text_align: 'right' })}><AlignRight className="w-4 h-4" /></FmtBtn>
             </div>
-            <p className="text-[10px] text-ink-mute pt-1">Double-click block to edit text. Select text then apply Bold / Italic.</p>
+            <p className="text-[10px] text-ink-mute pt-1">Click a text block to edit it (or double-click). Select text then apply Bold / Italic.</p>
           </div>
         </>
       )}

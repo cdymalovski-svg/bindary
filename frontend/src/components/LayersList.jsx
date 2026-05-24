@@ -1,9 +1,19 @@
+import { useEffect, useRef } from 'react';
 import { Type as TypeIcon, Image as ImageIcon, Eye } from 'lucide-react';
 import { fileUrl } from '@/lib/api';
 
 // Photoshop-style stack list of all blocks on the active page,
 // sorted top-of-list = highest z-index = visually on top.
 export default function LayersList({ page, selectedBlockId, onSelect }) {
+  const activeRowRef = useRef(null);
+
+  // Scroll the active row into view whenever selection changes.
+  useEffect(() => {
+    if (activeRowRef.current) {
+      activeRowRef.current.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }, [selectedBlockId]);
+
   const blocks = page?.blocks ? [...page.blocks] : [];
   blocks.sort((a, b) => {
     const za = typeof a.z_index === 'number' ? a.z_index : 1;
@@ -27,6 +37,7 @@ export default function LayersList({ page, selectedBlockId, onSelect }) {
             return (
               <button
                 key={b.id}
+                ref={active ? activeRowRef : null}
                 type="button"
                 onClick={() => onSelect(b.id)}
                 data-testid={`layer-row-${b.id}`}

@@ -90,6 +90,15 @@ export default function CanvasBlock({
             onSelect(block.id);
           }
         }}
+        onClick={(e) => {
+          // If a text block is already selected and we click on it without dragging,
+          // enter edit mode (no double-click required). React-rnd swallows the click
+          // when a drag actually happens, so this is safe.
+          if (isText && selected && !editingThisText) {
+            e.stopPropagation();
+            onStartTextEdit(block.id);
+          }
+        }}
         onDoubleClick={(e) => {
           if (isText) {
             e.stopPropagation();
