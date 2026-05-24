@@ -106,6 +106,7 @@ class Page(BaseModel):
     show_page_number: bool = True
     page_number_align: Optional[str] = "right"  # 'left' | 'center' | 'right'
     page_number_size: Optional[int] = 14
+    page_number_font: Optional[str] = "Cormorant Garamond"
     full_bleed: bool = False  # when true, ignore the 1cm white margin (edge-to-edge)
 
 

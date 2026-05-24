@@ -29,7 +29,16 @@ const PAGE_COLORS = [
 
 const PAGE_NUMBER_SIZES = [10, 12, 14, 16, 18, 20, 24, 28, 32];
 
-export default function PagePanel({ page, pageIndex, totalPages = 1, onChange, onApplyToInterior }) {
+const PAGE_NUMBER_FONTS = [
+  'Cormorant Garamond',
+  'Outfit',
+  'Georgia',
+  'Times New Roman',
+  'Helvetica',
+  'Courier New',
+];
+
+export default function PagePanel({ page, pageIndex, totalPages = 1, onChange, onPageNumberStyleAll, onApplyToInterior }) {
   if (!page) {
     return <div className="p-6 text-ink-mute text-sm font-serif italic">Select a page to edit its properties.</div>;
   }
@@ -119,10 +128,26 @@ export default function PagePanel({ page, pageIndex, totalPages = 1, onChange, o
               </div>
             </div>
             <div className="space-y-1">
-              <p className="label-caps">Size</p>
+              <p className="label-caps">Font · applies to all pages</p>
+              <Select
+                value={page.page_number_font || 'Cormorant Garamond'}
+                onValueChange={(v) => onPageNumberStyleAll?.({ page_number_font: v })}
+              >
+                <SelectTrigger className="bg-white border-rule rounded-sm h-8 text-sm" data-testid="page-number-font-trigger">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {PAGE_NUMBER_FONTS.map((f) => (
+                    <SelectItem key={f} value={f} style={{ fontFamily: f }} data-testid={`page-number-font-${f}`}>{f}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <p className="label-caps">Size · applies to all pages</p>
               <Select
                 value={String(page.page_number_size || 14)}
-                onValueChange={(v) => onChange({ page_number_size: parseInt(v, 10) })}
+                onValueChange={(v) => onPageNumberStyleAll?.({ page_number_size: parseInt(v, 10) })}
               >
                 <SelectTrigger className="bg-white border-rule rounded-sm h-8 text-sm" data-testid="page-number-size-trigger">
                   <SelectValue />

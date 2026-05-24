@@ -185,6 +185,12 @@ export default function Editor() {
     toast.success(`Applied to ${total - 2} page${total - 2 === 1 ? '' : 's'}`);
   };
 
+  // Page-number font and size are book-wide: changing them on any page propagates
+  // to every page so numbers stay consistent across the volume.
+  const setAllPagesNumberStyle = (patch) => {
+    updatePages((pages) => pages.map((p) => ({ ...p, ...patch })));
+  };
+
   const deleteBlock = (blockId, pageIdx = activePageIndex) => {
     updatePages((pages) =>
       pages.map((p, i) =>
@@ -346,7 +352,19 @@ export default function Editor() {
 
   // --- Page actions ---
   const addPage = () => {
-    updatePages((pages) => [...pages, { id: uid(), blocks: [], background_color: '#FFF8DC', show_page_number: true, page_number_align: 'right', page_number_size: 14 }]);
+    const ref = book?.pages?.[activePageIndex] || book?.pages?.[0];
+    updatePages((pages) => [
+      ...pages,
+      {
+        id: uid(),
+        blocks: [],
+        background_color: '#FFF8DC',
+        show_page_number: true,
+        page_number_align: 'right',
+        page_number_size: ref?.page_number_size || 14,
+        page_number_font: ref?.page_number_font || 'Cormorant Garamond',
+      },
+    ]);
     setActivePageIndex((book?.pages?.length || 0));
     setSelectedBlockId(null);
   };
@@ -680,6 +698,7 @@ export default function Editor() {
                 pageIndex={activePageIndex}
                 totalPages={book.pages.length}
                 onChange={(patch) => updatePage(patch)}
+                onPageNumberStyleAll={setAllPagesNumberStyle}
                 onApplyToInterior={applyPageToInterior}
               />
             </TabsContent>
@@ -856,6 +875,7 @@ function PageCanvas({
   const showFocusRing = viewMode === 'spread' && isFocused && !forExport;
   const pageNumAlign = page.page_number_align || 'right';
   const pageNumSize = page.page_number_size || 14;
+  const pageNumFont = page.page_number_font || 'Cormorant Garamond';
   const pageNumColor = isDarkHex(bg) ? '#E8E2D4' : '#3A3833';
 
   return (
@@ -923,7 +943,7 @@ function PageCanvas({
         ))}
         {page.show_page_number && (
           <div
-            className="absolute font-serif"
+            className="absolute"
             style={{
               // Place inside the colored area, 16px above its bottom edge.
               bottom: margin + 16,
@@ -936,6 +956,7 @@ function PageCanvas({
                     textAlign: 'center',
                   }
                 : {}),
+              fontFamily: pageNumFont,
               fontSize: pageNumSize,
               letterSpacing: '0.05em',
               color: pageNumColor,
