@@ -34,6 +34,31 @@ import PagePanel from '@/components/PagePanel';
 
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 
+// Pre-load an image to read its intrinsic dimensions so the block can be
+// sized to match the illustration's aspect ratio.
+function loadImageSize(url) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => resolve({ w: img.naturalWidth || 0, h: img.naturalHeight || 0 });
+    img.onerror = () => resolve({ w: 0, h: 0 });
+    img.src = url;
+  });
+}
+
+// Given a desired max area, return width/height that preserve aspect ratio.
+function fitWithin(naturalW, naturalH, maxW, maxH) {
+  const fallbackRatio = 4 / 3;
+  const ratio = naturalW > 0 && naturalH > 0 ? naturalW / naturalH : fallbackRatio;
+  let width = Math.min(maxW, naturalW || maxW);
+  let height = width / ratio;
+  if (height > maxH) {
+    height = maxH;
+    width = height * ratio;
+  }
+  return { width, height };
+}
+
 export default function Editor() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -161,19 +186,25 @@ export default function Editor() {
   };
 
   // Add an image block from an asset (dragged in or just uploaded).
-  // If x/y not provided, places near top-left and centers.
-  const addImageBlockFromAsset = (asset, position = null, pageIdx = activePageIndex) => {
-    const maxW = Math.min(500, pageSize.width - 80);
-    const width = maxW;
-    const height = maxW * 0.66;
+  // The block is sized to match the illustration's natural aspect ratio so the
+  // entire asset is visible without cropping.
+  const addImageBlockFromAsset = async (asset, position = null, pageIdx = activePageIndex) => {
+    const previewUrl = (asset.url || '').startsWith('http')
+      ? asset.url
+      : `${process.env.REACT_APP_BACKEND_URL}${asset.url}`;
+    const { w: natW, h: natH } = await loadImageSize(previewUrl);
+    // Cap at the page's safe area (page minus 1cm margin).
+    const maxW = Math.min(640, pageSize.width - PAGE_MARGIN_PX * 2);
+    const maxH = pageSize.height - PAGE_MARGIN_PX * 2;
+    const { width, height } = fitWithin(natW, natH, maxW, maxH);
     let x;
     let y;
     if (position) {
       x = Math.max(0, Math.min(pageSize.width - width, position.x - width / 2));
       y = Math.max(0, Math.min(pageSize.height - height, position.y - height / 2));
     } else {
-      x = 60;
-      y = 60;
+      x = Math.max(PAGE_MARGIN_PX, (pageSize.width - width) / 2);
+      y = Math.max(PAGE_MARGIN_PX, (pageSize.height - height) / 2);
     }
     const block = {
       id: uid(),
@@ -851,7 +882,7 @@ function PageThumbnail({ page, index, active, pageSize, onClick, onDuplicate, on
                   dangerouslySetInnerHTML={{ __html: b.html || '' }}
                 />
               ) : b.image_url ? (
-                <img alt="" src={(b.image_url.startsWith('http') ? b.image_url : `${process.env.REACT_APP_BACKEND_URL}${b.image_url}`)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                <img alt="" src={(b.image_url.startsWith('http') ? b.image_url : `${process.env.REACT_APP_BACKEND_URL}${b.image_url}`)} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
               ) : null}
             </div>
           ))}

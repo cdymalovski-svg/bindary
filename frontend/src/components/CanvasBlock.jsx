@@ -73,6 +73,7 @@ export default function CanvasBlock({
         });
       }}
       enableResizing={selected && !editingThisText}
+      lockAspectRatio={isImage}
       className={`block-wrapper ${selected ? 'block-selected' : 'block-hover'}`}
       style={{ zIndex: typeof block.z_index === 'number' ? block.z_index : 1 }}
       resizeHandleStyles={selected && !editingThisText ? handleStyles : {}}
@@ -129,7 +130,7 @@ export default function CanvasBlock({
             <img
               src={fileUrl(block.image_url)}
               alt=""
-              className="w-full h-full object-cover pointer-events-none"
+              className="w-full h-full object-contain pointer-events-none"
               draggable={false}
               crossOrigin="anonymous"
               data-testid={`image-block-img-${block.id}`}
