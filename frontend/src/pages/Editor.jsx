@@ -542,6 +542,63 @@ export default function Editor() {
     setSelectedBlockId(block.id);
   };
 
+  // Quick context-menu actions invoked from the Assets panel.
+  const replaceSelectedImageWithAsset = async (asset) => {
+    if (!selectedBlock || selectedBlock.type !== 'image') {
+      toast.error('Select an image block first');
+      return;
+    }
+    const previewUrl = asset.url.startsWith('http')
+      ? asset.url
+      : `${process.env.REACT_APP_BACKEND_URL}${asset.url}`;
+    const { w, h } = await loadImageSize(previewUrl);
+    // Keep block position and width; recompute height from the new image's
+    // aspect ratio so the artwork isn't stretched.
+    const ratio = w > 0 && h > 0 ? w / h : selectedBlock.width / selectedBlock.height;
+    const newHeight = Math.round(selectedBlock.width / ratio);
+    updateBlock(selectedBlock.id, {
+      image_url: asset.url,
+      image_path: asset.path,
+      height: newHeight,
+    });
+    toast.success('Image replaced');
+  };
+
+  // Drop an asset on page 1 as a full-bleed backdrop.
+  // Replaces any existing image on the cover so a single backdrop wins.
+  const setAssetAsCoverBackdrop = (asset) => {
+    const coverIdx = 0;
+    const pageW = pageSize.width;
+    const pageH = pageSize.height;
+    const block = {
+      id: uid(),
+      type: 'image',
+      x: 0,
+      y: 0,
+      width: pageW,
+      height: pageH,
+      z_index: 0,
+      image_url: asset.url,
+      image_path: asset.path,
+    };
+    updatePages((pages) =>
+      pages.map((p, i) => {
+        if (i !== coverIdx) return p;
+        const withoutImages = (p.blocks || []).filter((b) => b.type !== 'image');
+        return {
+          ...p,
+          full_bleed: true,
+          show_page_number: false,
+          blocks: [block, ...withoutImages],
+        };
+      })
+    );
+    setActivePageIndex(coverIdx);
+    setSelectedBlockId(block.id);
+    toast.success('Cover backdrop set');
+  };
+
+
   const changeLayer = (action) => {
     if (!selectedBlock || !activePage) return;
     const all = activePage.blocks;
@@ -1013,7 +1070,14 @@ export default function Editor() {
               </TabsTrigger>
             </TabsList>
             <TabsContent value="assets" className="flex-1 m-0 overflow-hidden">
-              <AssetsPanel bookId={book.id} onAssetUploaded={() => { /* refresh inside */ }} />
+              <AssetsPanel
+                bookId={book.id}
+                onAssetUploaded={() => { /* refresh inside */ }}
+                onInsertAsset={(asset) => addImageBlockFromAsset(asset)}
+                onReplaceSelectedImage={replaceSelectedImageWithAsset}
+                onSetAsCoverBackdrop={setAssetAsCoverBackdrop}
+                canReplaceSelected={!!selectedBlock && selectedBlock.type === 'image'}
+              />
             </TabsContent>
             <TabsContent value="page" className="flex-1 m-0 overflow-y-auto sidebar-scroll bg-paper text-ink">
               <PagePanel
