@@ -124,6 +124,7 @@ export default function Editor() {
         page_size: book.page_size,
         page_number_start: book.page_number_start || 1,
         is_chapter_book: !!book.is_chapter_book,
+        text_presets: book.text_presets || null,
         pages: book.pages,
       });
       setLastSavedAt(new Date());
@@ -238,11 +239,14 @@ export default function Editor() {
   };
 
   const addTextBlock = (preset = 'body') => {
-    const cfg = TEXT_PRESETS[preset] || TEXT_PRESETS.body;
+    const base = TEXT_PRESETS[preset] || TEXT_PRESETS.body;
+    // Per-book override merges on top of the built-in defaults.
+    const userPreset = book?.text_presets?.[preset] || {};
+    const cfg = { ...base, ...userPreset };
     const margin = activePage?.full_bleed ? 0 : PAGE_MARGIN_PX;
     const maxW = pageSize.width - margin * 2 - 40;
     const width = preset === 'body' ? Math.min(420, maxW) : Math.min(560, maxW);
-    const height = Math.max(60, Math.round(cfg.font_size * cfg.lineFactor));
+    const height = Math.max(60, Math.round(cfg.font_size * base.lineFactor));
     // On the cover page, prefill the Title preset with the book's title so
     // authors can drop a formatted title into place without retyping.
     const isCover = activePageIndex === 0;
@@ -262,7 +266,7 @@ export default function Editor() {
       font_family: cfg.font_family,
       font_size: cfg.font_size,
       text_align: cfg.text_align,
-      color: '#000000',
+      color: cfg.color || '#000000',
     };
     updatePages((pages) =>
       pages.map((p, i) => (i === activePageIndex ? { ...p, blocks: [...p.blocks, block] } : p))
@@ -270,6 +274,38 @@ export default function Editor() {
     setSelectedBlockId(block.id);
     // Skip auto-edit when prefilled so the user sees the formatted title first.
     if (!prefillHtml) setEditingTextId(block.id);
+  };
+
+  // Persist the selected text block's current style as the default for one of
+  // the three presets (title/subtitle/body). Lives on the book document so
+  // each book can keep its own typographic voice. Saved immediately (skipping
+  // the 1.2s debounce) so reloading the editor picks up the new default.
+  const saveBlockAsPreset = (presetKey) => {
+    if (!selectedBlock || selectedBlock.type !== 'text') return;
+    const presetPatch = {
+      font_family: selectedBlock.font_family,
+      font_size: selectedBlock.font_size,
+      text_align: selectedBlock.text_align,
+      color: selectedBlock.color,
+    };
+    const newPresets = { ...(book.text_presets || {}), [presetKey]: presetPatch };
+    setBook((b) => ({ ...b, text_presets: newPresets }));
+    const label = TEXT_PRESETS[presetKey]?.label || presetKey;
+    // Persist right away — don't wait for the autosave debounce.
+    updateBook(book.id, {
+      title: book.title,
+      author: book.author,
+      page_size: book.page_size,
+      page_number_start: book.page_number_start || 1,
+      is_chapter_book: !!book.is_chapter_book,
+      text_presets: newPresets,
+      pages: book.pages,
+    })
+      .then(() => {
+        setLastSavedAt(new Date());
+        toast.success(`Saved as default "${label}" for this book`);
+      })
+      .catch(() => toast.error('Could not save preset'));
   };
 
   // Add a chapter-heading text block. Auto-numbers based on existing chapter blocks
@@ -1007,6 +1043,7 @@ export default function Editor() {
                   onTextCommand={onTextCommand}
                   onLayer={changeLayer}
                   onFit={fitSelectedBlock}
+                  onSaveAsPreset={saveBlockAsPreset}
                 />
               ) : (
                 <div className="p-6 text-ink-mute text-sm font-serif italic">Select a block above to edit its properties.</div>

@@ -12,6 +12,7 @@ import {
   ChevronsUp,
   ChevronsDown,
   Maximize2,
+  Save as SaveIcon,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -28,6 +29,12 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover';
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from '@/components/ui/dropdown-menu';
 import { FONT_GROUPS } from '@/lib/fonts';
 
 const FONT_GROUPS_LIST = FONT_GROUPS;
@@ -43,6 +50,7 @@ export default function BlockProperties({
   onTextCommand,
   onLayer,
   onFit,
+  onSaveAsPreset,
 }) {
   if (!block) return null;
   const isText = block.type === 'text';
@@ -135,6 +143,45 @@ export default function BlockProperties({
             <p className="text-[10px] text-ink-mute pt-1">Click a text block to edit it (or double-click). Select text then apply Bold / Italic.</p>
           </div>
         </>
+      )}
+
+      {isText && onSaveAsPreset && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              data-testid="save-as-preset-trigger"
+              className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-white border border-rule hover:bg-desk text-ink rounded-sm text-sm font-medium transition-colors"
+              title="Make this block's font, size, alignment and color the default for one of the Text presets"
+            >
+              <SaveIcon className="w-4 h-4" />
+              Save as default…
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="bg-paper border-rule rounded-sm w-44 p-1">
+            <DropdownMenuItem
+              data-testid="save-as-preset-title"
+              onClick={() => onSaveAsPreset('title')}
+              className="rounded-sm cursor-pointer"
+            >
+              Title preset
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              data-testid="save-as-preset-subtitle"
+              onClick={() => onSaveAsPreset('subtitle')}
+              className="rounded-sm cursor-pointer"
+            >
+              Subtitle preset
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              data-testid="save-as-preset-body"
+              onClick={() => onSaveAsPreset('body')}
+              className="rounded-sm cursor-pointer"
+            >
+              Page text preset
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       )}
 
       {isText && onFit && (

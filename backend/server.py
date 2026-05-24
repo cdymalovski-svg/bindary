@@ -112,6 +112,21 @@ class Page(BaseModel):
     full_bleed: bool = False  # when true, ignore the 1cm white margin (edge-to-edge)
 
 
+class TextPreset(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    font_family: Optional[str] = None
+    font_size: Optional[int] = None
+    text_align: Optional[str] = None
+    color: Optional[str] = None
+
+
+class TextPresets(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    title: Optional[TextPreset] = None
+    subtitle: Optional[TextPreset] = None
+    body: Optional[TextPreset] = None
+
+
 class Book(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -121,6 +136,7 @@ class Book(BaseModel):
     pages: List[Page] = []
     page_number_start: int = 1  # 1-based; pages before this show no number; back cover always hidden
     is_chapter_book: bool = False  # enables the Add Chapter action and auto-numbered chapter headings
+    text_presets: Optional[TextPresets] = None  # per-book overrides for Title/Subtitle/Page-text defaults
     created_at: str = Field(default_factory=_now_iso)
     updated_at: str = Field(default_factory=_now_iso)
 
@@ -138,6 +154,7 @@ class BookUpdate(BaseModel):
     page_size: Optional[str] = None
     page_number_start: Optional[int] = None
     is_chapter_book: Optional[bool] = None
+    text_presets: Optional[TextPresets] = None
     pages: Optional[List[Page]] = None
 
 
@@ -290,6 +307,7 @@ async def duplicate_book(book_id: str):
         title=f"{src.get('title', 'Untitled Book')} (copy)",
         author=src.get("author", ""),
         page_size=src.get("page_size", "a4"),
+        text_presets=src.get("text_presets"),
         pages=new_pages,
     )
     await db.books.insert_one(copy.model_dump())
