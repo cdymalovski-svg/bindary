@@ -7,10 +7,10 @@ import {
   AlignCenter,
   AlignRight,
   Trash2,
-  Type,
-  Palette,
   ChevronUp,
   ChevronDown,
+  ChevronsUp,
+  ChevronsDown,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -44,7 +44,7 @@ export default function BlockProperties({
   onChange,
   onDelete,
   onTextCommand,
-  onZ,
+  onLayer,
 }) {
   if (!block) return null;
   const isText = block.type === 'text';
@@ -55,16 +55,30 @@ export default function BlockProperties({
     >
       <div className="flex items-center justify-between">
         <p className="label-caps">{isText ? 'Text Block' : 'Image Block'}</p>
-        <div className="flex items-center gap-1">
-          <button data-testid="block-bring-forward" onClick={() => onZ(1)} className="p-1 text-ink-mute hover:text-ink" title="Bring forward">
-            <ChevronUp className="w-4 h-4" />
-          </button>
-          <button data-testid="block-send-backward" onClick={() => onZ(-1)} className="p-1 text-ink-mute hover:text-ink" title="Send backward">
+        <button data-testid="delete-block-button" onClick={onDelete} className="p-1 text-ink-mute hover:text-terracotta" title="Delete">
+          <Trash2 className="w-4 h-4" />
+        </button>
+      </div>
+
+      {/* Layer controls */}
+      <div className="space-y-1">
+        <p className="label-caps">Layer</p>
+        <div className="flex items-center gap-1 bg-white border border-rule rounded-sm p-1">
+          <FmtBtn testId="layer-to-back" onClick={() => onLayer('back')} title="Send to back">
+            <ChevronsDown className="w-4 h-4" />
+          </FmtBtn>
+          <FmtBtn testId="layer-backward" onClick={() => onLayer('backward')} title="Send backward">
             <ChevronDown className="w-4 h-4" />
-          </button>
-          <button data-testid="delete-block-button" onClick={onDelete} className="p-1 text-ink-mute hover:text-terracotta" title="Delete">
-            <Trash2 className="w-4 h-4" />
-          </button>
+          </FmtBtn>
+          <div className="flex-1 text-center text-[10px] font-mono text-ink-mute" data-testid="layer-current-z">
+            z {typeof block.z_index === 'number' ? block.z_index : 1}
+          </div>
+          <FmtBtn testId="layer-forward" onClick={() => onLayer('forward')} title="Bring forward">
+            <ChevronUp className="w-4 h-4" />
+          </FmtBtn>
+          <FmtBtn testId="layer-to-front" onClick={() => onLayer('front')} title="Bring to front">
+            <ChevronsUp className="w-4 h-4" />
+          </FmtBtn>
         </div>
       </div>
 
@@ -134,13 +148,14 @@ export default function BlockProperties({
   );
 }
 
-function FmtBtn({ children, onClick, active, testId }) {
+function FmtBtn({ children, onClick, active, testId, title }) {
   return (
     <button
       type="button"
       onMouseDown={(e) => e.preventDefault()}
       onClick={onClick}
       data-testid={testId}
+      title={title}
       className={`w-7 h-7 flex items-center justify-center rounded-sm transition-colors ${
         active ? 'bg-terracotta text-paper' : 'text-ink hover:bg-desk'
       }`}

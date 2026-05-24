@@ -4,9 +4,13 @@ import {
   Popover, PopoverContent, PopoverTrigger,
 } from '@/components/ui/popover';
 import { Switch } from '@/components/ui/switch';
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select';
 
 const PAGE_COLORS = [
-  '#F9F6F0', // paper (default)
+  '#FFF8DC', // light yellow (default)
+  '#F9F6F0', // paper
   '#FFFFFF', // pure white
   '#FAF3E7', // ivory
   '#F2E8D5', // parchment
@@ -20,9 +24,10 @@ const PAGE_COLORS = [
   '#3B4A6B', // dusk blue
   '#7A5C00', // mustard
   '#5C2A6A', // plum
-  '#E0CBA8', // wheat
   '#CFE3DC', // sage
 ];
+
+const PAGE_NUMBER_SIZES = [10, 12, 14, 16, 18, 20, 24, 28, 32];
 
 export default function PagePanel({ page, pageIndex, onChange }) {
   if (!page) {
@@ -38,7 +43,7 @@ export default function PagePanel({ page, pageIndex, onChange }) {
         <p className="label-caps">Background Color</p>
         <div className="grid grid-cols-4 gap-2" data-testid="page-color-swatches">
           {PAGE_COLORS.map((c) => {
-            const active = (page.background_color || '#F9F6F0').toLowerCase() === c.toLowerCase();
+            const active = (page.background_color || '#FFF8DC').toLowerCase() === c.toLowerCase();
             return (
               <button
                 key={c}
@@ -52,7 +57,7 @@ export default function PagePanel({ page, pageIndex, onChange }) {
             );
           })}
         </div>
-        <CustomColorRow value={page.background_color || '#F9F6F0'} onChange={(c) => onChange({ background_color: c })} />
+        <CustomColorRow value={page.background_color || '#FFF8DC'} onChange={(c) => onChange({ background_color: c })} />
       </div>
 
       <div className="pt-2 border-t border-rule space-y-3">
@@ -65,32 +70,50 @@ export default function PagePanel({ page, pageIndex, onChange }) {
           />
         </div>
         {page.show_page_number && (
-          <div className="space-y-1">
-            <p className="label-caps">Alignment</p>
-            <div className="flex items-center gap-1 bg-white border border-rule rounded-sm p-1">
-              {[
-                { key: 'left', Icon: AlignLeft },
-                { key: 'center', Icon: AlignCenter },
-                { key: 'right', Icon: AlignRight },
-              ].map(({ key, Icon }) => {
-                const active = (page.page_number_align || 'right') === key;
-                return (
-                  <button
-                    key={key}
-                    type="button"
-                    onClick={() => onChange({ page_number_align: key })}
-                    data-testid={`page-number-align-${key}`}
-                    className={`flex-1 h-7 flex items-center justify-center rounded-sm transition-colors ${
-                      active ? 'bg-terracotta text-paper' : 'text-ink hover:bg-desk'
-                    }`}
-                    title={`Align ${key}`}
-                  >
-                    <Icon className="w-4 h-4" />
-                  </button>
-                );
-              })}
+          <>
+            <div className="space-y-1">
+              <p className="label-caps">Alignment</p>
+              <div className="flex items-center gap-1 bg-white border border-rule rounded-sm p-1">
+                {[
+                  { key: 'left', Icon: AlignLeft },
+                  { key: 'center', Icon: AlignCenter },
+                  { key: 'right', Icon: AlignRight },
+                ].map(({ key, Icon }) => {
+                  const active = (page.page_number_align || 'right') === key;
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => onChange({ page_number_align: key })}
+                      data-testid={`page-number-align-${key}`}
+                      className={`flex-1 h-7 flex items-center justify-center rounded-sm transition-colors ${
+                        active ? 'bg-terracotta text-paper' : 'text-ink hover:bg-desk'
+                      }`}
+                      title={`Align ${key}`}
+                    >
+                      <Icon className="w-4 h-4" />
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-          </div>
+            <div className="space-y-1">
+              <p className="label-caps">Size</p>
+              <Select
+                value={String(page.page_number_size || 14)}
+                onValueChange={(v) => onChange({ page_number_size: parseInt(v, 10) })}
+              >
+                <SelectTrigger className="bg-white border-rule rounded-sm h-8 text-sm" data-testid="page-number-size-trigger">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {PAGE_NUMBER_SIZES.map((s) => (
+                    <SelectItem key={s} value={String(s)} data-testid={`page-number-size-${s}`}>{s}px</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </>
         )}
         <p className="text-[10px] text-ink-mute leading-relaxed">
           The page number sits inside the colored area. A 1cm white margin frames the page for safe printing.

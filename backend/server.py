@@ -102,9 +102,10 @@ class Page(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     blocks: List[Block] = []
-    background_color: Optional[str] = "#F9F6F0"
+    background_color: Optional[str] = "#FFF8DC"
     show_page_number: bool = True
     page_number_align: Optional[str] = "right"  # 'left' | 'center' | 'right'
+    page_number_size: Optional[int] = 14
 
 
 class Book(BaseModel):

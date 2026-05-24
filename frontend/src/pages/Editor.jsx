@@ -193,9 +193,17 @@ export default function Editor() {
     setSelectedBlockId(block.id);
   };
 
-  const changeZ = (delta) => {
-    if (!selectedBlock) return;
-    updateBlock(selectedBlock.id, { z_index: Math.max(1, (selectedBlock.z_index || 1) + delta) });
+  const changeLayer = (action) => {
+    if (!selectedBlock || !activePage) return;
+    const all = activePage.blocks;
+    const zs = all.map((b) => (typeof b.z_index === 'number' ? b.z_index : 1));
+    const cur = typeof selectedBlock.z_index === 'number' ? selectedBlock.z_index : 1;
+    let next = cur;
+    if (action === 'forward') next = cur + 1;
+    else if (action === 'backward') next = cur - 1;
+    else if (action === 'front') next = Math.max(...zs) + 1;
+    else if (action === 'back') next = Math.min(...zs) - 1;
+    updateBlock(selectedBlock.id, { z_index: next });
   };
 
   // --- Page actions ---
@@ -541,7 +549,7 @@ export default function Editor() {
                   onChange={(patch) => updateBlock(selectedBlock.id, patch)}
                   onDelete={() => deleteBlock(selectedBlock.id)}
                   onTextCommand={onTextCommand}
-                  onZ={changeZ}
+                  onLayer={changeLayer}
                 />
               ) : (
                 <div className="p-6 text-ink-mute text-sm font-serif italic">Select a block to edit its properties.</div>
@@ -669,6 +677,7 @@ function PageCanvas({
   const innerH = pageSize.height - PAGE_MARGIN_PX * 2;
   const showFocusRing = viewMode === 'spread' && isFocused && !forExport;
   const pageNumAlign = page.page_number_align || 'right';
+  const pageNumSize = page.page_number_size || 14;
   const pageNumColor = isDarkHex(bg) ? '#E8E2D4' : '#3A3833';
 
   return (
@@ -749,7 +758,7 @@ function PageCanvas({
                     textAlign: 'center',
                   }
                 : {}),
-              fontSize: 14,
+              fontSize: pageNumSize,
               letterSpacing: '0.05em',
               color: pageNumColor,
             }}

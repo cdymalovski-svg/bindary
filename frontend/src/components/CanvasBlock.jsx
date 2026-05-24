@@ -74,7 +74,7 @@ export default function CanvasBlock({
       }}
       enableResizing={selected && !editingThisText}
       className={`block-wrapper ${selected ? 'block-selected' : 'block-hover'}`}
-      style={{ zIndex: block.z_index || 1 }}
+      style={{ zIndex: typeof block.z_index === 'number' ? block.z_index : 1 }}
       resizeHandleStyles={selected && !editingThisText ? handleStyles : {}}
     >
       <div
