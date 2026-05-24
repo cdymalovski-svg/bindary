@@ -31,6 +31,7 @@ import CanvasBlock from '@/components/CanvasBlock';
 import BlockProperties from '@/components/BlockProperties';
 import AssetsPanel, { ASSET_DRAG_MIME } from '@/components/AssetsPanel';
 import PagePanel from '@/components/PagePanel';
+import LayersList from '@/components/LayersList';
 
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 
@@ -235,6 +236,41 @@ export default function Editor() {
     else if (action === 'front') next = Math.max(...zs) + 1;
     else if (action === 'back') next = Math.min(...zs) - 1;
     updateBlock(selectedBlock.id, { z_index: next });
+  };
+
+  // Resize the selected image block to fill the safe (or full-bleed) area of the page,
+  // preserving the image's natural aspect ratio. The block is centered.
+  const fitImageBlockToPage = async () => {
+    if (!selectedBlock || selectedBlock.type !== 'image' || !selectedBlock.image_url) return;
+    const url = selectedBlock.image_url.startsWith('http')
+      ? selectedBlock.image_url
+      : `${process.env.REACT_APP_BACKEND_URL}${selectedBlock.image_url}`;
+    const { w, h } = await loadImageSize(url);
+    const margin = activePage?.full_bleed ? 0 : PAGE_MARGIN_PX;
+    const maxW = pageSize.width - margin * 2;
+    const maxH = pageSize.height - margin * 2;
+    const { width, height } = fitWithin(w || maxW, h || maxH, maxW, maxH);
+    const x = (pageSize.width - width) / 2;
+    const y = (pageSize.height - height) / 2;
+    updateBlock(selectedBlock.id, { x, y, width, height });
+    toast.success('Image fit to page');
+  };
+
+  // Resize the selected text block height to hug its current content.
+  const frameTextBlockToContent = () => {
+    if (!selectedBlock || selectedBlock.type !== 'text') return;
+    const el = document.querySelector(`[data-testid="text-block-content-${selectedBlock.id}"]`);
+    if (!el) return;
+    // scrollHeight gives the content height. Include the px-2 py-1 (~8px top+bot) inner padding.
+    const newHeight = Math.max(32, el.scrollHeight + 8);
+    updateBlock(selectedBlock.id, { height: newHeight });
+    toast.success('Frame fit to text');
+  };
+
+  const fitSelectedBlock = () => {
+    if (!selectedBlock) return;
+    if (selectedBlock.type === 'image') return fitImageBlockToPage();
+    if (selectedBlock.type === 'text') return frameTextBlockToContent();
   };
 
   // --- Page actions ---
@@ -556,9 +592,8 @@ export default function Editor() {
               </TabsTrigger>
               <TabsTrigger
                 value="block"
-                disabled={!selectedBlock}
                 data-testid="right-tab-block"
-                className="rounded-sm data-[state=active]:bg-ink data-[state=active]:text-paper text-ink-mute text-[10px] tracking-[0.18em] uppercase disabled:opacity-40"
+                className="rounded-sm data-[state=active]:bg-ink data-[state=active]:text-paper text-ink-mute text-[10px] tracking-[0.18em] uppercase"
               >
                 <SlidersHorizontal className="w-3.5 h-3.5 mr-1" /> Block
               </TabsTrigger>
@@ -574,6 +609,11 @@ export default function Editor() {
               />
             </TabsContent>
             <TabsContent value="block" className="flex-1 m-0 overflow-y-auto sidebar-scroll bg-paper text-ink">
+              <LayersList
+                page={activePage}
+                selectedBlockId={selectedBlockId}
+                onSelect={(id) => setSelectedBlockId(id)}
+              />
               {selectedBlock ? (
                 <BlockProperties
                   block={selectedBlock}
@@ -581,9 +621,10 @@ export default function Editor() {
                   onDelete={() => deleteBlock(selectedBlock.id)}
                   onTextCommand={onTextCommand}
                   onLayer={changeLayer}
+                  onFit={fitSelectedBlock}
                 />
               ) : (
-                <div className="p-6 text-ink-mute text-sm font-serif italic">Select a block to edit its properties.</div>
+                <div className="p-6 text-ink-mute text-sm font-serif italic">Select a block above to edit its properties.</div>
               )}
             </TabsContent>
           </Tabs>
@@ -704,8 +745,10 @@ function PageCanvas({
   };
 
   const bg = page.background_color || '#F9F6F0';
-  const innerW = pageSize.width - PAGE_MARGIN_PX * 2;
-  const innerH = pageSize.height - PAGE_MARGIN_PX * 2;
+  const fullBleed = !!page.full_bleed;
+  const margin = fullBleed ? 0 : PAGE_MARGIN_PX;
+  const innerW = pageSize.width - margin * 2;
+  const innerH = pageSize.height - margin * 2;
   const showFocusRing = viewMode === 'spread' && isFocused && !forExport;
   const pageNumAlign = page.page_number_align || 'right';
   const pageNumSize = page.page_number_size || 14;
@@ -745,14 +788,14 @@ function PageCanvas({
         }}
         data-testid={`page-canvas-${pageIndex}`}
       >
-        {/* Colored inner area inset by 1cm white margin */}
+        {/* Colored inner area inset by margin (0 when full_bleed) */}
         <div
           aria-hidden
           data-testid={`page-color-fill-${pageIndex}`}
           style={{
             position: 'absolute',
-            top: PAGE_MARGIN_PX,
-            left: PAGE_MARGIN_PX,
+            top: margin,
+            left: margin,
             width: innerW,
             height: innerH,
             background: bg,
@@ -779,9 +822,9 @@ function PageCanvas({
             className="absolute font-serif"
             style={{
               // Place inside the colored area, 16px above its bottom edge.
-              bottom: PAGE_MARGIN_PX + 16,
-              left: pageNumAlign === 'left' ? PAGE_MARGIN_PX + 16 : undefined,
-              right: pageNumAlign === 'right' ? PAGE_MARGIN_PX + 16 : undefined,
+              bottom: margin + 16,
+              left: pageNumAlign === 'left' ? margin + 16 : undefined,
+              right: pageNumAlign === 'right' ? margin + 16 : undefined,
               ...(pageNumAlign === 'center'
                 ? {
                     left: 0,

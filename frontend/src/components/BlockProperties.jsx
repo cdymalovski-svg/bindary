@@ -11,6 +11,7 @@ import {
   ChevronDown,
   ChevronsUp,
   ChevronsDown,
+  Maximize2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -45,6 +46,7 @@ export default function BlockProperties({
   onDelete,
   onTextCommand,
   onLayer,
+  onFit,
 }) {
   if (!block) return null;
   const isText = block.type === 'text';
@@ -134,8 +136,35 @@ export default function BlockProperties({
         </>
       )}
 
+      {isText && onFit && (
+        <button
+          type="button"
+          onClick={onFit}
+          data-testid="fit-to-content-button"
+          className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-terracotta hover:bg-terracotta-dark text-paper rounded-sm text-sm font-medium transition-colors"
+          title="Resize the frame to hug the current text"
+        >
+          <Maximize2 className="w-4 h-4" />
+          Frame from text
+        </button>
+      )}
+
       {!isText && (
-        <p className="text-sm text-ink-soft">Drag corners to resize. Drag the block to reposition.</p>
+        <div className="space-y-2">
+          <button
+            type="button"
+            onClick={onFit}
+            data-testid="fit-to-page-button"
+            className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-terracotta hover:bg-terracotta-dark text-paper rounded-sm text-sm font-medium transition-colors"
+            title="Resize to fill the colored area of the page (preserves aspect ratio)"
+          >
+            <Maximize2 className="w-4 h-4" />
+            Fit to page
+          </button>
+          <p className="text-[10px] text-ink-mute leading-relaxed">
+            Drag corners to resize. Aspect ratio is locked for illustrations.
+          </p>
+        </div>
       )}
 
       <div className="pt-2 border-t border-rule grid grid-cols-2 gap-2 text-xs text-ink-mute">

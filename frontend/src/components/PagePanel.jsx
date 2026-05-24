@@ -60,6 +60,20 @@ export default function PagePanel({ page, pageIndex, onChange }) {
         <CustomColorRow value={page.background_color || '#FFF8DC'} onChange={(c) => onChange({ background_color: c })} />
       </div>
 
+      <div className="pt-2 border-t border-rule space-y-2">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="label-caps">Full bleed</p>
+            <p className="text-[10px] text-ink-mute mt-0.5">Edge-to-edge color (no 1cm margin)</p>
+          </div>
+          <Switch
+            checked={!!page.full_bleed}
+            onCheckedChange={(v) => onChange({ full_bleed: v })}
+            data-testid="full-bleed-switch"
+          />
+        </div>
+      </div>
+
       <div className="pt-2 border-t border-rule space-y-3">
         <div className="flex items-center justify-between">
           <p className="label-caps">Page Number</p>
