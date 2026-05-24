@@ -14,6 +14,9 @@ import {
   EyeOff,
   Loader2,
   SlidersHorizontal,
+  BookOpen,
+  Square,
+  Palette,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -22,11 +25,12 @@ import {
 } from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { getBook, updateBook, uploadImage } from '@/lib/api';
-import { PAGE_SIZES, getPageSize } from '@/lib/pageSizes';
+import { PAGE_SIZES, getPageSize, PAGE_MARGIN_PX } from '@/lib/pageSizes';
 import { exportBookToPdf } from '@/lib/pdfExport';
 import CanvasBlock from '@/components/CanvasBlock';
 import BlockProperties from '@/components/BlockProperties';
 import AssetsPanel, { ASSET_DRAG_MIME } from '@/components/AssetsPanel';
+import PagePanel from '@/components/PagePanel';
 
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 
@@ -40,7 +44,8 @@ export default function Editor() {
   const [activePageIndex, setActivePageIndex] = useState(0);
   const [selectedBlockId, setSelectedBlockId] = useState(null);
   const [editingTextId, setEditingTextId] = useState(null);
-  const [rightTab, setRightTab] = useState('assets'); // 'assets' | 'block'
+  const [rightTab, setRightTab] = useState('assets'); // 'assets' | 'page' | 'block'
+  const [viewMode, setViewMode] = useState('single'); // 'single' | 'spread'
   const fileInputRef = useRef(null);
   const exportContainerRef = useRef(null);
 
@@ -66,7 +71,7 @@ export default function Editor() {
   // Auto-switch right tab when selection changes.
   useEffect(() => {
     if (selectedBlock) setRightTab('block');
-    else setRightTab('assets');
+    else setRightTab((cur) => (cur === 'block' ? 'page' : cur));
   }, [selectedBlockId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // --- Save ---
@@ -94,20 +99,26 @@ export default function Editor() {
     setBook((prev) => ({ ...prev, pages: updater(prev.pages) }));
   };
 
-  const updateBlock = (blockId, patch) => {
+  const updateBlock = (blockId, patch, pageIdx = activePageIndex) => {
     updatePages((pages) =>
       pages.map((p, i) =>
-        i === activePageIndex
+        i === pageIdx
           ? { ...p, blocks: p.blocks.map((b) => (b.id === blockId ? { ...b, ...patch } : b)) }
           : p
       )
     );
   };
 
-  const deleteBlock = (blockId) => {
+  const updatePage = (patch, pageIdx = activePageIndex) => {
+    updatePages((pages) =>
+      pages.map((p, i) => (i === pageIdx ? { ...p, ...patch } : p))
+    );
+  };
+
+  const deleteBlock = (blockId, pageIdx = activePageIndex) => {
     updatePages((pages) =>
       pages.map((p, i) =>
-        i === activePageIndex ? { ...p, blocks: p.blocks.filter((b) => b.id !== blockId) } : p
+        i === pageIdx ? { ...p, blocks: p.blocks.filter((b) => b.id !== blockId) } : p
       )
     );
     setSelectedBlockId(null);
@@ -150,7 +161,7 @@ export default function Editor() {
 
   // Add an image block from an asset (dragged in or just uploaded).
   // If x/y not provided, places near top-left and centers.
-  const addImageBlockFromAsset = (asset, position = null) => {
+  const addImageBlockFromAsset = (asset, position = null, pageIdx = activePageIndex) => {
     const maxW = Math.min(500, pageSize.width - 80);
     const width = maxW;
     const height = maxW * 0.66;
@@ -175,8 +186,9 @@ export default function Editor() {
       image_path: asset.path,
     };
     updatePages((pages) =>
-      pages.map((p, i) => (i === activePageIndex ? { ...p, blocks: [...p.blocks, block] } : p))
+      pages.map((p, i) => (i === pageIdx ? { ...p, blocks: [...p.blocks, block] } : p))
     );
+    setActivePageIndex(pageIdx);
     setSelectedBlockId(block.id);
   };
 
@@ -276,6 +288,51 @@ export default function Editor() {
     );
   }
 
+  // In spread view, show the active page and its sibling (left = even index, right = odd index).
+  // Page 0 (cover) shows alone on the right side.
+  const renderSpread = () => {
+    const total = book.pages.length;
+    let leftIdx;
+    let rightIdx;
+    if (activePageIndex === 0) {
+      leftIdx = null;
+      rightIdx = 0;
+    } else if (activePageIndex % 2 === 1) {
+      leftIdx = activePageIndex;
+      rightIdx = activePageIndex + 1 < total ? activePageIndex + 1 : null;
+    } else {
+      leftIdx = activePageIndex - 1;
+      rightIdx = activePageIndex;
+    }
+    const renderOne = (idx) => {
+      if (idx === null) return <SpreadPlaceholder pageSize={pageSize} />;
+      const p = book.pages[idx];
+      return (
+        <PageCanvas
+          page={p}
+          pageIndex={idx}
+          pageSize={pageSize}
+          viewMode="spread"
+          isFocused={idx === activePageIndex}
+          selectedBlockId={selectedBlockId}
+          editingTextId={editingTextId}
+          onSelectBlock={(blockId) => { setActivePageIndex(idx); setSelectedBlockId(blockId); }}
+          onChangeBlock={(blockId, patch) => updateBlock(blockId, patch, idx)}
+          onStartTextEdit={(blockId) => { setActivePageIndex(idx); setSelectedBlockId(blockId); setEditingTextId(blockId); }}
+          onStopTextEdit={() => setEditingTextId(null)}
+          onAssetDrop={(asset, pos) => addImageBlockFromAsset(asset, pos, idx)}
+          onFocusPage={() => setActivePageIndex(idx)}
+        />
+      );
+    };
+    return (
+      <>
+        {renderOne(leftIdx)}
+        {renderOne(rightIdx)}
+      </>
+    );
+  };
+
   return (
     <div className="h-screen w-screen flex flex-col bg-desk overflow-hidden">
       {/* Top bar */}
@@ -313,6 +370,28 @@ export default function Editor() {
             ))}
           </SelectContent>
         </Select>
+
+        <div className="w-px h-6 bg-rule" />
+        <div className="flex items-center bg-white border border-rule rounded-sm h-8 p-0.5" data-testid="view-mode-toggle">
+          <button
+            type="button"
+            onClick={() => setViewMode('single')}
+            data-testid="view-mode-single"
+            className={`h-7 px-2.5 flex items-center gap-1 rounded-sm text-xs tracking-wide transition-colors ${viewMode === 'single' ? 'bg-ink text-paper' : 'text-ink-soft hover:bg-desk'}`}
+            title="Single page"
+          >
+            <Square className="w-3.5 h-3.5" /> Single
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewMode('spread')}
+            data-testid="view-mode-spread"
+            className={`h-7 px-2.5 flex items-center gap-1 rounded-sm text-xs tracking-wide transition-colors ${viewMode === 'spread' ? 'bg-ink text-paper' : 'text-ink-soft hover:bg-desk'}`}
+            title="Two-page spread"
+          >
+            <BookOpen className="w-3.5 h-3.5" /> Spread
+          </button>
+        </div>
 
         <div className="flex-1" />
 
@@ -395,45 +474,63 @@ export default function Editor() {
 
         {/* Desk */}
         <main className="flex-1 overflow-auto desk-scroll relative" onMouseDown={() => { setSelectedBlockId(null); setEditingTextId(null); }}>
-          <div className="min-h-full flex items-center justify-center p-12">
-            <PageCanvas
-              page={activePage}
-              pageIndex={activePageIndex}
-              pageSize={pageSize}
-              selectedBlockId={selectedBlockId}
-              editingTextId={editingTextId}
-              onSelectBlock={(blockId) => setSelectedBlockId(blockId)}
-              onChangeBlock={updateBlock}
-              onStartTextEdit={(blockId) => { setSelectedBlockId(blockId); setEditingTextId(blockId); }}
-              onStopTextEdit={() => setEditingTextId(null)}
-              onAssetDrop={(asset, pos) => addImageBlockFromAsset(asset, pos)}
-            />
+          <div className="min-h-full flex items-center justify-center p-12 gap-6">
+            {viewMode === 'spread' ? (
+              renderSpread()
+            ) : (
+              <PageCanvas
+                page={activePage}
+                pageIndex={activePageIndex}
+                pageSize={pageSize}
+                viewMode="single"
+                selectedBlockId={selectedBlockId}
+                editingTextId={editingTextId}
+                onSelectBlock={(blockId) => setSelectedBlockId(blockId)}
+                onChangeBlock={updateBlock}
+                onStartTextEdit={(blockId) => { setSelectedBlockId(blockId); setEditingTextId(blockId); }}
+                onStopTextEdit={() => setEditingTextId(null)}
+                onAssetDrop={(asset, pos) => addImageBlockFromAsset(asset, pos)}
+                onFocusPage={() => setActivePageIndex(activePageIndex)}
+              />
+            )}
           </div>
         </main>
 
-        {/* Right sidebar: Assets / Block tabs */}
+        {/* Right sidebar: Assets / Page / Block tabs */}
         <aside className="w-72 bg-ink text-paper border-l border-rule-dark flex flex-col" data-testid="right-sidebar">
           <Tabs value={rightTab} onValueChange={setRightTab} className="flex flex-col h-full">
-            <TabsList className="w-full grid grid-cols-2 rounded-none bg-rule-dark/40 border-b border-rule-dark h-10 p-1">
+            <TabsList className="w-full grid grid-cols-3 rounded-none bg-rule-dark/40 border-b border-rule-dark h-10 p-1">
               <TabsTrigger
                 value="assets"
                 data-testid="right-tab-assets"
-                className="rounded-sm data-[state=active]:bg-ink data-[state=active]:text-paper text-ink-mute text-xs tracking-[0.18em] uppercase"
+                className="rounded-sm data-[state=active]:bg-ink data-[state=active]:text-paper text-ink-mute text-[10px] tracking-[0.18em] uppercase"
               >
-                <ImageIcon className="w-3.5 h-3.5 mr-1.5" /> Assets
+                <ImageIcon className="w-3.5 h-3.5 mr-1" /> Assets
+              </TabsTrigger>
+              <TabsTrigger
+                value="page"
+                data-testid="right-tab-page"
+                className="rounded-sm data-[state=active]:bg-ink data-[state=active]:text-paper text-ink-mute text-[10px] tracking-[0.18em] uppercase"
+              >
+                <Palette className="w-3.5 h-3.5 mr-1" /> Page
               </TabsTrigger>
               <TabsTrigger
                 value="block"
                 disabled={!selectedBlock}
                 data-testid="right-tab-block"
-                className="rounded-sm data-[state=active]:bg-ink data-[state=active]:text-paper text-ink-mute text-xs tracking-[0.18em] uppercase disabled:opacity-40"
+                className="rounded-sm data-[state=active]:bg-ink data-[state=active]:text-paper text-ink-mute text-[10px] tracking-[0.18em] uppercase disabled:opacity-40"
               >
-                <SlidersHorizontal className="w-3.5 h-3.5 mr-1.5" /> Block
+                <SlidersHorizontal className="w-3.5 h-3.5 mr-1" /> Block
               </TabsTrigger>
             </TabsList>
             <TabsContent value="assets" className="flex-1 m-0 overflow-hidden">
-              <AssetsPanel
-                onAssetUploaded={() => { /* refresh handled inside */ }}
+              <AssetsPanel onAssetUploaded={() => { /* refresh inside */ }} />
+            </TabsContent>
+            <TabsContent value="page" className="flex-1 m-0 overflow-y-auto sidebar-scroll bg-paper text-ink">
+              <PagePanel
+                page={activePage}
+                pageIndex={activePageIndex}
+                onChange={(patch) => updatePage(patch)}
               />
             </TabsContent>
             <TabsContent value="block" className="flex-1 m-0 overflow-y-auto sidebar-scroll bg-paper text-ink">
@@ -497,6 +594,9 @@ function PageCanvas({
   onStartTextEdit,
   onStopTextEdit,
   onAssetDrop,
+  onFocusPage,
+  viewMode = 'single',
+  isFocused = true,
   forExport = false,
 }) {
   // Scale to fit viewport for editing mode (export uses full size)
@@ -508,15 +608,22 @@ function PageCanvas({
     if (forExport) { setScale(1); return; }
     const compute = () => {
       const padding = 96; // px padding around
-      const availW = window.innerWidth - 224 /* left sidebar */ - 288 /* right sidebar */ - padding;
+      const sidebars = 224 + 288; // left + right
+      const availW = window.innerWidth - sidebars - padding;
       const availH = window.innerHeight - 56 /* topbar */ - padding;
-      const s = Math.min(1, availW / pageSize.width, availH / pageSize.height);
-      setScale(Math.max(0.25, s));
+      const widthMultiplier = viewMode === 'spread' ? 2 : 1;
+      const gap = viewMode === 'spread' ? 24 : 0;
+      const s = Math.min(
+        1,
+        (availW - gap) / (pageSize.width * widthMultiplier),
+        availH / pageSize.height
+      );
+      setScale(Math.max(0.18, s));
     };
     compute();
     window.addEventListener('resize', compute);
     return () => window.removeEventListener('resize', compute);
-  }, [pageSize.width, pageSize.height, forExport]);
+  }, [pageSize.width, pageSize.height, forExport, viewMode]);
 
   if (!page) return null;
 
@@ -538,12 +645,16 @@ function PageCanvas({
     let asset;
     try { asset = JSON.parse(raw); } catch { return; }
     if (!asset?.url) return;
-    // Position relative to the scaled outer container, then un-scale.
     const rect = e.currentTarget.getBoundingClientRect();
     const x = (e.clientX - rect.left) / scale;
     const y = (e.clientY - rect.top) / scale;
     onAssetDrop(asset, { x, y });
   };
+
+  const bg = page.background_color || '#F9F6F0';
+  const innerW = pageSize.width - PAGE_MARGIN_PX * 2;
+  const innerH = pageSize.height - PAGE_MARGIN_PX * 2;
+  const showFocusRing = viewMode === 'spread' && isFocused && !forExport;
 
   return (
     <div
@@ -552,7 +663,7 @@ function PageCanvas({
         height: pageSize.height * scale,
         position: 'relative',
       }}
-      onMouseDown={(e) => e.stopPropagation()}
+      onMouseDown={(e) => { e.stopPropagation(); onFocusPage?.(); }}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
@@ -560,6 +671,9 @@ function PageCanvas({
     >
       {dropHover && (
         <div className="absolute inset-0 z-50 border-2 border-dashed border-terracotta bg-terracotta/5 pointer-events-none" />
+      )}
+      {showFocusRing && (
+        <div className="absolute -inset-1 z-40 ring-2 ring-terracotta/70 rounded-sm pointer-events-none" />
       )}
       <div
         ref={wrapperRef}
@@ -572,10 +686,24 @@ function PageCanvas({
           position: 'absolute',
           top: 0,
           left: 0,
-          background: page.background_color || '#F9F6F0',
+          background: '#FFFFFF',
         }}
         data-testid={`page-canvas-${pageIndex}`}
       >
+        {/* Colored inner area inset by 1cm white margin */}
+        <div
+          aria-hidden
+          data-testid={`page-color-fill-${pageIndex}`}
+          style={{
+            position: 'absolute',
+            top: PAGE_MARGIN_PX,
+            left: PAGE_MARGIN_PX,
+            width: innerW,
+            height: innerH,
+            background: bg,
+            pointerEvents: 'none',
+          }}
+        />
         {page.blocks.map((b) => (
           <CanvasBlock
             key={b.id}
@@ -593,14 +721,34 @@ function PageCanvas({
         ))}
         {page.show_page_number && (
           <div
-            className="absolute bottom-6 right-8 font-serif text-ink-soft"
-            style={{ fontSize: 14, letterSpacing: '0.05em' }}
+            className="absolute font-serif"
+            style={{
+              bottom: PAGE_MARGIN_PX - 18,
+              right: PAGE_MARGIN_PX + 8,
+              fontSize: 14,
+              letterSpacing: '0.05em',
+              color: '#4A4843',
+            }}
             data-testid={`page-number-${pageIndex}`}
           >
             {pageIndex + 1}
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function SpreadPlaceholder({ pageSize }) {
+  // Empty slot for cover/last-page spread positioning.
+  const aspect = pageSize.height / pageSize.width;
+  return (
+    <div
+      style={{ width: 200, height: 200 * aspect, opacity: 0.4 }}
+      className="border border-dashed border-rule rounded-sm flex items-center justify-center text-ink-mute font-serif italic text-sm"
+      data-testid="spread-placeholder"
+    >
+      —
     </div>
   );
 }
@@ -620,9 +768,20 @@ function PageThumbnail({ page, index, active, pageSize, onClick, onDuplicate, on
           width: thumbW,
           height: thumbH,
           position: 'relative',
-          background: page.background_color || '#F9F6F0',
+          background: '#FFFFFF',
         }}
       >
+        <div
+          aria-hidden
+          style={{
+            position: 'absolute',
+            top: PAGE_MARGIN_PX * scale,
+            left: PAGE_MARGIN_PX * scale,
+            width: (pageSize.width - PAGE_MARGIN_PX * 2) * scale,
+            height: (pageSize.height - PAGE_MARGIN_PX * 2) * scale,
+            background: page.background_color || '#F9F6F0',
+          }}
+        />
         <div
           style={{
             width: pageSize.width,

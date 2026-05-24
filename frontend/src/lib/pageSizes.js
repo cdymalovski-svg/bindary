@@ -8,3 +8,7 @@ export const PAGE_SIZES = {
 };
 
 export const getPageSize = (key) => PAGE_SIZES[key] || PAGE_SIZES.a4;
+
+// 1cm at 96 DPI = 37.795275591 px. We use 37.8 for clean rendering.
+export const CM_PX = 37.8;
+export const PAGE_MARGIN_PX = CM_PX; // fixed 1cm white margin around colored area
