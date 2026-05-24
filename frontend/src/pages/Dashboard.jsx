@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { Plus, BookOpen, Trash2, FileText } from 'lucide-react';
-import { listBooks, createBook, deleteBook, fileUrl } from '@/lib/api';
+import { Plus, BookOpen, Trash2, FileText, Bookmark } from 'lucide-react';
+import {
+  listBooks, createBook, deleteBook, fileUrl,
+  listTemplates, deleteTemplate, updateBook,
+} from '@/lib/api';
 import { PAGE_SIZES } from '@/lib/pageSizes';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -36,18 +39,20 @@ import {
 
 export default function Dashboard() {
   const [books, setBooks] = useState([]);
+  const [templates, setTemplates] = useState([]);
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
-  const [form, setForm] = useState({ title: '', author: '', page_size: 'a4' });
+  const [form, setForm] = useState({ title: '', author: '', page_size: 'a4', template_id: 'none' });
   const navigate = useNavigate();
 
   const refresh = async () => {
     setLoading(true);
     try {
-      const data = await listBooks();
-      setBooks(data);
+      const [b, t] = await Promise.all([listBooks(), listTemplates()]);
+      setBooks(b);
+      setTemplates(t);
     } catch (e) {
-      toast.error('Could not load books');
+      toast.error('Could not load library');
     } finally {
       setLoading(false);
     }
@@ -62,12 +67,39 @@ export default function Dashboard() {
         author: form.author || '',
         page_size: form.page_size,
       });
+      // Apply template if selected
+      const tpl = form.template_id && form.template_id !== 'none'
+        ? templates.find((t) => t.id === form.template_id)
+        : null;
+      if (tpl) {
+        const make = (s) => ({
+          id: Math.random().toString(36).slice(2),
+          blocks: [],
+          background_color: s.background_color,
+          full_bleed: !!s.full_bleed,
+          show_page_number: !!s.show_page_number,
+          page_number_align: s.page_number_align || 'right',
+          page_number_size: s.page_number_size || 14,
+        });
+        const pages = [make(tpl.cover), make(tpl.interior), make(tpl.back_cover)];
+        await updateBook(book.id, { pages, page_size: tpl.page_size });
+      }
       setCreateOpen(false);
-      setForm({ title: '', author: '', page_size: 'a4' });
+      setForm({ title: '', author: '', page_size: 'a4', template_id: 'none' });
       toast.success('Book created');
       navigate(`/editor/${book.id}`);
     } catch (e) {
       toast.error('Could not create book');
+    }
+  };
+
+  const onDeleteTemplate = async (id) => {
+    try {
+      await deleteTemplate(id);
+      setTemplates((arr) => arr.filter((t) => t.id !== id));
+      toast.success('Template removed');
+    } catch (e) {
+      toast.error('Could not remove template');
     }
   };
 
@@ -142,6 +174,30 @@ export default function Dashboard() {
                     </SelectContent>
                   </Select>
                 </div>
+                <div className="space-y-2">
+                  <Label className="label-caps">Template (optional)</Label>
+                  <Select
+                    value={form.template_id}
+                    onValueChange={(v) => setForm({ ...form, template_id: v })}
+                  >
+                    <SelectTrigger data-testid="new-book-template-trigger" className="bg-white border-rule rounded-sm">
+                      <SelectValue placeholder="Blank" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none" data-testid="template-option-none">Blank book</SelectItem>
+                      {templates.map((t) => (
+                        <SelectItem key={t.id} value={t.id} data-testid={`template-option-${t.id}`}>
+                          {t.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {templates.length > 0 && (
+                    <p className="text-[10px] text-ink-mute leading-relaxed">
+                      Seeds 3 pages (cover · interior · back cover) using the template's style.
+                    </p>
+                  )}
+                </div>
               </div>
               <DialogFooter>
                 <Button
@@ -168,6 +224,44 @@ export default function Dashboard() {
           Lay out pages, place artwork, and export a print-ready PDF.
         </p>
       </section>
+
+      {/* Templates */}
+      {templates.length > 0 && (
+        <section className="max-w-6xl mx-auto px-8 pb-10" data-testid="templates-section">
+          <div className="flex items-center justify-between mb-4">
+            <p className="label-caps flex items-center gap-2">
+              <Bookmark className="w-3 h-3" />
+              Templates · {templates.length}
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-3">
+            {templates.map((t) => (
+              <div
+                key={t.id}
+                data-testid={`template-card-${t.id}`}
+                className="group flex items-center gap-2 bg-paper border border-rule rounded-sm px-3 py-2"
+              >
+                <div className="flex -space-x-1">
+                  <span className="w-5 h-5 rounded-sm border border-rule" style={{ background: t.cover.background_color }} title="cover" />
+                  <span className="w-5 h-5 rounded-sm border border-rule" style={{ background: t.interior.background_color }} title="interior" />
+                  <span className="w-5 h-5 rounded-sm border border-rule" style={{ background: t.back_cover.background_color }} title="back cover" />
+                </div>
+                <span className="font-serif text-base text-ink">{t.name}</span>
+                <span className="text-[10px] text-ink-mute">{t.page_size}</span>
+                <button
+                  type="button"
+                  onClick={() => onDeleteTemplate(t.id)}
+                  data-testid={`delete-template-${t.id}`}
+                  className="p-1 text-ink-mute hover:text-terracotta opacity-0 group-hover:opacity-100 transition-opacity"
+                  title="Delete template"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* Library */}
       <section className="max-w-6xl mx-auto px-8 pb-24" data-testid="books-library">

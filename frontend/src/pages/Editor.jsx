@@ -32,6 +32,7 @@ import BlockProperties from '@/components/BlockProperties';
 import AssetsPanel, { ASSET_DRAG_MIME } from '@/components/AssetsPanel';
 import PagePanel from '@/components/PagePanel';
 import LayersList from '@/components/LayersList';
+import SaveTemplateDialog from '@/components/SaveTemplateDialog';
 
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 
@@ -72,8 +73,11 @@ export default function Editor() {
   const [editingTextId, setEditingTextId] = useState(null);
   const [rightTab, setRightTab] = useState('assets'); // 'assets' | 'page' | 'block'
   const [viewMode, setViewMode] = useState('single'); // 'single' | 'spread'
+  const [lastSavedAt, setLastSavedAt] = useState(null);
   const fileInputRef = useRef(null);
   const exportContainerRef = useRef(null);
+  const autoSaveTimerRef = useRef(null);
+  const skipNextAutoSaveRef = useRef(true);
 
   // Load book
   useEffect(() => {
@@ -105,13 +109,13 @@ export default function Editor() {
     if (!book) return;
     setSaving(true);
     try {
-      const updated = await updateBook(book.id, {
+      await updateBook(book.id, {
         title: book.title,
         author: book.author,
         page_size: book.page_size,
         pages: book.pages,
       });
-      setBook(updated);
+      setLastSavedAt(new Date());
       if (showToast) toast.success('Saved');
     } catch (e) {
       toast.error('Save failed');
@@ -119,6 +123,23 @@ export default function Editor() {
       setSaving(false);
     }
   }, [book]);
+
+  // Auto-save: debounced 1.2s after the last edit.
+  // The very first effect run (right after load) is skipped via skipNextAutoSaveRef.
+  useEffect(() => {
+    if (loading || !book) return;
+    if (skipNextAutoSaveRef.current) {
+      skipNextAutoSaveRef.current = false;
+      return;
+    }
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    autoSaveTimerRef.current = setTimeout(() => {
+      saveBook(false);
+    }, 1200);
+    return () => {
+      if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    };
+  }, [book, loading, saveBook]);
 
   // --- Mutators ---
   const updatePages = (updater) => {
@@ -544,6 +565,8 @@ export default function Editor() {
           }}
         />
         <div className="w-px h-6 bg-rule mx-1" />
+        <SaveStatus saving={saving} lastSavedAt={lastSavedAt} />
+        <SaveTemplateDialog book={book} />
         <Button
           onClick={() => saveBook()}
           variant="outline"
@@ -715,6 +738,35 @@ export default function Editor() {
     </div>
   );
 }
+
+function timeAgo(d) {
+  const seconds = Math.max(1, Math.floor((Date.now() - d.getTime()) / 1000));
+  if (seconds < 5) return 'just now';
+  if (seconds < 60) return `${seconds}s ago`;
+  const m = Math.floor(seconds / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  return `${h}h ago`;
+}
+
+function SaveStatus({ saving, lastSavedAt }) {
+  if (saving) {
+    return (
+      <span data-testid="save-status" className="text-xs text-ink-mute flex items-center gap-1">
+        <Loader2 className="w-3 h-3 animate-spin" /> Saving…
+      </span>
+    );
+  }
+  if (lastSavedAt) {
+    return (
+      <span data-testid="save-status" className="text-xs text-ink-mute">
+        Saved {timeAgo(lastSavedAt)}
+      </span>
+    );
+  }
+  return null;
+}
+
 
 function isDarkHex(hex) {
   if (!hex || typeof hex !== 'string') return false;

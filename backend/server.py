@@ -144,6 +144,35 @@ class BookSummary(BaseModel):
     cover_image_url: Optional[str] = None
 
 
+class TemplateStyle(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    background_color: Optional[str] = "#FFF8DC"
+    full_bleed: bool = False
+    show_page_number: bool = True
+    page_number_align: Optional[str] = "right"
+    page_number_size: Optional[int] = 14
+
+
+class Template(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str
+    page_size: str = "a4"
+    cover: TemplateStyle = Field(default_factory=TemplateStyle)
+    interior: TemplateStyle = Field(default_factory=TemplateStyle)
+    back_cover: TemplateStyle = Field(default_factory=TemplateStyle)
+    created_at: str = Field(default_factory=_now_iso)
+
+
+class TemplateCreate(BaseModel):
+    name: str
+    page_size: str = "a4"
+    cover: TemplateStyle
+    interior: TemplateStyle
+    back_cover: TemplateStyle
+
+
+
 # ===== App =====
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
@@ -238,6 +267,35 @@ async def delete_book(book_id: str):
     if res.deleted_count == 0:
         raise HTTPException(404, "Book not found")
     return {"deleted": True}
+
+
+@api_router.get("/templates", response_model=List[Template])
+async def list_templates():
+    docs = await db.templates.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return [Template(**d) for d in docs]
+
+
+@api_router.post("/templates", response_model=Template)
+async def create_template(payload: TemplateCreate):
+    template = Template(
+        name=payload.name,
+        page_size=payload.page_size,
+        cover=payload.cover,
+        interior=payload.interior,
+        back_cover=payload.back_cover,
+    )
+    await db.templates.insert_one(template.model_dump())
+    return template
+
+
+@api_router.delete("/templates/{template_id}")
+async def delete_template(template_id: str):
+    res = await db.templates.delete_one({"id": template_id})
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Template not found")
+    return {"deleted": True}
+
+
 
 
 @api_router.post("/upload")

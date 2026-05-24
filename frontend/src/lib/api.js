@@ -23,6 +23,10 @@ export const uploadImage = async (file) => {
 export const listAssets = () => api.get('/assets').then((r) => r.data);
 export const deleteAsset = (id) => api.delete(`/assets/${id}`).then((r) => r.data);
 
+export const listTemplates = () => api.get('/templates').then((r) => r.data);
+export const createTemplate = (data) => api.post('/templates', data).then((r) => r.data);
+export const deleteTemplate = (id) => api.delete(`/templates/${id}`).then((r) => r.data);
+
 export const fileUrl = (urlOrPath) => {
   if (!urlOrPath) return null;
   if (urlOrPath.startsWith('http://') || urlOrPath.startsWith('https://')) return urlOrPath;
