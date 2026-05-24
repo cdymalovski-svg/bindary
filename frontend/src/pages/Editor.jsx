@@ -113,6 +113,7 @@ export default function Editor() {
         title: book.title,
         author: book.author,
         page_size: book.page_size,
+        page_number_start: book.page_number_start || 1,
         pages: book.pages,
       });
       setLastSavedAt(new Date());
@@ -478,6 +479,8 @@ export default function Editor() {
           pageIndex={idx}
           pageSize={pageSize}
           viewMode="spread"
+          totalPages={book.pages.length}
+          pageNumberStart={book.page_number_start || 1}
           isFocused={idx === activePageIndex}
           selectedBlockId={selectedBlockId}
           editingTextId={editingTextId}
@@ -621,6 +624,8 @@ export default function Editor() {
                 index={i}
                 active={i === activePageIndex}
                 pageSize={pageSize}
+                totalPages={book.pages.length}
+                pageNumberStart={book.page_number_start || 1}
                 onClick={() => { setActivePageIndex(i); setSelectedBlockId(null); }}
                 onDuplicate={() => duplicatePage(i)}
                 onDelete={() => removePage(i)}
@@ -650,6 +655,8 @@ export default function Editor() {
                 pageIndex={activePageIndex}
                 pageSize={pageSize}
                 viewMode="single"
+                totalPages={book.pages.length}
+                pageNumberStart={book.page_number_start || 1}
                 selectedBlockId={selectedBlockId}
                 editingTextId={editingTextId}
                 onSelectBlock={(blockId) => setSelectedBlockId(blockId)}
@@ -697,8 +704,10 @@ export default function Editor() {
                 page={activePage}
                 pageIndex={activePageIndex}
                 totalPages={book.pages.length}
+                pageNumberStart={book.page_number_start || 1}
                 onChange={(patch) => updatePage(patch)}
                 onPageNumberStyleAll={setAllPagesNumberStyle}
+                onPageNumberStartChange={(n) => setBook((b) => ({ ...b, page_number_start: n }))}
                 onApplyToInterior={applyPageToInterior}
               />
             </TabsContent>
@@ -742,6 +751,8 @@ export default function Editor() {
                 page={p}
                 pageIndex={i}
                 pageSize={pageSize}
+                totalPages={book.pages.length}
+                pageNumberStart={book.page_number_start || 1}
                 selectedBlockId={null}
                 editingTextId={null}
                 onSelectBlock={() => {}}
@@ -815,6 +826,8 @@ function PageCanvas({
   viewMode = 'single',
   isFocused = true,
   forExport = false,
+  totalPages = 1,
+  pageNumberStart = 1,
 }) {  // Scale to fit viewport for editing mode (export uses full size)
   const [scale, setScale] = useState(1);
   const [dropHover, setDropHover] = useState(false);
@@ -877,6 +890,15 @@ function PageCanvas({
   const pageNumSize = page.page_number_size || 14;
   const pageNumFont = page.page_number_font || 'Cormorant Garamond';
   const pageNumColor = isDarkHex(bg) ? '#E8E2D4' : '#3A3833';
+  // Page number visibility & label.
+  // - Back cover (last page) is always hidden.
+  // - Pages before pageNumberStart are hidden.
+  // - The displayed number is 1-based starting at the configured start page.
+  const isBackCover = totalPages > 1 && pageIndex === totalPages - 1;
+  const oneBasedIndex = pageIndex + 1;
+  const isBeforeStart = oneBasedIndex < pageNumberStart;
+  const showPageNumber = !!page.show_page_number && !isBackCover && !isBeforeStart;
+  const displayedNumber = oneBasedIndex - pageNumberStart + 1;
 
   return (
     <div
@@ -941,7 +963,7 @@ function PageCanvas({
             pageHeight={pageSize.height}
           />
         ))}
-        {page.show_page_number && (
+        {showPageNumber && (
           <div
             className="absolute"
             style={{
@@ -963,7 +985,7 @@ function PageCanvas({
             }}
             data-testid={`page-number-${pageIndex}`}
           >
-            {pageIndex + 1}
+            {displayedNumber}
           </div>
         )}
       </div>
@@ -985,10 +1007,14 @@ function SpreadPlaceholder({ pageSize }) {
   );
 }
 
-function PageThumbnail({ page, index, active, pageSize, onClick, onDuplicate, onDelete, onTogglePageNumber }) {
+function PageThumbnail({ page, index, active, pageSize, totalPages = 1, pageNumberStart = 1, onClick, onDuplicate, onDelete, onTogglePageNumber }) {
   const thumbW = 160;
   const scale = thumbW / pageSize.width;
   const thumbH = pageSize.height * scale;
+  const isBackCover = totalPages > 1 && index === totalPages - 1;
+  const oneBasedIdx = index + 1;
+  const showPageNumber = !!page.show_page_number && !isBackCover && oneBasedIdx >= pageNumberStart;
+  const displayedNumber = oneBasedIdx - pageNumberStart + 1;
   return (
     <div
       className={`group relative rounded-sm border ${active ? 'border-terracotta' : 'border-rule-dark'} bg-rule-dark/50 overflow-hidden cursor-pointer`}
@@ -1054,8 +1080,23 @@ function PageThumbnail({ page, index, active, pageSize, onClick, onDuplicate, on
               ) : null}
             </div>
           ))}
-          {page.show_page_number && (
-            <div className="absolute bottom-6 right-8 font-serif text-ink-soft" style={{ fontSize: 14 }}>{index + 1}</div>
+          {showPageNumber && (
+            <div
+              className="absolute"
+              style={{
+                fontFamily: page.page_number_font || 'Cormorant Garamond',
+                fontSize: page.page_number_size || 14,
+                color: isDarkHex(page.background_color || '#FFF8DC') ? '#E8E2D4' : '#3A3833',
+                bottom: (page.full_bleed ? 0 : PAGE_MARGIN_PX) + 16,
+                left: (page.page_number_align || 'right') === 'left' ? (page.full_bleed ? 0 : PAGE_MARGIN_PX) + 16 : undefined,
+                right: (page.page_number_align || 'right') === 'right' ? (page.full_bleed ? 0 : PAGE_MARGIN_PX) + 16 : undefined,
+                ...((page.page_number_align || 'right') === 'center'
+                  ? { left: 0, right: 0, textAlign: 'center' }
+                  : {}),
+              }}
+            >
+              {displayedNumber}
+            </div>
           )}
         </div>
       </div>

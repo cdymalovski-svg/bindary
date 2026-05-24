@@ -38,7 +38,7 @@ const PAGE_NUMBER_FONTS = [
   'Courier New',
 ];
 
-export default function PagePanel({ page, pageIndex, totalPages = 1, onChange, onPageNumberStyleAll, onApplyToInterior }) {
+export default function PagePanel({ page, pageIndex, totalPages = 1, pageNumberStart = 1, onChange, onPageNumberStyleAll, onPageNumberStartChange, onApplyToInterior }) {
   if (!page) {
     return <div className="p-6 text-ink-mute text-sm font-serif italic">Select a page to edit its properties.</div>;
   }
@@ -126,6 +126,30 @@ export default function PagePanel({ page, pageIndex, totalPages = 1, onChange, o
                   );
                 })}
               </div>
+            </div>
+            <div className="space-y-1">
+              <p className="label-caps">Start numbering on page · book-wide</p>
+              <Select
+                value={String(pageNumberStart)}
+                onValueChange={(v) => onPageNumberStartChange?.(parseInt(v, 10))}
+              >
+                <SelectTrigger className="bg-white border-rule rounded-sm h-8 text-sm" data-testid="page-number-start-trigger">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {Array.from({ length: Math.max(1, totalPages) }).map((_, i) => {
+                    const n = i + 1;
+                    return (
+                      <SelectItem key={n} value={String(n)} data-testid={`page-number-start-${n}`}>
+                        Page {n}{n === 1 ? ' (default)' : ''}
+                      </SelectItem>
+                    );
+                  })}
+                </SelectContent>
+              </Select>
+              <p className="text-[10px] text-ink-mute">
+                Pages before this are unnumbered. The back cover is always unnumbered.
+              </p>
             </div>
             <div className="space-y-1">
               <p className="label-caps">Font · applies to all pages</p>

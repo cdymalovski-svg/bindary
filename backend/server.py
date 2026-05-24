@@ -117,6 +117,7 @@ class Book(BaseModel):
     author: Optional[str] = ""
     page_size: str = "a4"  # a4 | letter | square | book6x9
     pages: List[Page] = []
+    page_number_start: int = 1  # 1-based; pages before this show no number; back cover always hidden
     created_at: str = Field(default_factory=_now_iso)
     updated_at: str = Field(default_factory=_now_iso)
 
@@ -132,6 +133,7 @@ class BookUpdate(BaseModel):
     title: Optional[str] = None
     author: Optional[str] = None
     page_size: Optional[str] = None
+    page_number_start: Optional[int] = None
     pages: Optional[List[Page]] = None
 
 
