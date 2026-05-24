@@ -47,6 +47,7 @@ export default function SaveTemplateDialog({ book }) {
         cover,
         interior,
         back_cover: backCover,
+        text_presets: book.text_presets || null,
       });
       toast.success(`Template "${name.trim()}" saved`);
       setOpen(false);
@@ -76,7 +77,7 @@ export default function SaveTemplateDialog({ book }) {
         </DialogHeader>
         <div className="space-y-3 py-1">
           <p className="text-sm text-ink-soft leading-relaxed">
-            Captures this book's cover, interior and back-cover styling (color, bleed, page number) — not its content.
+            Captures this book's cover, interior and back-cover styling (color, bleed, page number) and any custom text presets — not its content.
           </p>
           <div className="space-y-2">
             <Label className="label-caps">Template name</Label>

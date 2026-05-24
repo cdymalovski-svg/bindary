@@ -85,7 +85,11 @@ export default function Dashboard() {
           page_number_size: s.page_number_size || 14,
         });
         const pages = [make(tpl.cover), make(tpl.interior), make(tpl.back_cover)];
-        await updateBook(book.id, { pages, page_size: tpl.page_size });
+        await updateBook(book.id, {
+          pages,
+          page_size: tpl.page_size,
+          text_presets: tpl.text_presets || null,
+        });
       }
       setCreateOpen(false);
       setForm({ title: '', author: '', page_size: 'a4', template_id: 'none' });

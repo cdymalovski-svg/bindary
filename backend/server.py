@@ -186,6 +186,7 @@ class Template(BaseModel):
     cover: TemplateStyle = Field(default_factory=TemplateStyle)
     interior: TemplateStyle = Field(default_factory=TemplateStyle)
     back_cover: TemplateStyle = Field(default_factory=TemplateStyle)
+    text_presets: Optional[TextPresets] = None
     created_at: str = Field(default_factory=_now_iso)
 
 
@@ -195,6 +196,7 @@ class TemplateCreate(BaseModel):
     cover: TemplateStyle
     interior: TemplateStyle
     back_cover: TemplateStyle
+    text_presets: Optional[TextPresets] = None
 
 
 
@@ -353,6 +355,7 @@ async def create_template(payload: TemplateCreate):
         cover=payload.cover,
         interior=payload.interior,
         back_cover=payload.back_cover,
+        text_presets=payload.text_presets,
     )
     await db.templates.insert_one(template.model_dump())
     return template
