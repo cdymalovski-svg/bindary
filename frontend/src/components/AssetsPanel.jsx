@@ -163,7 +163,7 @@ function AssetTile({ asset, onRemove }) {
       <img
         src={url}
         alt={asset.original_filename || ''}
-        className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+        className="absolute inset-0 w-full h-full object-contain pointer-events-none p-1"
         crossOrigin="anonymous"
         draggable={false}
       />
