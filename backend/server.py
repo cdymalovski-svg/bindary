@@ -261,6 +261,32 @@ async def update_book(book_id: str, payload: BookUpdate):
     return Book(**doc)
 
 
+@api_router.post("/books/{book_id}/duplicate", response_model=Book)
+async def duplicate_book(book_id: str):
+    src = await db.books.find_one({"id": book_id}, {"_id": 0})
+    if not src:
+        raise HTTPException(404, "Book not found")
+    new_pages: List[Page] = []
+    for p in src.get("pages", []):
+        page_obj = Page(**p)
+        page_obj.id = str(uuid.uuid4())
+        new_blocks: List[Block] = []
+        for b in page_obj.blocks:
+            block_obj = Block(**b.model_dump())
+            block_obj.id = str(uuid.uuid4())
+            new_blocks.append(block_obj)
+        page_obj.blocks = new_blocks
+        new_pages.append(page_obj)
+    copy = Book(
+        title=f"{src.get('title', 'Untitled Book')} (copy)",
+        author=src.get("author", ""),
+        page_size=src.get("page_size", "a4"),
+        pages=new_pages,
+    )
+    await db.books.insert_one(copy.model_dump())
+    return copy
+
+
 @api_router.delete("/books/{book_id}")
 async def delete_book(book_id: str):
     res = await db.books.delete_one({"id": book_id})

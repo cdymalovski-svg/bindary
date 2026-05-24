@@ -8,6 +8,7 @@ export const api = axios.create({ baseURL: API });
 export const listBooks = () => api.get('/books').then((r) => r.data);
 export const getBook = (id) => api.get(`/books/${id}`).then((r) => r.data);
 export const createBook = (data) => api.post('/books', data).then((r) => r.data);
+export const duplicateBook = (id) => api.post(`/books/${id}/duplicate`).then((r) => r.data);
 export const updateBook = (id, data) => api.put(`/books/${id}`, data).then((r) => r.data);
 export const deleteBook = (id) => api.delete(`/books/${id}`).then((r) => r.data);
 

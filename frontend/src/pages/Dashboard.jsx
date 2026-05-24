@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { Plus, BookOpen, Trash2, FileText, Bookmark } from 'lucide-react';
+import { Plus, BookOpen, Trash2, FileText, Bookmark, Copy } from 'lucide-react';
 import {
   listBooks, createBook, deleteBook, fileUrl,
   listTemplates, deleteTemplate, updateBook,
+  duplicateBook,
 } from '@/lib/api';
 import { PAGE_SIZES } from '@/lib/pageSizes';
 import { Button } from '@/components/ui/button';
@@ -110,6 +111,16 @@ export default function Dashboard() {
       refresh();
     } catch (e) {
       toast.error('Could not delete');
+    }
+  };
+
+  const onDuplicate = async (id) => {
+    try {
+      const copy = await duplicateBook(id);
+      toast.success(`Duplicated "${copy.title}"`);
+      refresh();
+    } catch (e) {
+      toast.error('Could not duplicate');
     }
   };
 
@@ -283,7 +294,13 @@ export default function Dashboard() {
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
             {books.map((b) => (
-              <BookCard key={b.id} book={b} onOpen={() => navigate(`/editor/${b.id}`)} onDelete={() => onDelete(b.id)} />
+              <BookCard
+                key={b.id}
+                book={b}
+                onOpen={() => navigate(`/editor/${b.id}`)}
+                onDelete={() => onDelete(b.id)}
+                onDuplicate={() => onDuplicate(b.id)}
+              />
             ))}
           </div>
         )}
@@ -292,7 +309,7 @@ export default function Dashboard() {
   );
 }
 
-function BookCard({ book, onOpen, onDelete }) {
+function BookCard({ book, onOpen, onDelete, onDuplicate }) {
   const cover = book.cover_image_url ? fileUrl(book.cover_image_url) : null;
   return (
     <div
@@ -324,7 +341,17 @@ function BookCard({ book, onOpen, onDelete }) {
           <p className="font-serif text-lg text-ink truncate">{book.title}</p>
           <p className="text-xs text-ink-mute truncate">{book.author || 'Anonymous'} · {book.page_count} pages</p>
         </div>
-        <AlertDialog>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={onDuplicate}
+            data-testid={`duplicate-book-${book.id}`}
+            className="p-2 text-ink-mute hover:text-ink rounded-sm"
+            title="Duplicate"
+          >
+            <Copy className="w-4 h-4" />
+          </button>
+          <AlertDialog>
           <AlertDialogTrigger asChild>
             <button
               data-testid={`delete-book-${book.id}`}
@@ -353,6 +380,7 @@ function BookCard({ book, onOpen, onDelete }) {
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
+        </div>
       </div>
     </div>
   );
