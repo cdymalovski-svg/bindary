@@ -27,6 +27,12 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from '@/components/ui/dropdown-menu';
 import { getBook, updateBook, uploadImage } from '@/lib/api';
 import { PAGE_SIZES, getPageSize, PAGE_MARGIN_PX } from '@/lib/pageSizes';
 import { exportBookToPdf } from '@/lib/pdfExport';
@@ -205,19 +211,50 @@ export default function Editor() {
     setSelectedBlockId(null);
   };
 
-  const addTextBlock = () => {
+  // Three text-block presets — defaults the user can override after insert.
+  // Width auto-fits the page (minus a comfortable inset); height roughly fits two lines.
+  const TEXT_PRESETS = {
+    title: {
+      label: 'Title',
+      font_family: 'Playfair Display',
+      font_size: 48,
+      text_align: 'center',
+      lineFactor: 1.4,
+    },
+    subtitle: {
+      label: 'Subtitle',
+      font_family: 'Cormorant Garamond',
+      font_size: 28,
+      text_align: 'center',
+      lineFactor: 1.6,
+    },
+    body: {
+      label: 'Page text',
+      font_family: 'Cormorant Garamond',
+      font_size: 18,
+      text_align: 'left',
+      lineFactor: 4.5, // ~4 lines of body copy
+    },
+  };
+
+  const addTextBlock = (preset = 'body') => {
+    const cfg = TEXT_PRESETS[preset] || TEXT_PRESETS.body;
+    const margin = activePage?.full_bleed ? 0 : PAGE_MARGIN_PX;
+    const maxW = pageSize.width - margin * 2 - 40;
+    const width = preset === 'body' ? Math.min(420, maxW) : Math.min(560, maxW);
+    const height = Math.max(60, Math.round(cfg.font_size * cfg.lineFactor));
     const block = {
       id: uid(),
       type: 'text',
-      x: 60,
-      y: 60,
-      width: 360,
-      height: 140,
+      x: Math.max(margin + 20, (pageSize.width - width) / 2),
+      y: margin + 40,
+      width,
+      height,
       z_index: 1,
       html: '',
-      font_family: 'Cormorant Garamond',
-      font_size: 22,
-      text_align: 'left',
+      font_family: cfg.font_family,
+      font_size: cfg.font_size,
+      text_align: cfg.text_align,
       color: '#000000',
     };
     updatePages((pages) =>
@@ -748,9 +785,39 @@ export default function Editor() {
 
         <div className="flex-1" />
 
-        <Button onClick={addTextBlock} className="bg-ink hover:bg-ink-soft text-paper rounded-sm h-8" data-testid="add-text-button">
-          <TypeIcon className="w-4 h-4 mr-1" /> Text
-        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button className="bg-ink hover:bg-ink-soft text-paper rounded-sm h-8" data-testid="add-text-button">
+              <TypeIcon className="w-4 h-4 mr-1" /> Text
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="bg-paper border-rule rounded-sm w-44 p-1">
+            <DropdownMenuItem
+              data-testid="add-text-title"
+              onClick={() => addTextBlock('title')}
+              className="rounded-sm cursor-pointer flex flex-col items-start gap-0 py-2"
+            >
+              <span style={{ fontFamily: 'Playfair Display', fontSize: 18 }}>Title</span>
+              <span className="text-[10px] text-ink-mute">Playfair · 48px</span>
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              data-testid="add-text-subtitle"
+              onClick={() => addTextBlock('subtitle')}
+              className="rounded-sm cursor-pointer flex flex-col items-start gap-0 py-2"
+            >
+              <span style={{ fontFamily: 'Cormorant Garamond', fontSize: 16, fontStyle: 'italic' }}>Subtitle</span>
+              <span className="text-[10px] text-ink-mute">Cormorant · 28px</span>
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              data-testid="add-text-body"
+              onClick={() => addTextBlock('body')}
+              className="rounded-sm cursor-pointer flex flex-col items-start gap-0 py-2"
+            >
+              <span style={{ fontFamily: 'Cormorant Garamond', fontSize: 14 }}>Page text</span>
+              <span className="text-[10px] text-ink-mute">Cormorant · 18px</span>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
         {activePageIndex === 0 && (
           <Button
             onClick={designCover}
