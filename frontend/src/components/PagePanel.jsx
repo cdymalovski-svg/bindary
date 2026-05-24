@@ -38,7 +38,7 @@ const PAGE_NUMBER_FONTS = [
   'Courier New',
 ];
 
-export default function PagePanel({ page, pageIndex, totalPages = 1, pageNumberStart = 1, onChange, onPageNumberStyleAll, onPageNumberStartChange, onApplyToInterior }) {
+export default function PagePanel({ page, pageIndex, totalPages = 1, pageNumberStart = 1, isChapterBook = false, onChange, onPageNumberStyleAll, onPageNumberStartChange, onChapterBookToggle, onApplyToInterior }) {
   if (!page) {
     return <div className="p-6 text-ink-mute text-sm font-serif italic">Select a page to edit its properties.</div>;
   }
@@ -53,6 +53,21 @@ export default function PagePanel({ page, pageIndex, totalPages = 1, pageNumberS
           Page {pageIndex + 1}
           {isCover ? ' · Cover' : isBackCover ? ' · Back cover' : ''}
         </p>
+      </div>
+
+      <div className="pb-3 border-b border-rule space-y-2">
+        <p className="label-caps">Book settings</p>
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-xs text-ink">Chapter book</p>
+            <p className="text-[10px] text-ink-mute mt-0.5">Enable auto-numbered chapter headings</p>
+          </div>
+          <Switch
+            checked={!!isChapterBook}
+            onCheckedChange={(v) => onChapterBookToggle?.(v)}
+            data-testid="chapter-book-switch"
+          />
+        </div>
       </div>
 
       <div className="space-y-2">

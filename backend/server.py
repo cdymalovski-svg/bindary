@@ -96,6 +96,8 @@ class Block(BaseModel):
     # Image block
     image_url: Optional[str] = None
     image_path: Optional[str] = None
+    # Chapter heading metadata (text blocks only)
+    is_chapter: bool = False
 
 
 class Page(BaseModel):
@@ -118,6 +120,7 @@ class Book(BaseModel):
     page_size: str = "a4"  # a4 | letter | square | book6x9
     pages: List[Page] = []
     page_number_start: int = 1  # 1-based; pages before this show no number; back cover always hidden
+    is_chapter_book: bool = False  # enables the Add Chapter action and auto-numbered chapter headings
     created_at: str = Field(default_factory=_now_iso)
     updated_at: str = Field(default_factory=_now_iso)
 
@@ -134,6 +137,7 @@ class BookUpdate(BaseModel):
     author: Optional[str] = None
     page_size: Optional[str] = None
     page_number_start: Optional[int] = None
+    is_chapter_book: Optional[bool] = None
     pages: Optional[List[Page]] = None
 
 

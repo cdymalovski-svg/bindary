@@ -17,6 +17,7 @@ import {
   BookOpen,
   Square,
   Palette,
+  Heading,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -114,6 +115,7 @@ export default function Editor() {
         author: book.author,
         page_size: book.page_size,
         page_number_start: book.page_number_start || 1,
+        is_chapter_book: !!book.is_chapter_book,
         pages: book.pages,
       });
       setLastSavedAt(new Date());
@@ -221,6 +223,39 @@ export default function Editor() {
     );
     setSelectedBlockId(block.id);
     setEditingTextId(block.id);
+  };
+
+  // Add a chapter-heading text block. Auto-numbers based on existing chapter blocks
+  // across the whole book.
+  const addChapterBlock = () => {
+    let n = 0;
+    (book?.pages || []).forEach((p) => {
+      (p.blocks || []).forEach((b) => { if (b.is_chapter) n += 1; });
+    });
+    const number = n + 1;
+    const pageW = pageSize.width;
+    const margin = activePage?.full_bleed ? 0 : PAGE_MARGIN_PX;
+    const width = Math.min(pageW - margin * 2 - 40, 600);
+    const block = {
+      id: uid(),
+      type: 'text',
+      x: (pageW - width) / 2,
+      y: margin + 40,
+      width,
+      height: 110,
+      z_index: 1,
+      html: `<p>Chapter ${number}</p>`,
+      font_family: 'Cormorant Garamond',
+      font_size: 56,
+      text_align: 'center',
+      color: '#000000',
+      is_chapter: true,
+    };
+    updatePages((pages) =>
+      pages.map((p, i) => (i === activePageIndex ? { ...p, blocks: [...p.blocks, block] } : p))
+    );
+    setSelectedBlockId(block.id);
+    toast.success(`Chapter ${number} added`);
   };
 
   const handleImageUpload = async (file) => {
@@ -566,6 +601,11 @@ export default function Editor() {
         <Button onClick={addTextBlock} className="bg-ink hover:bg-ink-soft text-paper rounded-sm h-8" data-testid="add-text-button">
           <TypeIcon className="w-4 h-4 mr-1" /> Text
         </Button>
+        {book.is_chapter_book && (
+          <Button onClick={addChapterBlock} className="bg-ink hover:bg-ink-soft text-paper rounded-sm h-8" data-testid="add-chapter-button">
+            <Heading className="w-4 h-4 mr-1" /> Chapter
+          </Button>
+        )}
         <Button
           onClick={() => fileInputRef.current?.click()}
           className="bg-ink hover:bg-ink-soft text-paper rounded-sm h-8"
@@ -705,9 +745,11 @@ export default function Editor() {
                 pageIndex={activePageIndex}
                 totalPages={book.pages.length}
                 pageNumberStart={book.page_number_start || 1}
+                isChapterBook={!!book.is_chapter_book}
                 onChange={(patch) => updatePage(patch)}
                 onPageNumberStyleAll={setAllPagesNumberStyle}
                 onPageNumberStartChange={(n) => setBook((b) => ({ ...b, page_number_start: n }))}
+                onChapterBookToggle={(v) => setBook((b) => ({ ...b, is_chapter_book: v }))}
                 onApplyToInterior={applyPageToInterior}
               />
             </TabsContent>
