@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import { Rnd } from 'react-rnd';
 import { fileUrl } from '@/lib/api';
 
@@ -16,6 +17,41 @@ export default function CanvasBlock({
   const isText = block.type === 'text';
   const isImage = block.type === 'image';
   const editingThisText = isText && editingTextId === block.id;
+  const editorRef = useRef(null);
+
+  // Initialize / sync DOM innerHTML when NOT editing.
+  // While editing, we don't touch the DOM so the user's typing & caret stay intact.
+  const PLACEHOLDER_HTML =
+    '<span data-placeholder="true" style="opacity:0.45;font-style:italic">Double-click to edit</span>';
+  useEffect(() => {
+    if (!isText) return;
+    if (editingThisText) return;
+    if (!editorRef.current) return;
+    const next = block.html && block.html.trim() ? block.html : PLACEHOLDER_HTML;
+    if (editorRef.current.innerHTML !== next) {
+      editorRef.current.innerHTML = next;
+    }
+  }, [block.html, editingThisText, isText]);
+
+  // When entering edit mode, focus and place caret at end.
+  useEffect(() => {
+    if (!editingThisText || !editorRef.current) return;
+    const el = editorRef.current;
+    // If currently showing only the placeholder, clear it so the user types fresh.
+    const onlyPlaceholder =
+      el.firstChild && el.firstChild.nodeType === 1 && el.firstChild.getAttribute?.('data-placeholder') === 'true';
+    if (onlyPlaceholder || !block.html) {
+      el.innerHTML = '';
+    }
+    el.focus();
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    range.collapse(false);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingThisText]);
 
   return (
     <Rnd
@@ -36,13 +72,18 @@ export default function CanvasBlock({
           y: position.y,
         });
       }}
-      enableResizing={selected}
+      enableResizing={selected && !editingThisText}
       className={`block-wrapper ${selected ? 'block-selected' : 'block-hover'}`}
       style={{ zIndex: block.z_index || 1 }}
-      resizeHandleStyles={selected ? handleStyles : {}}
+      resizeHandleStyles={selected && !editingThisText ? handleStyles : {}}
     >
       <div
         onMouseDown={(e) => {
+          if (editingThisText) {
+            // Don't deselect/start drag while editing; let click reach the contentEditable.
+            e.stopPropagation();
+            return;
+          }
           if (!selected) {
             e.stopPropagation();
             onSelect(block.id);
@@ -54,10 +95,11 @@ export default function CanvasBlock({
             onStartTextEdit(block.id);
           }
         }}
-        className="w-full h-full select-none"
+        className={`w-full h-full ${editingThisText ? '' : 'select-none'}`}
       >
         {isText ? (
           <div
+            ref={editorRef}
             className="text-block-editor px-2 py-1 w-full h-full overflow-hidden"
             contentEditable={editingThisText}
             suppressContentEditableWarning
@@ -71,10 +113,15 @@ export default function CanvasBlock({
               cursor: editingThisText ? 'text' : 'move',
             }}
             onBlur={(e) => {
-              onChange(block.id, { html: e.currentTarget.innerHTML });
+              const html = e.currentTarget.innerHTML;
+              // Treat placeholder-only content as empty.
+              const isPlaceholder =
+                e.currentTarget.firstChild?.nodeType === 1 &&
+                e.currentTarget.firstChild.getAttribute?.('data-placeholder') === 'true' &&
+                e.currentTarget.childNodes.length === 1;
+              onChange(block.id, { html: isPlaceholder ? '' : html });
               onStopTextEdit();
             }}
-            dangerouslySetInnerHTML={{ __html: block.html || '<p>Double-click to edit</p>' }}
           />
         ) : null}
         {isImage ? (

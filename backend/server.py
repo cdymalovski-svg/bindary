@@ -92,7 +92,7 @@ class Block(BaseModel):
     font_family: Optional[str] = "Cormorant Garamond"
     font_size: Optional[int] = 18
     text_align: Optional[str] = "left"
-    color: Optional[str] = "#1C1B19"
+    color: Optional[str] = "#000000"
     # Image block
     image_url: Optional[str] = None
     image_path: Optional[str] = None
@@ -104,6 +104,7 @@ class Page(BaseModel):
     blocks: List[Block] = []
     background_color: Optional[str] = "#F9F6F0"
     show_page_number: bool = True
+    page_number_align: Optional[str] = "right"  # 'left' | 'center' | 'right'
 
 
 class Book(BaseModel):

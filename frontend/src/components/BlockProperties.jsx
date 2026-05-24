@@ -37,7 +37,7 @@ const FONTS = [
 
 const SIZES = [10, 12, 14, 16, 18, 20, 24, 28, 32, 36, 42, 48, 56, 64, 72];
 
-const COLORS = ['#1C1B19', '#4A4843', '#9E4532', '#0E4F3F', '#3B4A6B', '#7A5C00', '#5C2A6A', '#FFFFFF'];
+const COLORS = ['#000000', '#4A4843', '#9E4532', '#0E4F3F', '#3B4A6B', '#7A5C00', '#5C2A6A', '#FFFFFF'];
 
 export default function BlockProperties({
   block,

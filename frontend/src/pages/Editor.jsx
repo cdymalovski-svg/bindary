@@ -133,16 +133,17 @@ export default function Editor() {
       width: 360,
       height: 140,
       z_index: 1,
-      html: '<p>Once upon a time…</p>',
+      html: '',
       font_family: 'Cormorant Garamond',
       font_size: 22,
       text_align: 'left',
-      color: '#1C1B19',
+      color: '#000000',
     };
     updatePages((pages) =>
       pages.map((p, i) => (i === activePageIndex ? { ...p, blocks: [...p.blocks, block] } : p))
     );
     setSelectedBlockId(block.id);
+    setEditingTextId(block.id);
   };
 
   const handleImageUpload = async (file) => {
@@ -583,6 +584,19 @@ export default function Editor() {
   );
 }
 
+function isDarkHex(hex) {
+  if (!hex || typeof hex !== 'string') return false;
+  const h = hex.replace('#', '');
+  const v = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
+  if (v.length !== 6) return false;
+  const r = parseInt(v.slice(0, 2), 16);
+  const g = parseInt(v.slice(2, 4), 16);
+  const b = parseInt(v.slice(4, 6), 16);
+  // Perceived luminance (Rec. 709).
+  const L = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+  return L < 0.55;
+}
+
 function PageCanvas({
   page,
   pageIndex,
@@ -598,8 +612,7 @@ function PageCanvas({
   viewMode = 'single',
   isFocused = true,
   forExport = false,
-}) {
-  // Scale to fit viewport for editing mode (export uses full size)
+}) {  // Scale to fit viewport for editing mode (export uses full size)
   const [scale, setScale] = useState(1);
   const [dropHover, setDropHover] = useState(false);
   const wrapperRef = useRef(null);
@@ -655,6 +668,8 @@ function PageCanvas({
   const innerW = pageSize.width - PAGE_MARGIN_PX * 2;
   const innerH = pageSize.height - PAGE_MARGIN_PX * 2;
   const showFocusRing = viewMode === 'spread' && isFocused && !forExport;
+  const pageNumAlign = page.page_number_align || 'right';
+  const pageNumColor = isDarkHex(bg) ? '#E8E2D4' : '#3A3833';
 
   return (
     <div
@@ -723,11 +738,20 @@ function PageCanvas({
           <div
             className="absolute font-serif"
             style={{
-              bottom: PAGE_MARGIN_PX - 18,
-              right: PAGE_MARGIN_PX + 8,
+              // Place inside the colored area, 16px above its bottom edge.
+              bottom: PAGE_MARGIN_PX + 16,
+              left: pageNumAlign === 'left' ? PAGE_MARGIN_PX + 16 : undefined,
+              right: pageNumAlign === 'right' ? PAGE_MARGIN_PX + 16 : undefined,
+              ...(pageNumAlign === 'center'
+                ? {
+                    left: 0,
+                    right: 0,
+                    textAlign: 'center',
+                  }
+                : {}),
               fontSize: 14,
               letterSpacing: '0.05em',
-              color: '#4A4843',
+              color: pageNumColor,
             }}
             data-testid={`page-number-${pageIndex}`}
           >

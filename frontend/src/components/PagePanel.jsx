@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Eye, EyeOff } from 'lucide-react';
+import { Eye, EyeOff, AlignLeft, AlignCenter, AlignRight } from 'lucide-react';
 import {
   Popover, PopoverContent, PopoverTrigger,
 } from '@/components/ui/popover';
@@ -64,8 +64,36 @@ export default function PagePanel({ page, pageIndex, onChange }) {
             data-testid="page-number-switch"
           />
         </div>
+        {page.show_page_number && (
+          <div className="space-y-1">
+            <p className="label-caps">Alignment</p>
+            <div className="flex items-center gap-1 bg-white border border-rule rounded-sm p-1">
+              {[
+                { key: 'left', Icon: AlignLeft },
+                { key: 'center', Icon: AlignCenter },
+                { key: 'right', Icon: AlignRight },
+              ].map(({ key, Icon }) => {
+                const active = (page.page_number_align || 'right') === key;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => onChange({ page_number_align: key })}
+                    data-testid={`page-number-align-${key}`}
+                    className={`flex-1 h-7 flex items-center justify-center rounded-sm transition-colors ${
+                      active ? 'bg-terracotta text-paper' : 'text-ink hover:bg-desk'
+                    }`}
+                    title={`Align ${key}`}
+                  >
+                    <Icon className="w-4 h-4" />
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
         <p className="text-[10px] text-ink-mute leading-relaxed">
-          A 1cm white margin frames the colored area for safe printing.
+          The page number sits inside the colored area. A 1cm white margin frames the page for safe printing.
         </p>
       </div>
     </div>
