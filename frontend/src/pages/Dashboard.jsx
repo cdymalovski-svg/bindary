@@ -252,7 +252,9 @@ export default function Dashboard() {
             </p>
           </div>
           <div className="flex flex-wrap gap-3">
-            {templates.map((t) => (
+            {templates.map((t) => {
+              const titleFont = t.text_presets?.title?.font_family || 'Playfair Display';
+              return (
               <div
                 key={t.id}
                 data-testid={`template-card-${t.id}`}
@@ -263,6 +265,14 @@ export default function Dashboard() {
                   <span className="w-5 h-5 rounded-sm border border-rule" style={{ background: t.interior.background_color }} title="interior" />
                   <span className="w-5 h-5 rounded-sm border border-rule" style={{ background: t.back_cover.background_color }} title="back cover" />
                 </div>
+                <span
+                  data-testid={`template-typography-${t.id}`}
+                  className="text-ink leading-none px-1.5 select-none"
+                  style={{ fontFamily: titleFont, fontSize: 22 }}
+                  title={`Title font: ${titleFont}`}
+                >
+                  Aa
+                </span>
                 <span className="font-serif text-base text-ink">{t.name}</span>
                 <span className="text-[10px] text-ink-mute">{t.page_size}</span>
                 <button
@@ -275,7 +285,8 @@ export default function Dashboard() {
                   <Trash2 className="w-3.5 h-3.5" />
                 </button>
               </div>
-            ))}
+              );
+            })}
           </div>
         </section>
       )}
