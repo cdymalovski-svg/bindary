@@ -786,6 +786,13 @@ export default function Editor() {
       await saveBook(false);
       // Wait a tick for offscreen render
       await new Promise((r) => setTimeout(r, 100));
+      // CRITICAL: wait for every web font referenced by the offscreen DOM to
+      // finish loading. If we capture too early, html2canvas falls back to
+      // browser-default serif/sans which have different metrics — text wraps
+      // to extra lines and overflows its block.
+      if (document.fonts && document.fonts.ready) {
+        await document.fonts.ready;
+      }
       const nodes = Array.from(
         exportContainerRef.current?.querySelectorAll('[data-export-page]') || []
       );
@@ -1159,7 +1166,10 @@ export default function Editor() {
         </aside>
       </div>
 
-      {/* Offscreen export container - renders all pages at full size for PDF capture */}
+      {/* Offscreen export container - renders all pages at full size for PDF capture.
+          Uses a dedicated flat renderer (no react-rnd, no overflow-hidden on text
+          blocks) so authors get pixel-true output: long titles never clip, and
+          the page background is rendered as a single layer regardless of bleed. */}
       {exporting && (
         <div
           ref={exportContainerRef}
@@ -1172,19 +1182,12 @@ export default function Editor() {
         >
           {book.pages.map((p, i) => (
             <div key={p.id} data-export-page>
-              <PageCanvas
+              <ExportPage
                 page={p}
                 pageIndex={i}
                 pageSize={pageSize}
                 totalPages={book.pages.length}
                 pageNumberStart={book.page_number_start || 1}
-                selectedBlockId={null}
-                editingTextId={null}
-                onSelectBlock={() => {}}
-                onChangeBlock={() => {}}
-                onStartTextEdit={() => {}}
-                onStopTextEdit={() => {}}
-                forExport
               />
             </div>
           ))}
@@ -1235,6 +1238,104 @@ function isDarkHex(hex) {
   const L = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
   return L < 0.55;
 }
+// Flat, export-only page renderer. No react-rnd, no overflow-hidden on text
+// blocks, no contentEditable overhead. Renders an HTML view that html2canvas
+// can capture pixel-true:
+//   - Text blocks use `overflow: visible` + `minHeight` so wrapped lines and
+//     descenders are never clipped.
+//   - Image blocks keep `overflow: hidden` and a fixed height so artwork
+//     framing is preserved.
+//   - Page number is positioned exactly as in the live editor.
+function ExportPage({ page, pageIndex, pageSize, totalPages, pageNumberStart }) {
+  const margin = page.full_bleed ? 0 : PAGE_MARGIN_PX;
+  const innerW = pageSize.width - margin * 2;
+  const innerH = pageSize.height - margin * 2;
+  const bg = page.background_color || '#FFF8DC';
+  const pageNumAlign = page.page_number_align || 'right';
+  const pageNumSize = page.page_number_size || 14;
+  const pageNumFont = page.page_number_font || 'Cormorant Garamond';
+  const pageNumColor = isDarkHex(bg) ? '#E8E2D4' : '#3A3833';
+  const isBackCover = totalPages > 1 && pageIndex === totalPages - 1;
+  const isBeforeStart = pageIndex + 1 < pageNumberStart;
+  const showPageNumber = !!page.show_page_number && !isBackCover && !isBeforeStart;
+  const displayedNumber = pageIndex + 1 - pageNumberStart + 1;
+  // Render blocks in z-index order so the resulting flat canvas matches the
+  // editor's visual stacking.
+  const orderedBlocks = [...(page.blocks || [])].sort(
+    (a, b) => (a.z_index || 0) - (b.z_index || 0)
+  );
+  return (
+    <div style={{ width: pageSize.width, height: pageSize.height, position: 'relative', background: '#FFFFFF' }}>
+      {/* Background colour fill (inset by margin when not full bleed) */}
+      <div
+        aria-hidden
+        style={{ position: 'absolute', top: margin, left: margin, width: innerW, height: innerH, background: bg }}
+      />
+      {orderedBlocks.map((b) => {
+        const isText = b.type === 'text';
+        return (
+          <div
+            key={b.id}
+            style={{
+              position: 'absolute',
+              left: b.x,
+              top: b.y,
+              width: b.width,
+              zIndex: typeof b.z_index === 'number' ? b.z_index : 1,
+              ...(isText
+                ? { minHeight: b.height, overflow: 'visible' }
+                : { height: b.height, overflow: 'hidden' }),
+            }}
+          >
+            {isText ? (
+              <div
+                style={{
+                  padding: '4px 8px',
+                  fontFamily: b.font_family,
+                  fontSize: `${b.font_size}px`,
+                  textAlign: b.text_align,
+                  color: b.color,
+                  lineHeight: 1.45,
+                  // Long words must wrap onto the next line rather than overflow horizontally.
+                  wordWrap: 'break-word',
+                  overflowWrap: 'break-word',
+                }}
+                dangerouslySetInnerHTML={{ __html: b.html || '' }}
+              />
+            ) : b.image_url ? (
+              <img
+                alt=""
+                src={b.image_url.startsWith('http') ? b.image_url : `${process.env.REACT_APP_BACKEND_URL}${b.image_url}`}
+                style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+                crossOrigin="anonymous"
+              />
+            ) : null}
+          </div>
+        );
+      })}
+      {showPageNumber && (
+        <div
+          style={{
+            position: 'absolute',
+            fontFamily: pageNumFont,
+            fontSize: `${pageNumSize}px`,
+            color: pageNumColor,
+            bottom: margin + 16,
+            left: pageNumAlign === 'left' ? margin + 16 : undefined,
+            right: pageNumAlign === 'right' ? margin + 16 : undefined,
+            ...(pageNumAlign === 'center'
+              ? { left: '50%', transform: 'translateX(-50%)' }
+              : {}),
+          }}
+        >
+          {displayedNumber}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 
 function PageCanvas({
   page,
