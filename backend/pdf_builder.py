@@ -254,9 +254,13 @@ def _build_html(book: dict, image_data_urls: dict) -> tuple[str, int, int]:
         "html, body { margin: 0; padding: 0; background: #FFFFFF; "
         "-webkit-print-color-adjust: exact; print-color-adjust: exact; }"
         "* { box-sizing: border-box; }"
+        # Tailwind-style preflight reset so the editor's HTML (which stores
+        # user content as <p>…</p>) doesn't gain Chrome's default 1em <p>
+        # margins — those margins are what pushed the cover's "Every Color"
+        # line off the bottom of its (overflow:hidden) title box.
+        "p, h1, h2, h3, h4, h5, h6, ul, ol, blockquote, pre, figure { margin: 0; padding: 0; }"
+        "ul, ol { list-style: none; }"
         ".book-page { box-shadow: none !important; }"
-        # Match the editor's text-block-editor default styles.
-        ".text-block-editor p { margin: 0; }"
     )
 
     html = (
