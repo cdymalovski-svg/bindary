@@ -226,22 +226,20 @@ def _render_block(block: dict, image_data_urls: dict) -> str:
         )
     if btype == "image":
         path = _resolve_image_path(block)
-        # First-choice: inlined data: URL (zero network for Chromium).
-        # Fallback: the block's own /api/files/... URL (or whatever full URL
-        # it carries) — Chromium fetches it the same way the editor's <img>
-        # tag does. This makes the export resilient when the internal
-        # object-storage fetch fails for any reason in production.
-        src = image_data_urls.get(path or "", "")
+        # Prefer the public URL (Chromium fetches in parallel, low memory).
+        # Only inline the bytes when no public URL is available — the inline
+        # path is heavy (HTML grows by ~33% of every image) and was the
+        # source of OOM-induced 520s in production for image-heavy books.
+        src = ""
+        public_url = (block.get("image_url") or "").strip()
+        if public_url:
+            if public_url.startswith("/"):
+                base = os.environ.get("PUBLIC_BACKEND_URL", "").rstrip("/")
+                if base:
+                    public_url = f"{base}{public_url}"
+            src = public_url
         if not src:
-            fallback = (block.get("image_url") or "").strip()
-            if fallback:
-                # Relative `/api/files/...` URLs must be absolute for
-                # Chromium's `set_content` (no base URL) to resolve them.
-                if fallback.startswith("/"):
-                    base = os.environ.get("PUBLIC_BACKEND_URL", "").rstrip("/")
-                    if base:
-                        fallback = f"{base}{fallback}"
-                src = fallback
+            src = image_data_urls.get(path or "", "")
         if not src:
             log.warning(
                 "PDF export: image block %s has no resolvable src (path=%r, url=%r)",
@@ -396,25 +394,31 @@ async def build_book_pdf(
     # don't have to plumb it through every helper.
     if public_base_url:
         os.environ["PUBLIC_BACKEND_URL"] = public_base_url
-    # Inline all images as data URLs — avoids cross-process network hops.
-    image_data_urls: dict[str, str] = {}
+
+    # Strategy: keep the HTML tiny (no base64 images), but intercept every
+    # `/api/files/...` request Chromium makes and serve the bytes straight
+    # from this process. This avoids both:
+    #   - the OOM from inlining everything as base64 (the cause of 520s)
+    #   - the unreliability of having Chromium re-enter the public ingress
+    #     to fetch its own backend's files (some k8s setups block loopback).
+    image_data_urls: dict[str, str] = {}  # only used as a last-resort fallback
     paths = _collect_image_paths(book)
     log.info("PDF export: book has %d unique image path(s)", len(paths))
-    failed: list[str] = []
+
+    # Pre-fetch every image so the route handler can serve them instantly
+    # without round-tripping to object storage during render.
+    fetched_images: dict[str, tuple[bytes, str]] = {}
     for path in paths:
         try:
             data, ctype = get_image(path)
-            if not data:
-                failed.append(f"{path} (empty body)")
+            if data:
+                fetched_images[path] = (data, ctype or "image/png")
+            else:
                 log.warning("PDF export: empty bytes for image %s", path)
-                continue
-            image_data_urls[path] = _data_url(ctype or "image/png", data)
-            log.info("PDF export: inlined %s (%d bytes, %s)", path, len(data), ctype)
         except Exception as e:
-            failed.append(f"{path} ({e})")
-            log.warning("PDF export: failed to inline image %s: %s", path, e)
-    if failed:
-        log.error("PDF export: %d image(s) skipped: %s", len(failed), "; ".join(failed))
+            log.warning("PDF export: failed to fetch %s: %s", path, e)
+    log.info("PDF export: pre-fetched %d/%d images for route interception",
+             len(fetched_images), len(paths))
 
     html, page_w, page_h = _build_html(book, image_data_urls)
 
@@ -425,14 +429,48 @@ async def build_book_pdf(
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(
             headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage"],
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                # Memory hygiene — production containers are tight.
+                "--disable-gpu",
+                "--disable-background-networking",
+                "--disable-default-apps",
+                "--disable-extensions",
+                "--disable-sync",
+                "--disable-translate",
+                "--metrics-recording-only",
+                "--no-first-run",
+                "--no-zygote",
+            ],
         )
         try:
             context = await browser.new_context(viewport={"width": page_w, "height": page_h})
             page = await context.new_page()
-            # `wait_until='networkidle'` lets Google-Fonts CSS + woff2 requests
-            # complete before we attempt to print.
-            await page.set_content(html, wait_until="networkidle", timeout=60_000)
+
+            # Intercept any /api/files/... request and answer it from our
+            # in-memory cache. Anything we don't have falls through to the
+            # network (so external assets like Google Fonts still work).
+            async def _handle_route(route):
+                req_url = route.request.url
+                marker = "/api/files/"
+                if marker in req_url:
+                    key = req_url.split(marker, 1)[1].split("?", 1)[0]
+                    cached = fetched_images.get(key)
+                    if cached is not None:
+                        data, ctype = cached
+                        await route.fulfill(status=200, body=data, content_type=ctype)
+                        return
+                    log.warning("PDF export: route miss for %s (not pre-fetched)", key)
+                await route.continue_()
+
+            await page.route("**/api/files/**", _handle_route)
+
+            # `load` is enough — it fires after all images + stylesheets are
+            # fetched. `networkidle` adds a 500ms quiescence window that
+            # offers little for static content and risks proxy timeout (520)
+            # on cold containers.
+            await page.set_content(html, wait_until="load", timeout=45_000)
             # Belt-and-braces: explicitly wait for the FontFace API to settle
             # so glyphs aren't measured with the fallback metrics.
             try:
