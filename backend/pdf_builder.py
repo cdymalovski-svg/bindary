@@ -131,6 +131,10 @@ def _html_to_paragraph(html: str) -> str:
 
 
 def _draw_text_block(c, block: dict, page_h_pt: float):
+    """Draw a text block at its declared geometry. The text is drawn at its
+    natural rendered height but a canvas clipping path constrains it to the
+    block's declared width × height — matching the editor's `overflow: hidden`
+    behaviour without auto-growing the box."""
     font = _resolve_font(block.get("font_family"))
     size = float(block.get("font_size") or 18)
     color = _hex(block.get("color"))
@@ -150,18 +154,36 @@ def _draw_text_block(c, block: dict, page_h_pt: float):
     try:
         p = Paragraph(raw, style)
     except Exception:
-        # Fallback — strip any remaining tags and try again
         plain = re.sub(r"<[^>]+>", "", raw)
         p = Paragraph(plain, style)
-    width_pt = float(block.get("width") or 100) * PX_TO_PT
-    # Wrap to determine the natural rendered height — auto-expand like the
-    # editor does, so wrapped lines and descenders never clip.
-    _, height_pt = p.wrap(width_pt, 100000)
-    x_pt = float(block.get("x") or 0) * PX_TO_PT + 8 * PX_TO_PT  # ~match the editor's 8px inner padding
-    y_top_pt = page_h_pt - float(block.get("y") or 0) * PX_TO_PT
-    # ReportLab anchors at bottom-left; drawOn(x, y) places the bottom-left
-    # corner. Convert top-anchored y to bottom-anchored.
-    p.drawOn(c, x_pt, y_top_pt - height_pt - 4 * PX_TO_PT)
+
+    # Approximate the editor's 4px-top, 8px-left inner padding so text starts
+    # at the same place inside the box.
+    pad_x_pt = 8 * PX_TO_PT
+    pad_y_pt = 4 * PX_TO_PT
+    box_w_pt = float(block.get("width") or 100) * PX_TO_PT
+    box_h_pt = float(block.get("height") or 100) * PX_TO_PT
+    inner_w_pt = max(0.0, box_w_pt - 2 * pad_x_pt)
+    box_x_pt = float(block.get("x") or 0) * PX_TO_PT
+    box_y_top_pt = page_h_pt - float(block.get("y") or 0) * PX_TO_PT
+
+    # Wrap to find the natural rendered height for the available width. The
+    # text is drawn at this natural height (so it isn't squished) but the
+    # canvas is clipped to the declared box so any overflow is hidden — the
+    # same WYSIWYG behaviour the editor uses.
+    _, natural_h_pt = p.wrap(inner_w_pt, 1_000_000)
+
+    c.saveState()
+    # ReportLab Y is bottom-up. The clip rectangle's bottom-left is at
+    # (box_x_pt, box_y_top_pt - box_h_pt).
+    path = c.beginPath()
+    path.rect(box_x_pt, box_y_top_pt - box_h_pt, box_w_pt, box_h_pt)
+    c.clipPath(path, stroke=0, fill=0)
+    # Place the paragraph so its TOP aligns with the box's top edge (after
+    # padding). drawOn(x, y) anchors at the paragraph's bottom-left.
+    text_y_pt = box_y_top_pt - pad_y_pt - natural_h_pt
+    p.drawOn(c, box_x_pt + pad_x_pt, text_y_pt)
+    c.restoreState()
 
 
 def _draw_image_block(c, block: dict, page_h_pt: float, get_image):
