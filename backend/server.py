@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, UploadFile, File, Form, HTTPException, Response
+from fastapi import FastAPI, APIRouter, UploadFile, File, Form, HTTPException, Response, Request
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -502,7 +502,7 @@ async def restore_revision(book_id: str, revision_id: str):
 
 
 @api_router.get("/books/{book_id}/export.pdf")
-async def export_book_pdf(book_id: str):
+async def export_book_pdf(book_id: str, request: Request):
     """Server-side PDF export. Renders the book through headless Chromium
     (Playwright) so the PDF is a 1:1 vector copy of what the editor shows —
     same fonts, same text wrapping, same block positions."""
@@ -511,8 +511,12 @@ async def export_book_pdf(book_id: str):
     book = await db.books.find_one({"id": book_id}, {"_id": 0})
     if not book:
         raise HTTPException(404, "Book not found")
+    # Compute the public base URL from the incoming request so Chromium can
+    # fall back to fetching images directly when the internal object-storage
+    # path fails (the editor proves the public route works from the browser).
+    base_url = str(request.base_url).rstrip("/")
     try:
-        pdf_bytes = await build_book_pdf(book, get_object)
+        pdf_bytes = await build_book_pdf(book, get_object, public_base_url=base_url)
     except Exception as e:
         logging.exception("PDF build failed")
         raise HTTPException(500, f"PDF build failed: {e}")

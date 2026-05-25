@@ -226,8 +226,27 @@ def _render_block(block: dict, image_data_urls: dict) -> str:
         )
     if btype == "image":
         path = _resolve_image_path(block)
+        # First-choice: inlined data: URL (zero network for Chromium).
+        # Fallback: the block's own /api/files/... URL (or whatever full URL
+        # it carries) — Chromium fetches it the same way the editor's <img>
+        # tag does. This makes the export resilient when the internal
+        # object-storage fetch fails for any reason in production.
         src = image_data_urls.get(path or "", "")
         if not src:
+            fallback = (block.get("image_url") or "").strip()
+            if fallback:
+                # Relative `/api/files/...` URLs must be absolute for
+                # Chromium's `set_content` (no base URL) to resolve them.
+                if fallback.startswith("/"):
+                    base = os.environ.get("PUBLIC_BACKEND_URL", "").rstrip("/")
+                    if base:
+                        fallback = f"{base}{fallback}"
+                src = fallback
+        if not src:
+            log.warning(
+                "PDF export: image block %s has no resolvable src (path=%r, url=%r)",
+                block.get("id"), block.get("image_path"), block.get("image_url"),
+            )
             return f'<div style="{style}"></div>'
         img_style = (
             "width:100%;height:100%;"
@@ -352,7 +371,11 @@ def _collect_image_paths(book: dict) -> list[str]:
     return paths
 
 
-async def build_book_pdf(book: dict, get_image: Callable[[str], tuple[bytes, str]]) -> bytes:
+async def build_book_pdf(
+    book: dict,
+    get_image: Callable[[str], tuple[bytes, str]],
+    public_base_url: Optional[str] = None,
+) -> bytes:
     """Render the book to a PDF that exactly mirrors the editor view.
 
     Parameters
@@ -363,7 +386,16 @@ async def build_book_pdf(book: dict, get_image: Callable[[str], tuple[bytes, str
         Synchronous fetcher returning the raw bytes + Content-Type for an
         asset stored in object storage. We inline these as data: URLs so
         Chromium needs zero outbound requests to load the book artwork.
+    public_base_url : str, optional
+        Origin (e.g. `https://app.example.com`) used to absolutise
+        `/api/files/...` URLs when the internal fetch fails — letting
+        Chromium pull the image the same way the editor does. When unset
+        the env var `PUBLIC_BACKEND_URL` is consulted.
     """
+    # Make the public base URL available to _render_block via env so we
+    # don't have to plumb it through every helper.
+    if public_base_url:
+        os.environ["PUBLIC_BACKEND_URL"] = public_base_url
     # Inline all images as data URLs — avoids cross-process network hops.
     image_data_urls: dict[str, str] = {}
     paths = _collect_image_paths(book)
