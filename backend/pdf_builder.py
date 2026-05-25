@@ -14,15 +14,84 @@ fonts and could not reproduce the editor's exact text wrapping.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import html as html_lib
 import logging
+import os
 import re
+import sys
+from pathlib import Path
 from typing import Callable, Optional
 
 from playwright.async_api import async_playwright
 
 log = logging.getLogger("pdf")
+
+# Tracks whether we've already verified/installed Chromium so concurrent
+# PDF requests don't trigger duplicate `playwright install` runs.
+_chromium_ready = False
+_chromium_lock = asyncio.Lock()
+
+
+async def _try_launch_chromium() -> bool:
+    """Lightweight liveness probe — succeeds iff Chromium is launchable."""
+    try:
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+            )
+            await browser.close()
+        return True
+    except Exception as e:
+        log.info("Chromium not yet launchable: %s", str(e).splitlines()[0])
+        return False
+
+
+async def _run_playwright_install() -> None:
+    """Download Chromium via `python -m playwright install chromium`.
+    Streams output to logs so deployment debugging is easier."""
+    log.info("Installing Chromium for Playwright (one-time, ~200MB)…")
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "playwright",
+        "install",
+        "chromium",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    out, _ = await proc.communicate()
+    text = (out or b"").decode(errors="replace")
+    if proc.returncode != 0:
+        log.error("playwright install failed (rc=%s): %s", proc.returncode, text[-2000:])
+        raise RuntimeError(f"playwright install chromium failed: {text[-500:]}")
+    log.info("Chromium installed successfully.")
+
+
+async def ensure_chromium_installed() -> None:
+    """Ensure a launchable Chromium exists. Safe to call from concurrent
+    requests — guarded by a process-wide lock so we install at most once
+    per container."""
+    global _chromium_ready
+    if _chromium_ready:
+        return
+    async with _chromium_lock:
+        if _chromium_ready:
+            return
+        if await _try_launch_chromium():
+            _chromium_ready = True
+            return
+        # Pre-flight install. Use whatever path Playwright defaults to
+        # (respects PLAYWRIGHT_BROWSERS_PATH if set, else ~/.cache/ms-playwright).
+        await _run_playwright_install()
+        if not await _try_launch_chromium():
+            raise RuntimeError(
+                "Chromium installed but still not launchable. "
+                "Container may be missing system libraries (libnss3, libatk1.0, etc.)."
+            )
+        _chromium_ready = True
 
 
 # Must mirror /app/frontend/src/lib/pageSizes.js exactly.
@@ -305,6 +374,10 @@ async def build_book_pdf(book: dict, get_image: Callable[[str], tuple[bytes, str
             log.warning("PDF export: failed to inline image %s: %s", path, e)
 
     html, page_w, page_h = _build_html(book, image_data_urls)
+
+    # Safety net: ensure Chromium is available. Startup tries this too, but
+    # in production the binary might not be there on first boot.
+    await ensure_chromium_installed()
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(

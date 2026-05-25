@@ -329,6 +329,15 @@ async def startup():
         logging.info("Storage initialized")
     except Exception as e:
         logging.error(f"Storage init failed: {e}")
+    # PDF export requires Chromium. Make the backend self-healing across
+    # preview (binary pre-installed under /pw-browsers) and production
+    # (binary may be absent on first boot). We don't block startup if this
+    # fails — the PDF endpoint will surface a clear error on first use.
+    try:
+        from pdf_builder import ensure_chromium_installed
+        await ensure_chromium_installed()
+    except Exception as e:
+        logging.warning(f"Chromium pre-install check failed (will retry on first PDF request): {e}")
 
 
 @app.on_event("shutdown")
