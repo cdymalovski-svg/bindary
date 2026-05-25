@@ -20,6 +20,8 @@ import {
   Heading,
   List,
   Wand2,
+  ChevronUp,
+  ChevronDown,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -731,6 +733,43 @@ export default function Editor() {
     });
   };
 
+  // Insert a blank page after `idx` (or before everything if idx < 0).
+  const insertPageAfter = (idx) => {
+    const ref = book?.pages?.[idx] || book?.pages?.[0];
+    const fresh = {
+      id: uid(),
+      blocks: [],
+      background_color: '#FFF8DC',
+      show_page_number: true,
+      page_number_align: 'right',
+      page_number_size: ref?.page_number_size || 14,
+      page_number_font: ref?.page_number_font || 'Cormorant Garamond',
+    };
+    const insertAt = Math.max(0, idx + 1);
+    updatePages((pages) => {
+      const next = [...pages];
+      next.splice(insertAt, 0, fresh);
+      return next;
+    });
+    // Focus the brand-new page so the user lands on it immediately.
+    setActivePageIndex(insertAt);
+    setSelectedBlockId(null);
+  };
+
+  // Reorder a page by ±1 position. Keeps the moved page selected.
+  const movePage = (idx, direction) => {
+    const delta = direction === 'up' ? -1 : 1;
+    const target = idx + delta;
+    if (target < 0 || target >= book.pages.length) return;
+    updatePages((pages) => {
+      const next = [...pages];
+      const [moved] = next.splice(idx, 1);
+      next.splice(target, 0, moved);
+      return next;
+    });
+    setActivePageIndex(target);
+  };
+
   const removePage = (idx) => {
     if (book.pages.length <= 1) {
       toast.error('A book must have at least one page');
@@ -878,32 +917,32 @@ export default function Editor() {
   return (
     <div className="h-screen w-screen flex flex-col bg-desk overflow-hidden">
       {/* Top bar */}
-      <header className="h-14 border-b border-rule bg-paper flex items-center px-4 gap-3 z-20">
+      <header className="h-14 border-b border-rule bg-paper flex items-center px-3 gap-2 z-20 min-w-0">
         <Button
           variant="ghost"
           onClick={() => navigate('/')}
-          className="rounded-sm text-ink hover:bg-desk px-2"
+          className="rounded-sm text-ink hover:bg-desk px-2 shrink-0"
           data-testid="back-to-library"
         >
-          <ArrowLeft className="w-4 h-4 mr-1" /> Library
+          <ArrowLeft className="w-4 h-4 lg:mr-1" /> <span className="hidden lg:inline">Library</span>
         </Button>
-        <div className="w-px h-6 bg-rule" />
+        <div className="w-px h-6 bg-rule shrink-0" />
         <Input
           value={book.title}
           onChange={(e) => setBook({ ...book, title: e.target.value })}
-          className="bg-transparent border-0 font-serif text-xl text-ink focus-visible:ring-1 focus-visible:ring-terracotta rounded-sm w-72"
+          className="bg-transparent border-0 font-serif text-xl text-ink focus-visible:ring-1 focus-visible:ring-terracotta rounded-sm w-40 lg:w-56 xl:w-64 min-w-0"
           data-testid="book-title-input"
         />
         <Input
           value={book.author || ''}
           onChange={(e) => setBook({ ...book, author: e.target.value })}
           placeholder="Author"
-          className="bg-transparent border-0 text-ink-soft text-sm italic w-40 focus-visible:ring-1 focus-visible:ring-terracotta rounded-sm"
+          className="bg-transparent border-0 text-ink-soft text-sm italic w-24 lg:w-32 xl:w-40 focus-visible:ring-1 focus-visible:ring-terracotta rounded-sm min-w-0 hidden md:block"
           data-testid="book-author-input"
         />
-        <div className="w-px h-6 bg-rule" />
+        <div className="w-px h-6 bg-rule shrink-0 hidden md:block" />
         <Select value={book.page_size} onValueChange={(v) => setBook({ ...book, page_size: v })}>
-          <SelectTrigger className="bg-white border-rule rounded-sm h-8 w-36 text-sm" data-testid="page-size-trigger">
+          <SelectTrigger className="bg-white border-rule rounded-sm h-8 w-24 lg:w-32 xl:w-36 text-sm shrink-0" data-testid="page-size-trigger">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -913,8 +952,8 @@ export default function Editor() {
           </SelectContent>
         </Select>
 
-        <div className="w-px h-6 bg-rule" />
-        <div className="flex items-center bg-white border border-rule rounded-sm h-8 p-0.5" data-testid="view-mode-toggle">
+        <div className="w-px h-6 bg-rule shrink-0 hidden lg:block" />
+        <div className="hidden lg:flex items-center bg-white border border-rule rounded-sm h-8 p-0.5 shrink-0" data-testid="view-mode-toggle">
           <button
             type="button"
             onClick={() => setViewMode('single')}
@@ -922,7 +961,7 @@ export default function Editor() {
             className={`h-7 px-2.5 flex items-center gap-1 rounded-sm text-xs tracking-wide transition-colors ${viewMode === 'single' ? 'bg-ink text-paper' : 'text-ink-soft hover:bg-desk'}`}
             title="Single page"
           >
-            <Square className="w-3.5 h-3.5" /> Single
+            <Square className="w-3.5 h-3.5" /> <span className="hidden xl:inline">Single</span>
           </button>
           <button
             type="button"
@@ -931,16 +970,16 @@ export default function Editor() {
             className={`h-7 px-2.5 flex items-center gap-1 rounded-sm text-xs tracking-wide transition-colors ${viewMode === 'spread' ? 'bg-ink text-paper' : 'text-ink-soft hover:bg-desk'}`}
             title="Two-page spread"
           >
-            <BookOpen className="w-3.5 h-3.5" /> Spread
+            <BookOpen className="w-3.5 h-3.5" /> <span className="hidden xl:inline">Spread</span>
           </button>
         </div>
 
-        <div className="flex-1" />
+        <div className="flex-1 min-w-0" />
 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button className="bg-ink hover:bg-ink-soft text-paper rounded-sm h-8" data-testid="add-text-button">
-              <TypeIcon className="w-4 h-4 mr-1" /> Text
+            <Button className="bg-ink hover:bg-ink-soft text-paper rounded-sm h-8 shrink-0 px-2 lg:px-3" data-testid="add-text-button">
+              <TypeIcon className="w-4 h-4 lg:mr-1" /> <span className="hidden lg:inline">Text</span>
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="bg-paper border-rule rounded-sm w-52 p-1">
@@ -978,29 +1017,29 @@ export default function Editor() {
         {activePageIndex === 0 && (
           <Button
             onClick={designCover}
-            className="bg-terracotta/90 hover:bg-terracotta text-paper rounded-sm h-8"
+            className="bg-terracotta/90 hover:bg-terracotta text-paper rounded-sm h-8 shrink-0 px-2 lg:px-3"
             data-testid="design-cover-button"
             title="Auto-arrange a cover from your title, author and any artwork on this page"
           >
-            <Wand2 className="w-4 h-4 mr-1" /> Design cover
+            <Wand2 className="w-4 h-4 lg:mr-1" /> <span className="hidden lg:inline">Design cover</span>
           </Button>
         )}
         {book.is_chapter_book && (
-          <Button onClick={addChapterBlock} className="bg-ink hover:bg-ink-soft text-paper rounded-sm h-8" data-testid="add-chapter-button">
-            <Heading className="w-4 h-4 mr-1" /> Chapter
+          <Button onClick={addChapterBlock} className="bg-ink hover:bg-ink-soft text-paper rounded-sm h-8 shrink-0 px-2 lg:px-3" data-testid="add-chapter-button">
+            <Heading className="w-4 h-4 lg:mr-1" /> <span className="hidden lg:inline">Chapter</span>
           </Button>
         )}
         {book.is_chapter_book && (
-          <Button onClick={addTocBlock} className="bg-ink hover:bg-ink-soft text-paper rounded-sm h-8" data-testid="add-toc-button" title="Insert Table of Contents from chapter headings">
-            <List className="w-4 h-4 mr-1" /> Contents
+          <Button onClick={addTocBlock} className="bg-ink hover:bg-ink-soft text-paper rounded-sm h-8 shrink-0 px-2 lg:px-3" data-testid="add-toc-button" title="Insert Table of Contents from chapter headings">
+            <List className="w-4 h-4 lg:mr-1" /> <span className="hidden lg:inline">Contents</span>
           </Button>
         )}
         <Button
           onClick={() => fileInputRef.current?.click()}
-          className="bg-ink hover:bg-ink-soft text-paper rounded-sm h-8"
+          className="bg-ink hover:bg-ink-soft text-paper rounded-sm h-8 shrink-0 px-2 lg:px-3"
           data-testid="add-image-button"
         >
-          <ImageIcon className="w-4 h-4 mr-1" /> Image
+          <ImageIcon className="w-4 h-4 lg:mr-1" /> <span className="hidden lg:inline">Image</span>
         </Button>
         <input
           ref={fileInputRef}
@@ -1014,39 +1053,45 @@ export default function Editor() {
             e.target.value = '';
           }}
         />
-        <div className="w-px h-6 bg-rule mx-1" />
-        <SaveStatus saving={saving} lastSavedAt={lastSavedAt} />
-        <HistoryDialog
-          bookId={book.id}
-          onRestored={(restored) => {
-            // Skip the next autosave so the restored snapshot isn't immediately
-            // overwritten by a stale in-memory state.
-            skipNextAutoSaveRef.current = true;
-            setBook(restored);
-            setSelectedBlockId(null);
-            setEditingTextId(null);
-            setActivePageIndex(0);
-          }}
-        />
-        <SaveTemplateDialog book={book} />
+        <div className="w-px h-6 bg-rule mx-1 shrink-0 hidden md:block" />
+        <div className="hidden md:block shrink-0">
+          <SaveStatus saving={saving} lastSavedAt={lastSavedAt} />
+        </div>
+        <div className="shrink-0">
+          <HistoryDialog
+            bookId={book.id}
+            onRestored={(restored) => {
+              // Skip the next autosave so the restored snapshot isn't immediately
+              // overwritten by a stale in-memory state.
+              skipNextAutoSaveRef.current = true;
+              setBook(restored);
+              setSelectedBlockId(null);
+              setEditingTextId(null);
+              setActivePageIndex(0);
+            }}
+          />
+        </div>
+        <div className="shrink-0">
+          <SaveTemplateDialog book={book} />
+        </div>
         <Button
           onClick={() => saveBook()}
           variant="outline"
-          className="rounded-sm h-8 border-rule"
+          className="rounded-sm h-8 border-rule shrink-0 px-2 lg:px-3"
           disabled={saving}
           data-testid="save-button"
         >
-          {saving ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Save className="w-4 h-4 mr-1" />}
-          Save
+          {saving ? <Loader2 className="w-4 h-4 lg:mr-1 animate-spin" /> : <Save className="w-4 h-4 lg:mr-1" />}
+          <span className="hidden lg:inline">Save</span>
         </Button>
         <Button
           onClick={onExportPdf}
           disabled={exporting}
-          className="bg-terracotta hover:bg-terracotta-dark text-paper rounded-sm h-8"
+          className="bg-terracotta hover:bg-terracotta-dark text-paper rounded-sm h-8 shrink-0 px-2 lg:px-3"
           data-testid="export-pdf-button"
         >
-          {exporting ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Download className="w-4 h-4 mr-1" />}
-          Export PDF
+          {exporting ? <Loader2 className="w-4 h-4 lg:mr-1 animate-spin" /> : <Download className="w-4 h-4 lg:mr-1" />}
+          <span className="hidden lg:inline">Export PDF</span>
         </Button>
       </header>
 
@@ -1057,21 +1102,38 @@ export default function Editor() {
             <p className="label-caps text-ink-mute">Pages</p>
             <span className="text-xs text-ink-mute">{book.pages.length}</span>
           </div>
-          <div className="flex-1 overflow-y-auto sidebar-scroll px-3 py-3 space-y-2" data-testid="pages-list">
+          <div className="flex-1 overflow-y-auto sidebar-scroll px-3 py-3" data-testid="pages-list">
             {book.pages.map((p, i) => (
-              <PageThumbnail
-                key={p.id}
-                page={p}
-                index={i}
-                active={i === activePageIndex}
-                pageSize={pageSize}
-                totalPages={book.pages.length}
-                pageNumberStart={book.page_number_start || 1}
-                onClick={() => { setActivePageIndex(i); setSelectedBlockId(null); }}
-                onDuplicate={() => duplicatePage(i)}
-                onDelete={() => removePage(i)}
-                onTogglePageNumber={() => togglePageNumber(i)}
-              />
+              <div key={p.id}>
+                <PageThumbnail
+                  page={p}
+                  index={i}
+                  active={i === activePageIndex}
+                  pageSize={pageSize}
+                  totalPages={book.pages.length}
+                  pageNumberStart={book.page_number_start || 1}
+                  onClick={() => { setActivePageIndex(i); setSelectedBlockId(null); }}
+                  onDuplicate={() => duplicatePage(i)}
+                  onDelete={() => removePage(i)}
+                  onTogglePageNumber={() => togglePageNumber(i)}
+                  onMoveUp={i > 0 ? () => movePage(i, 'up') : null}
+                  onMoveDown={i < book.pages.length - 1 ? () => movePage(i, 'down') : null}
+                />
+                {/* Between-pages insert gutter — hidden until you hover it. */}
+                <button
+                  type="button"
+                  onClick={() => insertPageAfter(i)}
+                  data-testid={`insert-page-after-${i}`}
+                  title="Insert a new page here"
+                  className="group/insert w-full h-3 my-1 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity"
+                >
+                  <span className="h-px flex-1 bg-terracotta/60" />
+                  <span className="mx-1 flex items-center justify-center w-4 h-4 rounded-full bg-terracotta text-paper">
+                    <Plus className="w-2.5 h-2.5" strokeWidth={3} />
+                  </span>
+                  <span className="h-px flex-1 bg-terracotta/60" />
+                </button>
+              </div>
             ))}
           </div>
           <div className="p-3 border-t border-rule-dark">
@@ -1428,7 +1490,7 @@ function SpreadPlaceholder({ pageSize }) {
   );
 }
 
-function PageThumbnail({ page, index, active, pageSize, totalPages = 1, pageNumberStart = 1, onClick, onDuplicate, onDelete, onTogglePageNumber }) {
+function PageThumbnail({ page, index, active, pageSize, totalPages = 1, pageNumberStart = 1, onClick, onDuplicate, onDelete, onTogglePageNumber, onMoveUp, onMoveDown }) {
   const thumbW = 160;
   const scale = thumbW / pageSize.width;
   const thumbH = pageSize.height * scale;
@@ -1532,6 +1594,26 @@ function PageThumbnail({ page, index, active, pageSize, totalPages = 1, pageNumb
         {index + 1}
       </div>
       <div className="absolute bottom-1 right-1 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+        {onMoveUp && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onMoveUp(); }}
+            className="p-1 bg-ink/80 hover:bg-ink text-paper rounded-sm"
+            title="Move page up"
+            data-testid={`move-page-up-${index}`}
+          >
+            <ChevronUp className="w-3 h-3" />
+          </button>
+        )}
+        {onMoveDown && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onMoveDown(); }}
+            className="p-1 bg-ink/80 hover:bg-ink text-paper rounded-sm"
+            title="Move page down"
+            data-testid={`move-page-down-${index}`}
+          >
+            <ChevronDown className="w-3 h-3" />
+          </button>
+        )}
         <button
           onClick={(e) => { e.stopPropagation(); onTogglePageNumber(); }}
           className="p-1 bg-ink/80 hover:bg-ink text-paper rounded-sm"
