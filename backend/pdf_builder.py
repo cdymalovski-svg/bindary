@@ -366,12 +366,23 @@ async def build_book_pdf(book: dict, get_image: Callable[[str], tuple[bytes, str
     """
     # Inline all images as data URLs — avoids cross-process network hops.
     image_data_urls: dict[str, str] = {}
-    for path in _collect_image_paths(book):
+    paths = _collect_image_paths(book)
+    log.info("PDF export: book has %d unique image path(s)", len(paths))
+    failed: list[str] = []
+    for path in paths:
         try:
             data, ctype = get_image(path)
+            if not data:
+                failed.append(f"{path} (empty body)")
+                log.warning("PDF export: empty bytes for image %s", path)
+                continue
             image_data_urls[path] = _data_url(ctype or "image/png", data)
+            log.info("PDF export: inlined %s (%d bytes, %s)", path, len(data), ctype)
         except Exception as e:
+            failed.append(f"{path} ({e})")
             log.warning("PDF export: failed to inline image %s: %s", path, e)
+    if failed:
+        log.error("PDF export: %d image(s) skipped: %s", len(failed), "; ".join(failed))
 
     html, page_w, page_h = _build_html(book, image_data_urls)
 
