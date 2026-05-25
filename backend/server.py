@@ -329,15 +329,22 @@ async def startup():
         logging.info("Storage initialized")
     except Exception as e:
         logging.error(f"Storage init failed: {e}")
-    # PDF export requires Chromium. Make the backend self-healing across
-    # preview (binary pre-installed under /pw-browsers) and production
-    # (binary may be absent on first boot). We don't block startup if this
-    # fails — the PDF endpoint will surface a clear error on first use.
-    try:
-        from pdf_builder import ensure_chromium_installed
-        await ensure_chromium_installed()
-    except Exception as e:
-        logging.warning(f"Chromium pre-install check failed (will retry on first PDF request): {e}")
+    # PDF export requires Chromium, but downloading it (~200 MB, ~20 s) must
+    # NEVER block FastAPI's startup — uvicorn's lifespan has a hard timeout
+    # and a slow install would leave the entire app unresponsive (book CRUD,
+    # asset list, everything). Kick the install off as a background task so
+    # the API answers requests immediately; the PDF endpoint waits on the
+    # same task lazily.
+    import asyncio as _asyncio
+    from pdf_builder import ensure_chromium_installed
+
+    async def _bg_install():
+        try:
+            await ensure_chromium_installed()
+        except Exception as e:
+            logging.warning(f"Chromium background install failed (will retry on first PDF request): {e}")
+
+    _asyncio.create_task(_bg_install())
 
 
 @app.on_event("shutdown")
