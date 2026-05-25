@@ -5,7 +5,31 @@ import { getPageSize } from './pageSizes';
 // Convert page-pixel size (96 DPI) to PDF points (72 DPI): pt = px * 72 / 96
 const PX_TO_PT = 72 / 96;
 
-export async function exportBookToPdf(book, pageRefs) {
+// Render up to this many pages with html2canvas simultaneously.
+// Higher = faster on multi-core machines, but more memory pressure.
+const CONCURRENCY = 3;
+
+// Render one page node to a JPEG data URL. Extracted so we can run several
+// in parallel without sequential awaits.
+async function renderNodeToJpeg(node, scale) {
+  const canvas = await html2canvas(node, {
+    backgroundColor: '#F9F6F0',
+    scale,
+    // Reuse the DOM's already-loaded <img crossOrigin="anonymous"> elements
+    // via drawImage() instead of re-fetching every asset via XHR. This is
+    // dramatically faster (no second network round-trip per image) and is
+    // still canvas-safe because every img tag is loaded with crossOrigin.
+    useCORS: false,
+    allowTaint: false,
+    logging: false,
+    foreignObjectRendering: false,
+    removeContainer: true,
+    imageTimeout: 15000,
+  });
+  return canvas.toDataURL('image/jpeg', 0.9);
+}
+
+export async function exportBookToPdf(book, pageRefs, { onProgress, scale = 1 } = {}) {
   const { width, height } = getPageSize(book.page_size);
   const pdfW = width * PX_TO_PT;
   const pdfH = height * PX_TO_PT;
@@ -16,20 +40,32 @@ export async function exportBookToPdf(book, pageRefs) {
     orientation: pdfW > pdfH ? 'landscape' : 'portrait',
   });
 
-  for (let i = 0; i < pageRefs.length; i++) {
-    const node = pageRefs[i];
-    if (!node) continue;
+  const validNodes = pageRefs.filter(Boolean);
+  const total = validNodes.length;
+  let completed = 0;
+  const results = new Array(total);
+
+  // Run renders in batches of CONCURRENCY to balance speed and memory.
+  for (let start = 0; start < total; start += CONCURRENCY) {
+    const batch = [];
+    for (let j = 0; j < CONCURRENCY && start + j < total; j += 1) {
+      const idx = start + j;
+      batch.push(
+        renderNodeToJpeg(validNodes[idx], scale).then((dataUrl) => {
+          results[idx] = dataUrl;
+          completed += 1;
+          onProgress?.(completed, total);
+        })
+      );
+    }
     // eslint-disable-next-line no-await-in-loop
-    const canvas = await html2canvas(node, {
-      backgroundColor: '#F9F6F0',
-      scale: 2,
-      useCORS: true,
-      allowTaint: false,
-      logging: false,
-    });
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+    await Promise.all(batch);
+  }
+
+  // Add to the PDF in original page order.
+  for (let i = 0; i < results.length; i += 1) {
     if (i > 0) pdf.addPage([pdfW, pdfH], pdfW > pdfH ? 'landscape' : 'portrait');
-    pdf.addImage(dataUrl, 'JPEG', 0, 0, pdfW, pdfH, undefined, 'FAST');
+    pdf.addImage(results[i], 'JPEG', 0, 0, pdfW, pdfH, undefined, 'FAST');
   }
 
   const safe = (book.title || 'book').replace(/[^a-z0-9-_]+/gi, '_');

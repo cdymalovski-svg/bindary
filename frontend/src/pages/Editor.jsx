@@ -778,6 +778,9 @@ export default function Editor() {
   const onExportPdf = async () => {
     if (!book) return;
     setExporting(true);
+    const toastId = 'pdf-export';
+    toast.loading('Preparing PDF…', { id: toastId });
+    const t0 = performance.now();
     try {
       // First save
       await saveBook(false);
@@ -786,11 +789,16 @@ export default function Editor() {
       const nodes = Array.from(
         exportContainerRef.current?.querySelectorAll('[data-export-page]') || []
       );
-      await exportBookToPdf(book, nodes);
-      toast.success('PDF exported');
+      await exportBookToPdf(book, nodes, {
+        onProgress: (done, total) => {
+          toast.loading(`Rendering page ${done} of ${total}…`, { id: toastId });
+        },
+      });
+      const secs = ((performance.now() - t0) / 1000).toFixed(1);
+      toast.success(`PDF exported in ${secs}s`, { id: toastId });
     } catch (e) {
       console.error(e);
-      toast.error('Export failed');
+      toast.error('Export failed', { id: toastId });
     } finally {
       setExporting(false);
     }
