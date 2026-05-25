@@ -892,31 +892,36 @@ export default function Editor() {
               <TypeIcon className="w-4 h-4 mr-1" /> Text
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="bg-paper border-rule rounded-sm w-44 p-1">
-            <DropdownMenuItem
-              data-testid="add-text-title"
-              onClick={() => addTextBlock('title')}
-              className="rounded-sm cursor-pointer flex flex-col items-start gap-0 py-2"
-            >
-              <span style={{ fontFamily: 'Playfair Display', fontSize: 18 }}>Title</span>
-              <span className="text-[10px] text-ink-mute">Playfair · 48px</span>
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              data-testid="add-text-subtitle"
-              onClick={() => addTextBlock('subtitle')}
-              className="rounded-sm cursor-pointer flex flex-col items-start gap-0 py-2"
-            >
-              <span style={{ fontFamily: 'Cormorant Garamond', fontSize: 16, fontStyle: 'italic' }}>Subtitle</span>
-              <span className="text-[10px] text-ink-mute">Cormorant · 28px</span>
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              data-testid="add-text-body"
-              onClick={() => addTextBlock('body')}
-              className="rounded-sm cursor-pointer flex flex-col items-start gap-0 py-2"
-            >
-              <span style={{ fontFamily: 'Cormorant Garamond', fontSize: 14 }}>Page text</span>
-              <span className="text-[10px] text-ink-mute">Cormorant · 18px</span>
-            </DropdownMenuItem>
+          <DropdownMenuContent align="start" className="bg-paper border-rule rounded-sm w-52 p-1">
+            {[
+              { key: 'title', label: 'Title' },
+              { key: 'subtitle', label: 'Subtitle' },
+              { key: 'body', label: 'Page text' },
+            ].map(({ key, label }) => {
+              // Reflect the user's saved override (if any) so the menu always
+              // shows the font + size the block will actually use.
+              const base = TEXT_PRESETS[key];
+              const user = book?.text_presets?.[key] || {};
+              const effFont = user.font_family || base.font_family;
+              const effSize = user.font_size || base.font_size;
+              const isCustom = !!(user.font_family || user.font_size);
+              return (
+                <DropdownMenuItem
+                  key={key}
+                  data-testid={`add-text-${key}`}
+                  onClick={() => addTextBlock(key)}
+                  className="rounded-sm cursor-pointer flex flex-col items-start gap-0 py-2"
+                >
+                  <span style={{ fontFamily: effFont, fontSize: key === 'body' ? 14 : key === 'subtitle' ? 16 : 18, fontStyle: key === 'subtitle' ? 'italic' : 'normal' }}>
+                    {label}
+                  </span>
+                  <span className="text-[10px] text-ink-mute">
+                    {effFont} · {effSize}px
+                    {isCustom && <span className="ml-1 text-terracotta">· custom</span>}
+                  </span>
+                </DropdownMenuItem>
+              );
+            })}
           </DropdownMenuContent>
         </DropdownMenu>
         {activePageIndex === 0 && (
