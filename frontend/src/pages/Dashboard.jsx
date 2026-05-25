@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { Plus, BookOpen, Trash2, FileText, Bookmark, Copy, Search } from 'lucide-react';
+import { Plus, BookOpen, Trash2, FileText, Bookmark, Copy, Search, Pencil } from 'lucide-react';
 import {
   listBooks, createBook, deleteBook, fileUrl,
   listTemplates, deleteTemplate, updateBook,
@@ -127,6 +127,17 @@ export default function Dashboard() {
       refresh();
     } catch (e) {
       toast.error('Could not duplicate');
+    }
+  };
+
+  const onEditDetails = async (id, { title, author }) => {
+    try {
+      await updateBook(id, { title: title.trim() || 'Untitled Book', author: author.trim() });
+      toast.success('Details updated');
+      refresh();
+    } catch (e) {
+      toast.error('Could not update');
+      throw e;
     }
   };
 
@@ -373,6 +384,7 @@ export default function Dashboard() {
                     onOpen={() => navigate(`/editor/${b.id}`)}
                     onDelete={() => onDelete(b.id)}
                     onDuplicate={() => onDuplicate(b.id)}
+                    onEditDetails={(patch) => onEditDetails(b.id, patch)}
                   />
                 ))}
               </div>
@@ -384,8 +396,34 @@ export default function Dashboard() {
   );
 }
 
-function BookCard({ book, onOpen, onDelete, onDuplicate }) {
+function BookCard({ book, onOpen, onDelete, onDuplicate, onEditDetails }) {
   const cover = book.cover_image_url ? fileUrl(book.cover_image_url) : null;
+  const [editOpen, setEditOpen] = useState(false);
+  const [editTitle, setEditTitle] = useState(book.title || '');
+  const [editAuthor, setEditAuthor] = useState(book.author || '');
+  const [saving, setSaving] = useState(false);
+  // Reset form whenever the dialog opens with the current values.
+  useEffect(() => {
+    if (editOpen) {
+      setEditTitle(book.title || '');
+      setEditAuthor(book.author || '');
+    }
+  }, [editOpen, book.title, book.author]);
+  const submitEdit = async () => {
+    if (!editTitle.trim()) {
+      toast.error('Title cannot be empty');
+      return;
+    }
+    setSaving(true);
+    try {
+      await onEditDetails?.({ title: editTitle, author: editAuthor });
+      setEditOpen(false);
+    } catch (e) {
+      // toast already shown by parent
+    } finally {
+      setSaving(false);
+    }
+  };
   return (
     <div
       className="group bg-paper border border-rule rounded-sm overflow-hidden hover:shadow-lg transition-shadow"
@@ -417,6 +455,66 @@ function BookCard({ book, onOpen, onDelete, onDuplicate }) {
           <p className="text-xs text-ink-mute truncate">{book.author || 'Anonymous'} · {book.page_count} pages</p>
         </div>
         <div className="flex items-center gap-1">
+          <Dialog open={editOpen} onOpenChange={setEditOpen}>
+            <DialogTrigger asChild>
+              <button
+                type="button"
+                data-testid={`edit-book-${book.id}`}
+                className="p-2 text-ink-mute hover:text-ink rounded-sm"
+                title="Edit title and author"
+              >
+                <Pencil className="w-4 h-4" />
+              </button>
+            </DialogTrigger>
+            <DialogContent className="bg-paper border-rule rounded-sm max-w-md">
+              <DialogHeader>
+                <DialogTitle className="font-serif text-2xl">Edit book details</DialogTitle>
+              </DialogHeader>
+              <div className="space-y-4 py-2">
+                <div className="space-y-1.5">
+                  <Label htmlFor={`edit-title-${book.id}`}>Title</Label>
+                  <Input
+                    id={`edit-title-${book.id}`}
+                    data-testid={`edit-book-title-input-${book.id}`}
+                    value={editTitle}
+                    onChange={(e) => setEditTitle(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') submitEdit(); }}
+                    autoFocus
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor={`edit-author-${book.id}`}>Author</Label>
+                  <Input
+                    id={`edit-author-${book.id}`}
+                    data-testid={`edit-book-author-input-${book.id}`}
+                    value={editAuthor}
+                    onChange={(e) => setEditAuthor(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') submitEdit(); }}
+                    placeholder="Anonymous"
+                  />
+                </div>
+              </div>
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => setEditOpen(false)}
+                  data-testid={`cancel-edit-book-${book.id}`}
+                  className="rounded-sm"
+                  disabled={saving}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={submitEdit}
+                  data-testid={`save-edit-book-${book.id}`}
+                  className="bg-ink hover:bg-ink-soft text-paper rounded-sm"
+                  disabled={saving}
+                >
+                  {saving ? 'Saving…' : 'Save'}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
           <button
             type="button"
             onClick={onDuplicate}
