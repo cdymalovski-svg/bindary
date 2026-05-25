@@ -34,6 +34,8 @@ import {
   DropdownMenuTrigger,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuLabel,
 } from '@/components/ui/dropdown-menu';
 import { FONT_GROUPS } from '@/lib/fonts';
 
@@ -51,6 +53,8 @@ export default function BlockProperties({
   onLayer,
   onFit,
   onSaveAsPreset,
+  onResetPreset,
+  textPresets,
 }) {
   if (!block) return null;
   const isText = block.type === 'text';
@@ -158,7 +162,10 @@ export default function BlockProperties({
               Save as default…
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="bg-paper border-rule rounded-sm w-44 p-1">
+          <DropdownMenuContent align="end" className="bg-paper border-rule rounded-sm w-48 p-1">
+            <DropdownMenuLabel className="text-[10px] tracking-[0.18em] uppercase text-ink-mute">
+              Save this style as
+            </DropdownMenuLabel>
             <DropdownMenuItem
               data-testid="save-as-preset-title"
               onClick={() => onSaveAsPreset('title')}
@@ -180,6 +187,32 @@ export default function BlockProperties({
             >
               Page text preset
             </DropdownMenuItem>
+            {onResetPreset && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel className="text-[10px] tracking-[0.18em] uppercase text-ink-mute">
+                  Reset to built-in
+                </DropdownMenuLabel>
+                {[
+                  { key: 'title', label: 'Title preset' },
+                  { key: 'subtitle', label: 'Subtitle preset' },
+                  { key: 'body', label: 'Page text preset' },
+                ].map(({ key, label }) => {
+                  const isCustom = !!textPresets?.[key];
+                  return (
+                    <DropdownMenuItem
+                      key={key}
+                      data-testid={`reset-preset-${key}`}
+                      onClick={() => onResetPreset(key)}
+                      disabled={!isCustom}
+                      className="rounded-sm cursor-pointer text-ink-soft"
+                    >
+                      {label}
+                    </DropdownMenuItem>
+                  );
+                })}
+              </>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
       )}

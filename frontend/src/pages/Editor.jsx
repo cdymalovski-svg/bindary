@@ -541,6 +541,33 @@ export default function Editor() {
     setActivePageIndex(pageIdx);
     setSelectedBlockId(block.id);
   };
+  // Clear the user's override for a preset key so the built-in default is used
+  // again. Persists immediately so reload reflects the reset.
+  const resetPresetToDefault = (presetKey) => {
+    const current = book.text_presets || {};
+    if (!current[presetKey]) {
+      toast.error('Already at the default');
+      return;
+    }
+    // Set to null (instead of delete) so the value is explicit in the API call.
+    const newPresets = { ...current, [presetKey]: null };
+    setBook((b) => ({ ...b, text_presets: newPresets }));
+    const label = TEXT_PRESETS[presetKey]?.label || presetKey;
+    updateBook(book.id, {
+      title: book.title,
+      author: book.author,
+      page_size: book.page_size,
+      page_number_start: book.page_number_start || 1,
+      is_chapter_book: !!book.is_chapter_book,
+      text_presets: newPresets,
+      pages: book.pages,
+    })
+      .then(() => {
+        setLastSavedAt(new Date());
+        toast.success(`"${label}" reset to default`);
+      })
+      .catch(() => toast.error('Could not reset preset'));
+  };
 
   // Quick context-menu actions invoked from the Assets panel.
   const replaceSelectedImageWithAsset = async (asset) => {
@@ -1113,6 +1140,8 @@ export default function Editor() {
                   onLayer={changeLayer}
                   onFit={fitSelectedBlock}
                   onSaveAsPreset={saveBlockAsPreset}
+                  onResetPreset={resetPresetToDefault}
+                  textPresets={book.text_presets}
                 />
               ) : (
                 <div className="p-6 text-ink-mute text-sm font-serif italic">Select a block above to edit its properties.</div>
