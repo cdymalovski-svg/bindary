@@ -11,7 +11,10 @@ const CONCURRENCY = 3;
 
 // Render one page node to a JPEG data URL. Extracted so we can run several
 // in parallel without sequential awaits.
-async function renderNodeToJpeg(node, scale) {
+// Render one page node to a PNG data URL. PNG is lossless so colors are
+// preserved exactly (no JPEG chroma compression). Extracted so we can run
+// several renders in parallel without sequential awaits.
+async function renderNodeToImage(node, scale) {
   const canvas = await html2canvas(node, {
     backgroundColor: '#F9F6F0',
     scale,
@@ -26,10 +29,10 @@ async function renderNodeToJpeg(node, scale) {
     removeContainer: true,
     imageTimeout: 15000,
   });
-  return canvas.toDataURL('image/jpeg', 0.9);
+  return canvas.toDataURL('image/png');
 }
 
-export async function exportBookToPdf(book, pageRefs, { onProgress, scale = 1 } = {}) {
+export async function exportBookToPdf(book, pageRefs, { onProgress, scale = 1.5 } = {}) {
   const { width, height } = getPageSize(book.page_size);
   const pdfW = width * PX_TO_PT;
   const pdfH = height * PX_TO_PT;
@@ -51,7 +54,7 @@ export async function exportBookToPdf(book, pageRefs, { onProgress, scale = 1 } 
     for (let j = 0; j < CONCURRENCY && start + j < total; j += 1) {
       const idx = start + j;
       batch.push(
-        renderNodeToJpeg(validNodes[idx], scale).then((dataUrl) => {
+        renderNodeToImage(validNodes[idx], scale).then((dataUrl) => {
           results[idx] = dataUrl;
           completed += 1;
           onProgress?.(completed, total);
@@ -65,7 +68,7 @@ export async function exportBookToPdf(book, pageRefs, { onProgress, scale = 1 } 
   // Add to the PDF in original page order.
   for (let i = 0; i < results.length; i += 1) {
     if (i > 0) pdf.addPage([pdfW, pdfH], pdfW > pdfH ? 'landscape' : 'portrait');
-    pdf.addImage(results[i], 'JPEG', 0, 0, pdfW, pdfH, undefined, 'FAST');
+    pdf.addImage(results[i], 'PNG', 0, 0, pdfW, pdfH, undefined, 'FAST');
   }
 
   const safe = (book.title || 'book').replace(/[^a-z0-9-_]+/gi, '_');

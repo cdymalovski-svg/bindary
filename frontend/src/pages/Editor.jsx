@@ -1477,7 +1477,9 @@ function PageThumbnail({ page, index, active, pageSize, totalPages = 1, pageNumb
             pointerEvents: 'none',
           }}
         >
-          {page.blocks.map((b) => (
+          {page.blocks.map((b) => {
+            const isText = b.type === 'text';
+            return (
             <div
               key={b.id}
               style={{
@@ -1485,11 +1487,15 @@ function PageThumbnail({ page, index, active, pageSize, totalPages = 1, pageNumb
                 left: b.x,
                 top: b.y,
                 width: b.width,
-                height: b.height,
-                overflow: 'hidden',
+                // Text blocks use min-height so long content isn't clipped
+                // when the user typed more than the block was sized for.
+                ...(isText ? { minHeight: b.height } : { height: b.height }),
+                // Text overflow is visible for PDF export so descenders and
+                // wrapped lines are never sliced off; non-text keeps clipping.
+                overflow: isText ? 'visible' : 'hidden',
               }}
             >
-              {b.type === 'text' ? (
+              {isText ? (
                 <div
                   style={{
                     fontFamily: b.font_family,
@@ -1504,7 +1510,8 @@ function PageThumbnail({ page, index, active, pageSize, totalPages = 1, pageNumb
                 <img alt="" src={(b.image_url.startsWith('http') ? b.image_url : `${process.env.REACT_APP_BACKEND_URL}${b.image_url}`)} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
               ) : null}
             </div>
-          ))}
+            );
+          })}
           {showPageNumber && (
             <div
               className="absolute"
