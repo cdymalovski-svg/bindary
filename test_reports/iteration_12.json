@@ -1,0 +1,38 @@
+{
+  "summary": "Regression pass after XSS-sanitization code-review fixes (DOMPurify wrapper applied to all innerHTML / dangerouslySetInnerHTML sites; Python `is True/False` swapped for truthy checks; Dashboard refresh wrapped in useCallback). 43/43 backend tests PASS. All requested frontend flows PASS: text edit & save, sanitized rendering on reload, asset hover preview (640px wide), asset right-click context menu, PDF export, Dashboard list/navigation. Critical XSS storage check verified: <script> and onerror payloads injected via execCommand into a text block were saved to the backend as 'Hello<b>Bold</b>' — i.e. tags + handlers fully stripped. Reload of the saved book fires zero JS alerts, confirming persisted content is safe for any future viewer.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_books_api.py",
+    "/app/backend/tests/test_templates_api.py",
+    "/app/backend/tests/test_assets_api.py",
+    "/app/backend/tests/test_assets_book_scope_iter10.py",
+    "/app/backend/tests/test_page_iter5.py",
+    "/app/backend/tests/test_page_iter7.py",
+    "/app/backend/tests/test_page_number_align.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Non-blocking hardening (NOT a regression from this iter): CanvasBlock.jsx contenteditable has no onPaste handler. A user who pastes raw '<img src=x onerror=alert(1)>' HTML from clipboard will see the onerror fire ONCE inside their own session before save/blur sanitises it (self-XSS, not stored XSS). Persisted DB content is already clean, so other viewers / reloads are safe. To fully neutralise the transient alert, add an onPaste handler that does `e.preventDefault(); document.execCommand('insertText', false, e.clipboardData.getData('text/plain'))` — or run sanitizeHtml on `text/html` before inserting. Low priority because (a) the requirement was 'content should be saved without the script tag / event handler' which is met, and (b) the threat model is self-XSS.",
+    "Editor.jsx is 1612 lines (was 1236 last iter, grew by ~376 for sanitize + features). Still over the 700-line guideline — recommend splitting into Toolbar / Canvas / Save+Export / TOC modules in a future refactor pass."
+  ],
+  "critical_code_review_comments": [
+    "sanitize.js — ALLOWED_TAGS / ALLOWED_ATTR list is sensible (b,i,u,em,strong,p,br,span,div,ul,ol,li,a with style/class/href/target/rel/data-placeholder). FORBID_ATTR explicitly blocks onerror/onclick/onload/onmouseover/onfocus on top of DOMPurify's defaults. javascript: URLs in href are blocked by DOMPurify default policy. Good defence-in-depth.",
+    "sanitizeHtml is applied at every entry point: Editor.jsx chapter parsing (L443), fit-text probe (L670), onTextCommand save (L757), ExportPage dangerouslySetInnerHTML (L1307), PageThumbnail dangerouslySetInnerHTML (L1612); CanvasBlock.jsx useEffect (L35) and onBlur save (L145); LayersList.jsx plainTextSnippet (L80). No bypass paths spotted.",
+    "CanvasBlock.jsx contentEditable misses an onPaste handler — only stored content is sanitised, not the live editor state. Transient self-XSS possible during a paste event. Recommendation above.",
+    "Dashboard.jsx — refresh wrapped in useCallback as requested (verified rendering 8 cards on first visit, 2 cards after iter-10 test books were cleaned up). No stale-closure issues observed.",
+    "Backend test files no longer use `is True/False` comparisons (grep confirmed clean). All 43 pytest assertions still pass."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (43/43)", "frontend": "100% of regression checks"},
+  "test_credentials": "n/a — app is unauthenticated",
+  "seed_data_creation": "Created one transient text block 'Hello<b>Bold</b>' on page 2 of book 664b1f40-e4d2-40df-874c-2b0ebe6ad645 during the XSS injection test, then deleted it via PUT /api/books/{id} at the end of the run. Book state is restored.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All XSS sanitization paths verified working at the storage layer. The one remaining transient-paste hole (no onPaste handler in CanvasBlock.jsx) is documented but considered out of scope for this code-review pass (the explicit requirement was 'content should be saved without script tag / event handler'). REACT_APP_BACKEND_URL must be exported when running pytest from CLI (otherwise test_assets_api / test_assets_book_scope_iter10 / test_page_number_align fail at module import with KeyError). Books in DB: 664b1f40... (The Incredible Journey of Money, 4 pages) and 6f8a91b5... (Friends in Every Color, 16 pages — slower for PDF export). PDF export for the 4-page book completed in 85s on this run.",
+  "rca of the issue": "n/a — no regression introduced by the sanitize patch. Storage-layer XSS protection is complete: payload `<script>alert(1)</script><img src=x onerror=alert(2)>Hello<b>Bold</b>` inserted programmatically into a text block was saved to MongoDB as exactly `Hello<b>Bold</b>`, and reload of the book caused zero alert dialogs. The single alert observed during the test fires inside the live contentEditable when execCommand inserts the raw <img> before onBlur sanitises — this is self-XSS within the editing user's own session and does not persist."
+}

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { Plus, BookOpen, Trash2, FileText, Bookmark, Copy, Search } from 'lucide-react';
@@ -48,7 +48,7 @@ export default function Dashboard() {
   const [sortBy, setSortBy] = useState('updated'); // 'updated' | 'created'
   const navigate = useNavigate();
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     setLoading(true);
     try {
       const [b, t] = await Promise.all([listBooks(), listTemplates()]);
@@ -59,9 +59,9 @@ export default function Dashboard() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  useEffect(() => { refresh(); }, []);
+  useEffect(() => { refresh(); }, [refresh]);
 
   const onCreate = async () => {
     try {

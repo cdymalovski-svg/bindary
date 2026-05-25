@@ -31,7 +31,7 @@ class TestFullBleed:
         pages = book.get("pages") or []
         assert len(pages) >= 1
         # Pydantic dumps the default, so field should be present and False
-        assert pages[0].get("full_bleed") is False, (
+        assert not pages[0].get("full_bleed"), (
             f"Expected default full_bleed=False, got {pages[0].get('full_bleed')}"
         )
 
@@ -39,7 +39,7 @@ class TestFullBleed:
         r = s.get(f"{API}/books/{book['id']}")
         assert r.status_code == 200
         d = r.json()
-        assert d["pages"][0].get("full_bleed") is False
+        assert not d["pages"][0].get("full_bleed")
 
     def test_put_accepts_full_bleed_true_and_persists(self, s, book):
         # PUT to set full_bleed=True on page 0
@@ -54,13 +54,13 @@ class TestFullBleed:
         r = s.put(f"{API}/books/{book['id']}", json={"pages": new_pages})
         assert r.status_code == 200, r.text
         upd = r.json()
-        assert upd["pages"][0]["full_bleed"] is True
+        assert upd["pages"][0]["full_bleed"]
 
         # Persistence: GET back the book
         r2 = s.get(f"{API}/books/{book['id']}")
         assert r2.status_code == 200
         d2 = r2.json()
-        assert d2["pages"][0]["full_bleed"] is True
+        assert d2["pages"][0]["full_bleed"]
 
     def test_put_can_set_back_to_false(self, s, book):
         page0_id = book["pages"][0]["id"]
@@ -73,7 +73,7 @@ class TestFullBleed:
         }]
         r = s.put(f"{API}/books/{book['id']}", json={"pages": new_pages})
         assert r.status_code == 200
-        assert r.json()["pages"][0]["full_bleed"] is False
+        assert not r.json()["pages"][0]["full_bleed"]
 
     def test_full_bleed_independent_per_page(self, s, book):
         # Create two pages: page A bleed=true, page B bleed=false
@@ -86,8 +86,8 @@ class TestFullBleed:
         assert r.status_code == 200, r.text
         d = r.json()
         assert len(d["pages"]) == 2
-        assert d["pages"][0]["full_bleed"] is True
-        assert d["pages"][1]["full_bleed"] is False
+        assert d["pages"][0]["full_bleed"]
+        assert not d["pages"][1]["full_bleed"]
 
     def test_full_bleed_missing_field_in_put_keeps_default_false(self, s, book):
         # When client doesn't send full_bleed at all, Page() default should make it False
@@ -100,4 +100,4 @@ class TestFullBleed:
         }]
         r = s.put(f"{API}/books/{book['id']}", json={"pages": new_pages})
         assert r.status_code == 200
-        assert r.json()["pages"][0]["full_bleed"] is False
+        assert not r.json()["pages"][0]["full_bleed"]

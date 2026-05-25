@@ -117,7 +117,7 @@ class TestBookScopedAssets:
 
         r = s.delete(f"{API}/books/{a['id']}")
         assert r.status_code == 200
-        assert r.json().get("deleted") is True
+        assert r.json().get("deleted")
 
         # A's assets no longer surface
         after = _list_assets(s, book_id=a["id"])

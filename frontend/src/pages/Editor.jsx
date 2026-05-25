@@ -36,6 +36,7 @@ import {
 import { getBook, updateBook, uploadImage } from '@/lib/api';
 import { PAGE_SIZES, getPageSize, PAGE_MARGIN_PX } from '@/lib/pageSizes';
 import { exportBookToPdf } from '@/lib/pdfExport';
+import { sanitizeHtml } from '@/lib/sanitize';
 import CanvasBlock from '@/components/CanvasBlock';
 import BlockProperties from '@/components/BlockProperties';
 import AssetsPanel, { ASSET_DRAG_MIME } from '@/components/AssetsPanel';
@@ -439,7 +440,7 @@ export default function Editor() {
       (p.blocks || []).forEach((b) => {
         if (!b.is_chapter) return;
         const tmp = document.createElement('div');
-        tmp.innerHTML = b.html || '';
+        tmp.innerHTML = sanitizeHtml(b.html || '');
         const title = (tmp.textContent || '').trim() || `Chapter ${entries.length + 1}`;
         const oneBased = pi + 1;
         const displayed = pi === last ? '' : oneBased >= start ? String(oneBased - start + 1) : '';
@@ -666,7 +667,7 @@ export default function Editor() {
     if (!el) return;
     const cs = window.getComputedStyle(el);
     const probe = document.createElement('div');
-    probe.innerHTML = el.innerHTML;
+    probe.innerHTML = sanitizeHtml(el.innerHTML);
     // Copy critical typography + box rules so the measured height matches the live render.
     probe.style.cssText = [
       `position:fixed`,
@@ -753,7 +754,7 @@ export default function Editor() {
     // Sync HTML back to state for the editing block
     if (editingTextId) {
       const el = document.querySelector(`[data-testid="text-block-content-${editingTextId}"]`);
-      if (el) updateBlock(editingTextId, { html: el.innerHTML });
+      if (el) updateBlock(editingTextId, { html: sanitizeHtml(el.innerHTML) });
     }
   };
 
@@ -1303,7 +1304,7 @@ function ExportPage({ page, pageIndex, pageSize, totalPages, pageNumberStart }) 
                   wordWrap: 'break-word',
                   overflowWrap: 'break-word',
                 }}
-                dangerouslySetInnerHTML={{ __html: b.html || '' }}
+                dangerouslySetInnerHTML={{ __html: sanitizeHtml(b.html || '') }}
               />
             ) : b.image_url ? (
               <img
@@ -1608,7 +1609,7 @@ function PageThumbnail({ page, index, active, pageSize, totalPages = 1, pageNumb
                     color: b.color,
                     lineHeight: 1.4,
                   }}
-                  dangerouslySetInnerHTML={{ __html: b.html || '' }}
+                  dangerouslySetInnerHTML={{ __html: sanitizeHtml(b.html || '') }}
                 />
               ) : b.image_url ? (
                 <img alt="" src={(b.image_url.startsWith('http') ? b.image_url : `${process.env.REACT_APP_BACKEND_URL}${b.image_url}`)} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />

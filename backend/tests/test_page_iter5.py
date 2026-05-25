@@ -47,7 +47,7 @@ class TestPageDefaults:
     def test_default_show_page_number_true(self, s, book_id):
         r = s.get(f"{API}/books/{book_id}")
         page = r.json()["pages"][0]
-        assert page.get("show_page_number") is True
+        assert page.get("show_page_number")
 
     def test_default_page_number_align_right(self, s, book_id):
         r = s.get(f"{API}/books/{book_id}")

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { Type as TypeIcon, Image as ImageIcon, Eye } from 'lucide-react';
 import { fileUrl } from '@/lib/api';
+import { sanitizeHtml } from '@/lib/sanitize';
 
 // Photoshop-style stack list of all blocks on the active page,
 // sorted top-of-list = highest z-index = visually on top.
@@ -76,7 +77,7 @@ export default function LayersList({ page, selectedBlockId, onSelect }) {
 function plainTextSnippet(html) {
   if (!html) return '';
   const tmp = document.createElement('div');
-  tmp.innerHTML = html;
+  tmp.innerHTML = sanitizeHtml(html);
   const text = (tmp.textContent || '').trim();
   return text.length > 32 ? text.slice(0, 32) + '…' : text;
 }

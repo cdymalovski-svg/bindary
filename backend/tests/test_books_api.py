@@ -93,7 +93,7 @@ class TestBooksCRUD:
     def test_delete_book(self, s):
         r = s.delete(f"{API}/books/{TestBooksCRUD.created_id}")
         assert r.status_code == 200
-        assert r.json().get("deleted") is True
+        assert r.json().get("deleted")
 
         # Verify 404
         r2 = s.get(f"{API}/books/{TestBooksCRUD.created_id}")

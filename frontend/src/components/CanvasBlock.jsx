@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { Rnd } from 'react-rnd';
 import { fileUrl } from '@/lib/api';
+import { sanitizeHtml } from '@/lib/sanitize';
 
 export default function CanvasBlock({
   block,
@@ -31,7 +32,7 @@ export default function CanvasBlock({
     if (!isText) return;
     if (editingThisText) return;
     if (!editorRef.current) return;
-    const next = block.html && block.html.trim() ? block.html : PLACEHOLDER_HTML;
+    const next = block.html && block.html.trim() ? sanitizeHtml(block.html) : PLACEHOLDER_HTML;
     if (editorRef.current.innerHTML !== next) {
       editorRef.current.innerHTML = next;
     }
@@ -140,7 +141,8 @@ export default function CanvasBlock({
                 e.currentTarget.firstChild?.nodeType === 1 &&
                 e.currentTarget.firstChild.getAttribute?.('data-placeholder') === 'true' &&
                 e.currentTarget.childNodes.length === 1;
-              onChange(block.id, { html: isPlaceholder ? '' : html });
+              // Sanitise on save so persisted content never carries scripts/handlers.
+              onChange(block.id, { html: isPlaceholder ? '' : sanitizeHtml(html) });
               onStopTextEdit();
             }}
           />

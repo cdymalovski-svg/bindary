@@ -59,7 +59,7 @@ class TestAssetsAPI:
         # delete
         r = s.delete(f"{API}/assets/{asset_id}")
         assert r.status_code == 200
-        assert r.json().get("deleted") is True
+        assert r.json().get("deleted")
 
         # subsequent list excludes it
         items2 = s.get(f"{API}/assets").json()

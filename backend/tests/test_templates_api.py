@@ -82,8 +82,8 @@ class TestTemplatesAPI:
         assert body["cover"]["background_color"] == "#CFE3DC"
         assert body["interior"]["background_color"] == "#F5EFE0"
         assert body["back_cover"]["background_color"] == "#3A3833"
-        assert body["back_cover"]["full_bleed"] is True
-        assert body["back_cover"]["show_page_number"] is False
+        assert body["back_cover"]["full_bleed"]
+        assert not body["back_cover"]["show_page_number"]
         cleanup.append(body["id"])
 
         # GET list should contain it
@@ -142,6 +142,6 @@ class TestTemplatesAPI:
         assert got["pages"][0]["background_color"] == "#CFE3DC"
         assert got["pages"][1]["background_color"] == "#F5EFE0"
         assert got["pages"][2]["background_color"] == "#3A3833"
-        assert got["pages"][2]["full_bleed"] is True
+        assert got["pages"][2]["full_bleed"]
         # Cleanup book
         client.delete(f"{API}/books/{book['id']}", timeout=15)
