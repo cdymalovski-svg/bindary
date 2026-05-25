@@ -145,6 +145,14 @@ export default function CanvasBlock({
               onChange(block.id, { html: isPlaceholder ? '' : sanitizeHtml(html) });
               onStopTextEdit();
             }}
+            onPaste={(e) => {
+              // Force-paste as plain text so pasted HTML (e.g. <img onerror=...>)
+              // never reaches the live contentEditable — eliminates transient
+              // self-XSS even before onBlur sanitises.
+              e.preventDefault();
+              const text = e.clipboardData?.getData('text/plain') || '';
+              document.execCommand('insertText', false, text);
+            }}
           />
         ) : null}
         {isImage ? (
