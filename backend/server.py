@@ -474,16 +474,16 @@ async def restore_revision(book_id: str, revision_id: str):
 
 @api_router.get("/books/{book_id}/export.pdf")
 async def export_book_pdf(book_id: str):
-    """Server-side PDF export. Renders text as native vector PDF (crisp at
-    every zoom) and embeds images from object storage. Much faster than
-    client html2canvas + jsPDF — typical 4-page book builds in ~1s."""
+    """Server-side PDF export. Renders the book through headless Chromium
+    (Playwright) so the PDF is a 1:1 vector copy of what the editor shows —
+    same fonts, same text wrapping, same block positions."""
     from pdf_builder import build_book_pdf  # local import keeps startup snappy
 
     book = await db.books.find_one({"id": book_id}, {"_id": 0})
     if not book:
         raise HTTPException(404, "Book not found")
     try:
-        pdf_bytes = build_book_pdf(book, get_object)
+        pdf_bytes = await build_book_pdf(book, get_object)
     except Exception as e:
         logging.exception("PDF build failed")
         raise HTTPException(500, f"PDF build failed: {e}")

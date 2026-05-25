@@ -43,6 +43,12 @@ Build me a book template app to be able to add texts and illustrations, page num
 - New "Design cover" toolbar button (visible on page 1): one-click cover composer — sets full bleed, hides the page number, resizes the existing illustration to fill the page as a backdrop, and places a centered Playfair Display title + italic Cormorant author. Title font scales down for long titles. Replaces any prior text blocks on the cover.
 - Verified end-to-end via testing agent (iteration_11) and main-agent smoke tests.
 
+## What's been implemented (2026-02-25 / iteration 14 — WYSIWYG PDF)
+- **PDF export now renders via headless Chromium (Playwright)** — replaces the ReportLab approach that substituted fonts and clipped text mid-sentence.
+- `/app/backend/pdf_builder.py` builds a self-contained HTML mirroring the editor's exact CSS (page size, margins, block coordinates, padding, line-height, Google Fonts @import), inlines images as base64 data URLs, and prints via `page.pdf()` with `prefer_css_page_size=True` so the output is a 1:1 vector copy of what the editor displays.
+- Added `PLAYWRIGHT_BROWSERS_PATH=/pw-browsers` to backend env so the FastAPI process finds the Chromium install.
+- All 48 backend tests pass (including 5 PDF export tests covering small/large books, 404s, full-bleed pages, and fresh creation flow). 16-page test book exports in ~5s.
+
 ## Prioritized Backlog
 ### P1
 - Refactor `Editor.jsx` (1236 lines): split into toolbar / canvas / TOC builder modules.
