@@ -1,0 +1,35 @@
+{
+  "summary": "Backend-only regression after server-side PDF export (ReportLab) replaced client-side html2canvas+jsPDF. New endpoint GET /api/books/{id}/export.pdf verified end-to-end. All 48 backend tests PASS (43 prior regression + 5 new PDF tests). Performance is excellent: 4-page seed book renders in 0.91s (1.78 MB PDF), 16-page seed book in 4.72s (18 MB) — well under the 15s SLA. PDF body validated with %PDF- magic header + %%EOF trailer, content-type application/pdf, Content-Disposition attachment with sanitized .pdf filename. 404 returned for unknown book id as expected. Full-bleed pages with dark background colour exercise the is_dark_hex contrast path without error.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_pdf_export.py",
+    "/app/backend/tests/test_books_api.py",
+    "/app/backend/tests/test_templates_api.py",
+    "/app/backend/tests/test_assets_api.py",
+    "/app/backend/tests/test_assets_book_scope_iter10.py",
+    "/app/backend/tests/test_page_iter5.py",
+    "/app/backend/tests/test_page_iter7.py",
+    "/app/backend/tests/test_page_number_align.py",
+    "/app/test_reports/pytest/iter13_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "pdf_builder.py is well-structured, defensive (broken images logged and skipped, unknown fonts fall back to Times-Roman, ParagraphStyle XML parse falls back to plain text on error). Mirrors editor page-number rules exactly (back-cover hide, page_number_start gating, is_dark_hex contrast).",
+    "Custom Google Fonts (Cormorant Garamond, Bebas Neue, Caveat, etc.) are mapped to PDF built-ins (Times/Helvetica/Courier variants). This keeps the export dependency-free but means the visual rendering of typography in the PDF will not pixel-match the on-screen editor — a print shop will still get clean vector text, just in a substitute family. Consider TTF embedding in a follow-up if the design requires exact font fidelity.",
+    "server.py L480: `from pdf_builder import build_book_pdf` is a local import inside the endpoint handler. Comment says 'keeps startup snappy' — fine in production, but the cost is one-time anyway. Not a bug.",
+    "server.py L489 surfaces internal exception messages directly in the 500 response (`f\"PDF build failed: {e}\"`). Low-risk for this unauthenticated app, but worth noting that any ReportLab error string becomes visible to the caller. Consider sanitising / logging only in future.",
+    "Large-book PDF is 18 MB for 16 pages because images are embedded at their native resolution (no down-sampling). Acceptable for v1 print-quality output; if file-size matters for email/web sharing, add a max-DPI knob.",
+    "No regression in 43 prior tests; PDF endpoint correctly returns 404 for unknown book ids (HTTPException path)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_pdf_export.py (new)"
+  ],
+  "success_rate": {"backend": "100% (48/48)", "frontend": "not tested (backend-only request)"},
+  "test_credentials": "n/a — app is unauthenticated",
+  "seed_data_creation": "Created two transient books ('TEST_PDF_Export' and 'TEST_FullBleed') during PDF export tests and deleted them in finally blocks. Seed books 664b1f40-... and 6f8a91b5-... were read-only. DB state restored.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Server-side PDF export via /api/books/{id}/export.pdf is fully operational. Performance: 4-page book ~0.9s / 16-page book ~5s. New test file /app/backend/tests/test_pdf_export.py provides comprehensive regression coverage including 404, full-bleed, and round-trip create→put→export→delete. Total backend test suite: 48 tests, all green. Front-end was not tested in this iteration per the request (testing_type: backend only). reportlab is now in /app/backend/requirements.txt — confirm pip install on any fresh container.",
+  "rca of the issue": "n/a — no defects found. The migration from client-side html2canvas/jsPDF to server-side ReportLab is working as designed: vector text output, ~30-40x speed improvement, correct page-number rules, graceful image-fetch failure handling."
+}

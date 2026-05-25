@@ -35,7 +35,6 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { getBook, updateBook, uploadImage } from '@/lib/api';
 import { PAGE_SIZES, getPageSize, PAGE_MARGIN_PX } from '@/lib/pageSizes';
-import { exportBookToPdf } from '@/lib/pdfExport';
 import { sanitizeHtml } from '@/lib/sanitize';
 import CanvasBlock from '@/components/CanvasBlock';
 import BlockProperties from '@/components/BlockProperties';
@@ -86,7 +85,6 @@ export default function Editor() {
   const [viewMode, setViewMode] = useState('single'); // 'single' | 'spread'
   const [lastSavedAt, setLastSavedAt] = useState(null);
   const fileInputRef = useRef(null);
-  const exportContainerRef = useRef(null);
   const autoSaveTimerRef = useRef(null);
   const skipNextAutoSaveRef = useRef(true);
 
@@ -776,33 +774,29 @@ export default function Editor() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedBlockId, saveBook]);
 
-  // --- PDF export ---
+  // --- PDF export (server-side, vector-quality, ~1-2s) ---
   const onExportPdf = async () => {
     if (!book) return;
     setExporting(true);
     const toastId = 'pdf-export';
-    toast.loading('Preparing PDF…', { id: toastId });
+    toast.loading('Building PDF…', { id: toastId });
     const t0 = performance.now();
     try {
-      // First save
+      // Make sure latest edits are persisted before the server renders.
       await saveBook(false);
-      // Wait a tick for offscreen render
-      await new Promise((r) => setTimeout(r, 100));
-      // CRITICAL: wait for every web font referenced by the offscreen DOM to
-      // finish loading. If we capture too early, html2canvas falls back to
-      // browser-default serif/sans which have different metrics — text wraps
-      // to extra lines and overflows its block.
-      if (document.fonts && document.fonts.ready) {
-        await document.fonts.ready;
-      }
-      const nodes = Array.from(
-        exportContainerRef.current?.querySelectorAll('[data-export-page]') || []
-      );
-      await exportBookToPdf(book, nodes, {
-        onProgress: (done, total) => {
-          toast.loading(`Rendering page ${done} of ${total}…`, { id: toastId });
-        },
-      });
+      const url = `${process.env.REACT_APP_BACKEND_URL}/api/books/${book.id}/export.pdf`;
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const blob = await resp.blob();
+      // Trigger download
+      const safe = (book.title || 'book').replace(/[^a-z0-9-_]+/gi, '_');
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `${safe}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(a.href);
       const secs = ((performance.now() - t0) / 1000).toFixed(1);
       toast.success(`PDF exported in ${secs}s`, { id: toastId });
     } catch (e) {
@@ -1179,34 +1173,6 @@ export default function Editor() {
           </Tabs>
         </aside>
       </div>
-
-      {/* Offscreen export container - renders all pages at full size for PDF capture.
-          Uses a dedicated flat renderer (no react-rnd, no overflow-hidden on text
-          blocks) so authors get pixel-true output: long titles never clip, and
-          the page background is rendered as a single layer regardless of bleed. */}
-      {exporting && (
-        <div
-          ref={exportContainerRef}
-          style={{
-            position: 'fixed',
-            left: '-100000px',
-            top: 0,
-            pointerEvents: 'none',
-          }}
-        >
-          {book.pages.map((p, i) => (
-            <div key={p.id} data-export-page>
-              <ExportPage
-                page={p}
-                pageIndex={i}
-                pageSize={pageSize}
-                totalPages={book.pages.length}
-                pageNumberStart={book.page_number_start || 1}
-              />
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   );
 }
@@ -1252,107 +1218,6 @@ function isDarkHex(hex) {
   const L = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
   return L < 0.55;
 }
-// Flat, export-only page renderer. No react-rnd, no overflow-hidden on text
-// blocks, no contentEditable overhead. Renders an HTML view that html2canvas
-// can capture pixel-true:
-//   - Text blocks use `overflow: visible` + `minHeight` so wrapped lines and
-//     descenders are never clipped.
-//   - Image blocks keep `overflow: hidden` and a fixed height so artwork
-//     framing is preserved.
-//   - Page number is positioned exactly as in the live editor.
-function ExportPage({ page, pageIndex, pageSize, totalPages, pageNumberStart }) {
-  const margin = page.full_bleed ? 0 : PAGE_MARGIN_PX;
-  const innerW = pageSize.width - margin * 2;
-  const innerH = pageSize.height - margin * 2;
-  const bg = page.background_color || '#FFF8DC';
-  const pageNumAlign = page.page_number_align || 'right';
-  const pageNumSize = page.page_number_size || 14;
-  const pageNumFont = page.page_number_font || 'Cormorant Garamond';
-  const pageNumColor = isDarkHex(bg) ? '#E8E2D4' : '#3A3833';
-  const isBackCover = totalPages > 1 && pageIndex === totalPages - 1;
-  const isBeforeStart = pageIndex + 1 < pageNumberStart;
-  const showPageNumber = !!page.show_page_number && !isBackCover && !isBeforeStart;
-  const displayedNumber = pageIndex + 1 - pageNumberStart + 1;
-  // Render blocks in z-index order so the resulting flat canvas matches the
-  // editor's visual stacking.
-  const orderedBlocks = [...(page.blocks || [])].sort(
-    (a, b) => (a.z_index || 0) - (b.z_index || 0)
-  );
-  return (
-    <div style={{ width: pageSize.width, height: pageSize.height, position: 'relative', background: '#FFFFFF' }}>
-      {/* Background colour fill (inset by margin when not full bleed) */}
-      <div
-        aria-hidden
-        style={{ position: 'absolute', top: margin, left: margin, width: innerW, height: innerH, background: bg }}
-      />
-      {orderedBlocks.map((b) => {
-        const isText = b.type === 'text';
-        return (
-          <div
-            key={b.id}
-            style={{
-              position: 'absolute',
-              left: b.x,
-              top: b.y,
-              width: b.width,
-              // Text blocks auto-grow to fit their content on every page so a
-              // tight block height never clips wrapped lines or descenders.
-              // Image blocks keep a fixed height to preserve framing.
-              ...(isText
-                ? { minHeight: b.height, overflow: 'visible' }
-                : { height: b.height, overflow: 'hidden' }),
-              zIndex: typeof b.z_index === 'number' ? b.z_index : 1,
-            }}
-          >
-            {isText ? (
-              <div
-                style={{
-                  padding: '4px 8px',
-                  width: '100%',
-                  fontFamily: b.font_family,
-                  fontSize: `${b.font_size}px`,
-                  textAlign: b.text_align,
-                  color: b.color,
-                  lineHeight: 1.45,
-                  wordWrap: 'break-word',
-                  overflowWrap: 'break-word',
-                }}
-                dangerouslySetInnerHTML={{ __html: sanitizeHtml(b.html || '') }}
-              />
-            ) : b.image_url ? (
-              <img
-                alt=""
-                src={b.image_url.startsWith('http') ? b.image_url : `${process.env.REACT_APP_BACKEND_URL}${b.image_url}`}
-                style={{ width: '100%', height: '100%', objectFit: 'contain' }}
-                crossOrigin="anonymous"
-              />
-            ) : null}
-          </div>
-        );
-      })}
-      {showPageNumber && (
-        <div
-          style={{
-            position: 'absolute',
-            fontFamily: pageNumFont,
-            fontSize: `${pageNumSize}px`,
-            color: pageNumColor,
-            bottom: margin + 16,
-            left: pageNumAlign === 'left' ? margin + 16 : undefined,
-            right: pageNumAlign === 'right' ? margin + 16 : undefined,
-            ...(pageNumAlign === 'center'
-              ? { left: '50%', transform: 'translateX(-50%)' }
-              : {}),
-          }}
-        >
-          {displayedNumber}
-        </div>
-      )}
-    </div>
-  );
-}
-
-
 
 function PageCanvas({
   page,

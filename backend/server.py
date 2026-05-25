@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
+import re
 import logging
 import uuid
 import requests
@@ -469,6 +470,31 @@ async def restore_revision(book_id: str, revision_id: str):
     except Exception as e:
         logging.warning(f"Post-restore snapshot failed: {e}")
     return Book(**doc)
+
+
+@api_router.get("/books/{book_id}/export.pdf")
+async def export_book_pdf(book_id: str):
+    """Server-side PDF export. Renders text as native vector PDF (crisp at
+    every zoom) and embeds images from object storage. Much faster than
+    client html2canvas + jsPDF — typical 4-page book builds in ~1s."""
+    from pdf_builder import build_book_pdf  # local import keeps startup snappy
+
+    book = await db.books.find_one({"id": book_id}, {"_id": 0})
+    if not book:
+        raise HTTPException(404, "Book not found")
+    try:
+        pdf_bytes = build_book_pdf(book, get_object)
+    except Exception as e:
+        logging.exception("PDF build failed")
+        raise HTTPException(500, f"PDF build failed: {e}")
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", book.get("title") or "book").strip("_") or "book"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{safe}.pdf"'},
+    )
+
+
 
 
 @api_router.post("/books/{book_id}/duplicate", response_model=Book)
