@@ -367,43 +367,23 @@ async def create_book(payload: BookCreate):
 
 @api_router.get("/books", response_model=List[BookSummary])
 async def list_books():
-    # Pipeline: project only summary fields + the first page (for the cover
-    # image) + a $size-computed page_count. This avoids hauling every page
-    # and block over the wire for the library list — important for users
-    # with many or large books.
-    pipeline = [
-        {"$sort": {"updated_at": -1}},
-        {"$limit": 1000},
-        {
-            "$project": {
-                "_id": 0,
-                "id": 1,
-                "title": 1,
-                "author": 1,
-                "page_size": 1,
-                "created_at": 1,
-                "updated_at": 1,
-                "first_page": {"$arrayElemAt": ["$pages", 0]},
-                "page_count": {"$size": {"$ifNull": ["$pages", []]}},
-            }
-        },
-    ]
-    books = await db.books.aggregate(pipeline).to_list(1000)
+    books = await db.books.find({}, {"_id": 0}).sort("updated_at", -1).to_list(1000)
     summaries: List[BookSummary] = []
     for b in books:
         cover_url = None
-        first_page = b.get("first_page") or {}
-        for blk in first_page.get("blocks", []) or []:
-            if blk.get("type") == "image" and blk.get("image_url"):
-                cover_url = blk["image_url"]
-                break
+        pages = b.get("pages") or []
+        if pages:
+            for blk in pages[0].get("blocks", []) or []:
+                if blk.get("type") == "image" and blk.get("image_url"):
+                    cover_url = blk["image_url"]
+                    break
         summaries.append(
             BookSummary(
                 id=b["id"],
                 title=b.get("title", "Untitled Book"),
                 author=b.get("author", ""),
                 page_size=b.get("page_size", "a4"),
-                page_count=int(b.get("page_count") or 0),
+                page_count=len(pages),
                 created_at=b.get("created_at", _now_iso()),
                 updated_at=b.get("updated_at", _now_iso()),
                 cover_image_url=cover_url,
