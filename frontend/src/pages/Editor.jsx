@@ -1281,22 +1281,25 @@ function ExportPage({ page, pageIndex, pageSize, totalPages, pageNumberStart }) 
               left: b.x,
               top: b.y,
               width: b.width,
+              height: b.height,
+              // Match the editor view 1:1: every block clips at its declared
+              // size. If text is too long for its block in the editor, it will
+              // also be clipped in the PDF (WYSIWYG).
+              overflow: 'hidden',
               zIndex: typeof b.z_index === 'number' ? b.z_index : 1,
-              ...(isText
-                ? { minHeight: b.height, overflow: 'visible' }
-                : { height: b.height, overflow: 'hidden' }),
             }}
           >
             {isText ? (
               <div
                 style={{
                   padding: '4px 8px',
+                  width: '100%',
+                  height: '100%',
                   fontFamily: b.font_family,
                   fontSize: `${b.font_size}px`,
                   textAlign: b.text_align,
                   color: b.color,
                   lineHeight: 1.45,
-                  // Long words must wrap onto the next line rather than overflow horizontally.
                   wordWrap: 'break-word',
                   overflowWrap: 'break-word',
                 }}
