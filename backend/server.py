@@ -200,6 +200,122 @@ class TemplateCreate(BaseModel):
 
 
 
+class BookRevision(BaseModel):
+    """Lightweight audit-log entry. Stores a full snapshot of the book's
+    user-facing state at a moment in time so we can list "saves" and roll
+    back when an author wants to recover a previous version."""
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    book_id: str
+    created_at: str = Field(default_factory=_now_iso)
+    title: str = "Untitled Book"
+    author: Optional[str] = ""
+    page_size: str = "a4"
+    page_count: int = 0
+    pages: List[Page] = []
+    page_number_start: int = 1
+    is_chapter_book: bool = False
+    text_presets: Optional[TextPresets] = None
+    # Human-readable summary derived from the diff against the previous revision.
+    summary: str = ""
+
+
+class BookRevisionSummary(BaseModel):
+    id: str
+    book_id: str
+    created_at: str
+    title: str
+    page_count: int
+    summary: str
+
+
+# Auto-save fires every ~1.2s during editing. Collapsing those into one
+# revision per minute keeps the audit log readable without losing meaningful
+# checkpoints.
+REVISION_DEBOUNCE_SECONDS = 60
+# Per-book cap. Older revisions are trimmed.
+REVISION_MAX_PER_BOOK = 20
+
+
+def _summarize_revision(prev: Optional[dict], curr: dict) -> str:
+    """One-line summary of what changed compared to the previous revision."""
+    if not prev:
+        return "Initial save"
+    parts: List[str] = []
+    if prev.get("title") != curr.get("title"):
+        parts.append("title")
+    if prev.get("author") != curr.get("author"):
+        parts.append("author")
+    if prev.get("page_size") != curr.get("page_size"):
+        parts.append("page size")
+    if bool(prev.get("is_chapter_book")) != bool(curr.get("is_chapter_book")):
+        parts.append("chapter mode")
+    if prev.get("text_presets") != curr.get("text_presets"):
+        parts.append("text presets")
+    prev_pages = prev.get("pages") or []
+    curr_pages = curr.get("pages") or []
+    if len(prev_pages) != len(curr_pages):
+        delta = len(curr_pages) - len(prev_pages)
+        parts.append(f"{abs(delta)} page{'s' if abs(delta) != 1 else ''} {'added' if delta > 0 else 'removed'}")
+    else:
+        # Per-page block deltas
+        block_changes = 0
+        for p_old, p_new in zip(prev_pages, curr_pages):
+            old_blocks = p_old.get("blocks") or []
+            new_blocks = p_new.get("blocks") or []
+            if len(old_blocks) != len(new_blocks) or any(
+                ob.get("id") != nb.get("id") or ob.get("html") != nb.get("html") or
+                ob.get("x") != nb.get("x") or ob.get("y") != nb.get("y") or
+                ob.get("width") != nb.get("width") or ob.get("height") != nb.get("height")
+                for ob, nb in zip(old_blocks, new_blocks)
+            ):
+                block_changes += 1
+        if block_changes:
+            parts.append(f"{block_changes} page{'s' if block_changes != 1 else ''} edited")
+    return ", ".join(parts) if parts else "Minor change"
+
+
+async def _maybe_snapshot(book_doc: dict):
+    """Snapshot the book to book_revisions if the last revision is older than
+    REVISION_DEBOUNCE_SECONDS (or none exists). Trim to REVISION_MAX_PER_BOOK."""
+    book_id = book_doc["id"]
+    latest = await db.book_revisions.find(
+        {"book_id": book_id}, {"_id": 0}
+    ).sort("created_at", -1).limit(1).to_list(1)
+    if latest:
+        try:
+            last_ts = datetime.fromisoformat(latest[0]["created_at"])
+            now_ts = datetime.now(timezone.utc)
+            if (now_ts - last_ts).total_seconds() < REVISION_DEBOUNCE_SECONDS:
+                return  # within debounce window; skip
+            prev_doc = latest[0]
+        except Exception:
+            prev_doc = latest[0]
+    else:
+        prev_doc = None
+    summary = _summarize_revision(prev_doc, book_doc)
+    revision = BookRevision(
+        book_id=book_id,
+        title=book_doc.get("title", "Untitled Book"),
+        author=book_doc.get("author", ""),
+        page_size=book_doc.get("page_size", "a4"),
+        page_count=len(book_doc.get("pages") or []),
+        pages=[Page(**p) for p in (book_doc.get("pages") or [])],
+        page_number_start=book_doc.get("page_number_start", 1),
+        is_chapter_book=bool(book_doc.get("is_chapter_book")),
+        text_presets=book_doc.get("text_presets"),
+        summary=summary,
+    )
+    await db.book_revisions.insert_one(revision.model_dump())
+    # Trim
+    all_revs = await db.book_revisions.find(
+        {"book_id": book_id}, {"_id": 0, "id": 1, "created_at": 1}
+    ).sort("created_at", -1).to_list(1000)
+    if len(all_revs) > REVISION_MAX_PER_BOOK:
+        to_delete = [r["id"] for r in all_revs[REVISION_MAX_PER_BOOK:]]
+        await db.book_revisions.delete_many({"id": {"$in": to_delete}})
+
+
 # ===== App =====
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
@@ -286,6 +402,72 @@ async def update_book(book_id: str, payload: BookUpdate):
     update_data["updated_at"] = _now_iso()
     await db.books.update_one({"id": book_id}, {"$set": update_data})
     doc = await db.books.find_one({"id": book_id}, {"_id": 0})
+    # Audit-log: snapshot if last revision is older than the debounce window.
+    try:
+        await _maybe_snapshot(doc)
+    except Exception as e:
+        logging.warning(f"Revision snapshot failed for {book_id}: {e}")
+    return Book(**doc)
+
+
+@api_router.get("/books/{book_id}/revisions", response_model=List[BookRevisionSummary])
+async def list_revisions(book_id: str):
+    book = await db.books.find_one({"id": book_id}, {"_id": 0})
+    if not book:
+        raise HTTPException(404, "Book not found")
+    revs = await db.book_revisions.find(
+        {"book_id": book_id}, {"_id": 0}
+    ).sort("created_at", -1).to_list(REVISION_MAX_PER_BOOK)
+    return [
+        BookRevisionSummary(
+            id=r["id"],
+            book_id=r["book_id"],
+            created_at=r["created_at"],
+            title=r.get("title", "Untitled Book"),
+            page_count=r.get("page_count", 0),
+            summary=r.get("summary", ""),
+        )
+        for r in revs
+    ]
+
+
+@api_router.post("/books/{book_id}/revisions/{revision_id}/restore", response_model=Book)
+async def restore_revision(book_id: str, revision_id: str):
+    rev = await db.book_revisions.find_one({"id": revision_id, "book_id": book_id}, {"_id": 0})
+    if not rev:
+        raise HTTPException(404, "Revision not found")
+    update_data = {
+        "title": rev.get("title", "Untitled Book"),
+        "author": rev.get("author", ""),
+        "page_size": rev.get("page_size", "a4"),
+        "page_number_start": rev.get("page_number_start", 1),
+        "is_chapter_book": bool(rev.get("is_chapter_book")),
+        "text_presets": rev.get("text_presets"),
+        "pages": [Page(**p).model_dump() for p in (rev.get("pages") or [])],
+        "updated_at": _now_iso(),
+    }
+    res = await db.books.update_one({"id": book_id}, {"$set": update_data})
+    if res.matched_count == 0:
+        raise HTTPException(404, "Book not found")
+    doc = await db.books.find_one({"id": book_id}, {"_id": 0})
+    # The restore itself is a meaningful event — snapshot immediately, bypassing
+    # the debounce window so the user always has a "before restore" checkpoint.
+    try:
+        snap = BookRevision(
+            book_id=book_id,
+            title=doc.get("title", "Untitled Book"),
+            author=doc.get("author", ""),
+            page_size=doc.get("page_size", "a4"),
+            page_count=len(doc.get("pages") or []),
+            pages=[Page(**p) for p in (doc.get("pages") or [])],
+            page_number_start=doc.get("page_number_start", 1),
+            is_chapter_book=bool(doc.get("is_chapter_book")),
+            text_presets=doc.get("text_presets"),
+            summary=f"Restored from {rev.get('created_at', '')[:19].replace('T', ' ')}",
+        )
+        await db.book_revisions.insert_one(snap.model_dump())
+    except Exception as e:
+        logging.warning(f"Post-restore snapshot failed: {e}")
     return Book(**doc)
 
 

@@ -43,6 +43,7 @@ import AssetsPanel, { ASSET_DRAG_MIME } from '@/components/AssetsPanel';
 import PagePanel from '@/components/PagePanel';
 import LayersList from '@/components/LayersList';
 import SaveTemplateDialog from '@/components/SaveTemplateDialog';
+import HistoryDialog from '@/components/HistoryDialog';
 
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 
@@ -1008,6 +1009,18 @@ export default function Editor() {
         />
         <div className="w-px h-6 bg-rule mx-1" />
         <SaveStatus saving={saving} lastSavedAt={lastSavedAt} />
+        <HistoryDialog
+          bookId={book.id}
+          onRestored={(restored) => {
+            // Skip the next autosave so the restored snapshot isn't immediately
+            // overwritten by a stale in-memory state.
+            skipNextAutoSaveRef.current = true;
+            setBook(restored);
+            setSelectedBlockId(null);
+            setEditingTextId(null);
+            setActivePageIndex(0);
+          }}
+        />
         <SaveTemplateDialog book={book} />
         <Button
           onClick={() => saveBook()}

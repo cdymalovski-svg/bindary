@@ -30,6 +30,12 @@ export const listTemplates = () => api.get('/templates').then((r) => r.data);
 export const createTemplate = (data) => api.post('/templates', data).then((r) => r.data);
 export const deleteTemplate = (id) => api.delete(`/templates/${id}`).then((r) => r.data);
 
+// Audit log
+export const listRevisions = (bookId) =>
+  api.get(`/books/${bookId}/revisions`).then((r) => r.data);
+export const restoreRevision = (bookId, revId) =>
+  api.post(`/books/${bookId}/revisions/${revId}/restore`).then((r) => r.data);
+
 export const fileUrl = (urlOrPath) => {
   if (!urlOrPath) return null;
   if (urlOrPath.startsWith('http://') || urlOrPath.startsWith('https://')) return urlOrPath;
