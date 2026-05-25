@@ -32,7 +32,7 @@ async function renderNodeToImage(node, scale) {
   return canvas.toDataURL('image/png');
 }
 
-export async function exportBookToPdf(book, pageRefs, { onProgress, scale = 1.5 } = {}) {
+export async function exportBookToPdf(book, pageRefs, { onProgress, scale = 2 } = {}) {
   const { width, height } = getPageSize(book.page_size);
   const pdfW = width * PX_TO_PT;
   const pdfH = height * PX_TO_PT;

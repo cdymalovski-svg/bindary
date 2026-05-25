@@ -1295,11 +1295,12 @@ function ExportPage({ page, pageIndex, pageSize, totalPages, pageNumberStart }) 
               left: b.x,
               top: b.y,
               width: b.width,
-              height: b.height,
-              // Match the editor view 1:1: every block clips at its declared
-              // size. If text is too long for its block in the editor, it will
-              // also be clipped in the PDF (WYSIWYG).
-              overflow: 'hidden',
+              // Text blocks auto-grow to fit their content on every page so a
+              // tight block height never clips wrapped lines or descenders.
+              // Image blocks keep a fixed height to preserve framing.
+              ...(isText
+                ? { minHeight: b.height, overflow: 'visible' }
+                : { height: b.height, overflow: 'hidden' }),
               zIndex: typeof b.z_index === 'number' ? b.z_index : 1,
             }}
           >
@@ -1308,7 +1309,6 @@ function ExportPage({ page, pageIndex, pageSize, totalPages, pageNumberStart }) 
                 style={{
                   padding: '4px 8px',
                   width: '100%',
-                  height: '100%',
                   fontFamily: b.font_family,
                   fontSize: `${b.font_size}px`,
                   textAlign: b.text_align,
