@@ -786,7 +786,18 @@ export default function Editor() {
       await saveBook(false);
       const url = `${process.env.REACT_APP_BACKEND_URL}/api/books/${book.id}/export.pdf`;
       const resp = await fetch(url);
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      if (!resp.ok) {
+        // Surface the backend's detail field so production failures show a
+        // useful reason instead of a generic "Export failed".
+        let detail = `HTTP ${resp.status}`;
+        try {
+          const body = await resp.json();
+          if (body?.detail) detail = body.detail;
+        } catch {
+          // Body wasn't JSON — keep the status-code fallback.
+        }
+        throw new Error(detail);
+      }
       const blob = await resp.blob();
       // Trigger download
       const safe = (book.title || 'book').replace(/[^a-z0-9-_]+/gi, '_');
@@ -801,7 +812,9 @@ export default function Editor() {
       toast.success(`PDF exported in ${secs}s`, { id: toastId });
     } catch (e) {
       console.error(e);
-      toast.error('Export failed', { id: toastId });
+      // Truncate to keep the toast readable but show the actual cause.
+      const msg = (e?.message || 'Export failed').slice(0, 200);
+      toast.error(`Export failed: ${msg}`, { id: toastId, duration: 8000 });
     } finally {
       setExporting(false);
     }
