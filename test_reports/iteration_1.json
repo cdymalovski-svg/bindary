@@ -34,6 +34,6 @@
   "seed_data_creation": "Created and deleted TEST_Book_* test fixtures via pytest. Cleaned up Playwright-created 'Playwright Test Book' and 'Test' books after run.",
   "retest_needed": false,
   "main_agent_can_self_test": true,
-  "context_for_next_testing_agent": "Backend tests live at /app/backend/tests/test_books_api.py and cover full CRUD + upload + 404. Reusable for regression. PDF export is client-side via html2canvas+jsPDF; only existence/click-no-throw is verified, do not validate PDF bytes in headless. Drag-drop pixel positions for react-rnd not tested (per instructions). REACT_APP_BACKEND_URL=https://book-builder-69.preview.emergentagent.com.",
+  "context_for_next_testing_agent": "Backend tests live at /app/backend/tests/test_books_api.py and cover full CRUD + upload + 404. Reusable for regression. PDF export is client-side via html2canvas+jsPDF; only existence/click-no-throw is verified, do not validate PDF bytes in headless. Drag-drop pixel positions for react-rnd not tested (per instructions). REACT_APP_BACKEND_URL=https://wysiwyg-book-builder.preview.emergentagent.com.",
   "rca of the issue": "No bugs found."
 }
