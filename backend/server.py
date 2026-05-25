@@ -372,6 +372,50 @@ async def create_book(payload: BookCreate):
     return book
 
 
+@api_router.post("/books/import", response_model=Book)
+async def import_book(
+    file: UploadFile = File(...),
+    title: Optional[str] = Form(None),
+    author: Optional[str] = Form(None),
+    page_size: str = Form("a4"),
+):
+    """Create a new book from an uploaded manuscript (.docx, .md, .txt).
+    Smart-splits the document into pages and pre-populates each page with
+    a centered text block leaving the bottom half empty for an illustration."""
+    from book_importer import (
+        parse_manuscript,
+        chunks_to_pages,
+        derive_title_and_author,
+    )
+
+    if page_size not in {"a4", "letter", "square", "book6x9"}:
+        page_size = "a4"
+
+    data = await file.read()
+    # Cap manuscript size — same ceiling as the image uploader.
+    if len(data) > 10 * 1024 * 1024:
+        raise HTTPException(413, "File too large (max 10MB)")
+    try:
+        chunks = parse_manuscript(file.filename or "", data)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        logging.exception("Manuscript parsing failed")
+        raise HTTPException(400, f"Could not parse manuscript: {e}")
+
+    derived_title, derived_author = derive_title_and_author(chunks)
+    pages_data = chunks_to_pages(chunks, page_size_key=page_size)
+
+    book = Book(
+        title=(title or derived_title or "Untitled Book").strip()[:200],
+        author=(author or derived_author or "").strip()[:200],
+        page_size=page_size,
+        pages=[Page(**p) for p in pages_data],
+    )
+    await db.books.insert_one(book.model_dump())
+    return book
+
+
 @api_router.get("/books", response_model=List[BookSummary])
 async def list_books():
     books = await db.books.find({}, {"_id": 0}).sort("updated_at", -1).to_list(1000)

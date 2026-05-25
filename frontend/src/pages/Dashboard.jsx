@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { Plus, BookOpen, Trash2, FileText, Bookmark, Copy, Search, Pencil } from 'lucide-react';
+import { Plus, BookOpen, Trash2, FileText, Bookmark, Copy, Search, Pencil, Upload } from 'lucide-react';
 import {
-  listBooks, createBook, deleteBook, fileUrl,
+  listBooks, createBook, importBook, deleteBook, fileUrl,
   listTemplates, deleteTemplate, updateBook,
   duplicateBook,
 } from '@/lib/api';
@@ -44,6 +44,9 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
   const [form, setForm] = useState({ title: '', author: '', page_size: 'a4', template_id: 'none' });
+  // When set, "Begin writing" imports the manuscript instead of creating a blank book.
+  const [importFile, setImportFile] = useState(null);
+  const [importing, setImporting] = useState(false);
   const [search, setSearch] = useState('');
   const [sortBy, setSortBy] = useState('updated'); // 'updated' | 'created'
   const navigate = useNavigate();
@@ -65,6 +68,22 @@ export default function Dashboard() {
 
   const onCreate = async () => {
     try {
+      // Import path: an uploaded manuscript becomes the book's pages.
+      if (importFile) {
+        setImporting(true);
+        const book = await importBook({
+          file: importFile,
+          title: form.title || undefined,
+          author: form.author || undefined,
+          page_size: form.page_size,
+        });
+        setCreateOpen(false);
+        setForm({ title: '', author: '', page_size: 'a4', template_id: 'none' });
+        setImportFile(null);
+        toast.success(`Imported · ${book.pages.length} pages`);
+        navigate(`/editor/${book.id}`);
+        return;
+      }
       const book = await createBook({
         title: form.title || 'Untitled Book',
         author: form.author || '',
@@ -96,7 +115,10 @@ export default function Dashboard() {
       toast.success('Book created');
       navigate(`/editor/${book.id}`);
     } catch (e) {
-      toast.error('Could not create book');
+      const msg = e?.response?.data?.detail || 'Could not create book';
+      toast.error(msg);
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -207,6 +229,7 @@ export default function Dashboard() {
                   <Select
                     value={form.template_id}
                     onValueChange={(v) => setForm({ ...form, template_id: v })}
+                    disabled={!!importFile}
                   >
                     <SelectTrigger data-testid="new-book-template-trigger" className="bg-white border-rule rounded-sm">
                       <SelectValue placeholder="Blank" />
@@ -220,20 +243,67 @@ export default function Dashboard() {
                       ))}
                     </SelectContent>
                   </Select>
-                  {templates.length > 0 && (
+                  {templates.length > 0 && !importFile && (
                     <p className="text-[10px] text-ink-mute leading-relaxed">
                       Seeds 3 pages (cover · interior · back cover) using the template's style.
                     </p>
                   )}
+                </div>
+
+                {/* Import manuscript — when set, the book's pages are pre-populated
+                    from the document's text instead of starting blank. */}
+                <div className="space-y-2 pt-2 border-t border-rule/60">
+                  <Label className="label-caps">Import manuscript (optional)</Label>
+                  {importFile ? (
+                    <div
+                      className="flex items-center justify-between bg-paper-warm/40 border border-rule rounded-sm px-3 py-2 text-sm"
+                      data-testid="import-file-chip"
+                    >
+                      <span className="font-serif truncate pr-2" title={importFile.name}>
+                        {importFile.name}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setImportFile(null)}
+                        className="text-ink-mute hover:text-terracotta text-xs label-caps"
+                        data-testid="import-file-clear"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ) : (
+                    <label
+                      className="flex items-center gap-2 bg-white border border-rule border-dashed rounded-sm px-3 py-2 cursor-pointer hover:border-terracotta hover:bg-paper-warm/30 transition-colors"
+                      data-testid="import-file-picker"
+                    >
+                      <Upload className="w-4 h-4 text-ink-mute" />
+                      <span className="text-sm text-ink-soft">Choose a .docx, .md, or .txt file…</span>
+                      <input
+                        type="file"
+                        accept=".docx,.md,.markdown,.txt"
+                        className="hidden"
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          if (f) setImportFile(f);
+                          e.target.value = '';
+                        }}
+                        data-testid="import-file-input"
+                      />
+                    </label>
+                  )}
+                  <p className="text-[10px] text-ink-mute leading-relaxed">
+                    Splits your text across pages (one page per page-break or paragraph). Add illustrations after.
+                  </p>
                 </div>
               </div>
               <DialogFooter>
                 <Button
                   data-testid="confirm-create-book"
                   onClick={onCreate}
+                  disabled={importing}
                   className="bg-terracotta hover:bg-terracotta-dark text-paper rounded-sm"
                 >
-                  Begin writing
+                  {importing ? 'Importing…' : importFile ? 'Import & open' : 'Begin writing'}
                 </Button>
               </DialogFooter>
             </DialogContent>

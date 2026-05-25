@@ -8,6 +8,17 @@ export const api = axios.create({ baseURL: API });
 export const listBooks = () => api.get('/books').then((r) => r.data);
 export const getBook = (id) => api.get(`/books/${id}`).then((r) => r.data);
 export const createBook = (data) => api.post('/books', data).then((r) => r.data);
+export const importBook = async ({ file, title, author, page_size }) => {
+  const form = new FormData();
+  form.append('file', file);
+  if (title) form.append('title', title);
+  if (author) form.append('author', author);
+  if (page_size) form.append('page_size', page_size);
+  const res = await api.post('/books/import', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return res.data;
+};
 export const duplicateBook = (id) => api.post(`/books/${id}/duplicate`).then((r) => r.data);
 export const updateBook = (id, data) => api.put(`/books/${id}`, data).then((r) => r.data);
 export const deleteBook = (id) => api.delete(`/books/${id}`).then((r) => r.data);
