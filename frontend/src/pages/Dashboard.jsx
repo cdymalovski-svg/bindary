@@ -167,12 +167,12 @@ export default function Dashboard() {
     <div className="min-h-screen bg-desk">
       {/* Header */}
       <header className="border-b border-rule bg-paper/60 backdrop-blur-sm">
-        <div className="max-w-6xl mx-auto px-8 py-6 flex items-center justify-between">
+        <div className="max-w-6xl mx-auto px-8 py-5 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <img
               src="/logo.png"
               alt="Bindery — Book Studio"
-              className="h-14 w-auto select-none"
+              className="h-20 w-auto select-none"
               data-testid="brand-logo"
               draggable={false}
             />
