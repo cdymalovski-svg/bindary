@@ -49,18 +49,35 @@ Build me a book template app to be able to add texts and illustrations, page num
 - Added `PLAYWRIGHT_BROWSERS_PATH=/pw-browsers` to backend env so the FastAPI process finds the Chromium install.
 - All 48 backend tests pass (including 5 PDF export tests covering small/large books, 404s, full-bleed pages, and fresh creation flow). 16-page test book exports in ~5s.
 
+## What's been implemented (2026-05-26 / iteration 15 — production hardening + manuscript import)
+- **Manuscript import**: `POST /api/books/import` accepts `.docx` / `.md` / `.txt` and smart-splits into pages. Detects `Page N` label lines (even when buried in multi-line Word paragraphs), explicit Word page breaks, or paragraph fallback. Detects title vs body. Page 1 styled as cover (Playfair Display); body uses Cormorant. Dashboard's New Book dialog gained an "Import manuscript (optional)" file picker.
+- **Page sidebar UX**: Move-up / move-down arrows + between-pages "+" insert handle on every thumbnail.
+- **Responsive toolbar**: Button labels collapse to icons on narrower widths; author input hides under md; never overflows.
+- **PDF export — production-grade pipeline rewrite:**
+  - **Job-based flow** (avoids long-lived requests): `POST /api/books/{id}/pdf-jobs` → poll `GET /pdf-jobs/{job_id}` → `GET /pdf-jobs/{job_id}/download`. Every request returns in < 1s, immune to proxy timeouts.
+  - **Multi-pod safe**: job state stored in MongoDB (`pdf_jobs` collection with TTL index) + PDF bytes in object storage. Any pod can poll/serve any job.
+  - **URL avoids `.pdf` in path** (some CDNs route dot-pdf URLs as static-file requests → 404).
+  - **Chunked rendering**: render 10 pages at a time in a fresh Chromium session, merge with pypdf. Memory peak is constant regardless of book size.
+  - **On-demand image fetching** via `page.route()` interception: only one image in RAM at a time.
+  - **Image downscaling** at 300 DPI (3300 px long-edge max) via Pillow — bounds Chromium decoded-texture memory.
+  - **Chromium self-installs** on first PDF request if binary missing (defensive). Production has it pre-baked at `/root/.cache/ms-playwright`.
+  - **Frontend resilience**: 90s timeout per polling call, friendly "still building Xs" toast counter, auto-retry on transient 5xx for saves.
+- **Library page robustness**: `list_books` reverted to simple find after an aggregation attempt broke prod (`$arrayElemAt`/`$size` issues on certain Mongo configurations).
+- All 59 backend tests pass. Production deployed to `bindery.au` (custom domain).
+
 ## Prioritized Backlog
 ### P1
-- Refactor `Editor.jsx` (1236 lines): split into toolbar / canvas / TOC builder modules.
+- Refactor `Editor.jsx` (now ~1672 lines): split into toolbar / canvas / TOC builder modules + custom hooks for autosave & selection.
 - Multi-select + alignment guides + snapping.
 - Undo/Redo history.
 
 ### P2
 - Live-sync TOC (currently a one-shot insert; auto-update when chapters change).
-- Reorder pages by drag in the sidebar.
+- Drag-to-reorder pages in the sidebar (arrows work; drag would be nicer for 70+ page books).
 - Text on path / shape blocks / decorative dividers.
 - More page templates ("Children's book", "Photo book", "Manuscript").
 - Share read-only preview link.
+- PDF preview button (open in new tab instead of immediate download).
 
 ### P3
 - AI-assisted illustration generation per page (Nano Banana).
@@ -68,6 +85,6 @@ Build me a book template app to be able to add texts and illustrations, page num
 - Multi-user accounts + library sharing.
 
 ## Next Tasks
-- Refactor `Editor.jsx` for maintainability.
-- Live-sync TOC.
+- Refactor `Editor.jsx` for maintainability (now P1 — file size is regression-prone).
 - Undo/Redo history.
+- Live-sync TOC.
