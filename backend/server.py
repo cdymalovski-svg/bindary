@@ -11,7 +11,7 @@ import requests
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional, Any
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 
 ROOT_DIR = Path(__file__).parent
@@ -330,6 +330,11 @@ async def startup():
         logging.info("Storage initialized")
     except Exception as e:
         logging.error(f"Storage init failed: {e}")
+    # Ensure the pdf_jobs collection has its TTL + lookup indexes.
+    try:
+        await _ensure_pdf_jobs_indexes()
+    except Exception as e:
+        logging.warning(f"pdf_jobs index setup deferred: {e}")
     # PDF export requires Chromium, but downloading it (~200 MB, ~20 s) must
     # NEVER block FastAPI's startup — uvicorn's lifespan has a hard timeout
     # and a slow install would leave the entire app unresponsive (book CRUD,
@@ -562,48 +567,61 @@ async def export_book_pdf(book_id: str, request: Request):
 
 
 # ===== PDF export — job-based flow =====
-# In-memory job store. Keyed by job_id, values carry status + result bytes.
-# Plain dict is fine here: a typical book PDF is 1-50 MB and the typical
-# user generates one at a time. Entries auto-expire 30 min after creation.
-_pdf_jobs: dict[str, dict] = {}
-_PDF_JOB_TTL_SECONDS = 30 * 60
+# Job state must be SHARED across backend pods (production runs multiple
+# replicas behind a load balancer — a job created on pod A must be
+# pollable from pod B). We store status in MongoDB and the PDF bytes in
+# object storage, the same way we handle book images.
+_PDF_JOB_TTL_SECONDS = 30 * 60  # auto-expire stale jobs after 30 min
+_PDF_OBJECT_PREFIX = "booktemplate/pdfjobs"
 
 
-def _gc_pdf_jobs() -> None:
-    """Drop expired jobs to keep memory bounded."""
-    now = datetime.now(timezone.utc).timestamp()
-    stale = [
-        jid for jid, j in _pdf_jobs.items()
-        if (now - j.get("created_at_ts", 0)) > _PDF_JOB_TTL_SECONDS
-    ]
-    for jid in stale:
-        _pdf_jobs.pop(jid, None)
+async def _ensure_pdf_jobs_indexes() -> None:
+    """Create the TTL index once so finished jobs auto-purge from Mongo."""
+    try:
+        await db.pdf_jobs.create_index(
+            "expires_at", expireAfterSeconds=0, name="pdf_jobs_ttl"
+        )
+        await db.pdf_jobs.create_index("job_id", unique=True, name="pdf_jobs_job_id")
+    except Exception as e:
+        logging.warning(f"pdf_jobs index creation failed (probably already exists): {e}")
 
 
 async def _run_pdf_job(job_id: str, book_id: str, base_url: str) -> None:
-    """Background worker — builds the PDF and stores it on the job."""
+    """Background worker — builds the PDF, uploads bytes to object storage,
+    flips the Mongo record to `ready` (or `failed`)."""
     from pdf_builder import build_book_pdf
 
-    job = _pdf_jobs.get(job_id)
-    if not job:
-        return
     try:
         book = await db.books.find_one({"id": book_id}, {"_id": 0})
         if not book:
-            job.update(status="failed", error="Book not found")
+            await db.pdf_jobs.update_one(
+                {"job_id": job_id},
+                {"$set": {"status": "failed", "error": "Book not found",
+                          "finished_at": _now_iso()}},
+            )
             return
         pdf_bytes = await build_book_pdf(book, get_object, public_base_url=base_url)
         safe = re.sub(r"[^A-Za-z0-9._-]+", "_", book.get("title") or "book").strip("_") or "book"
-        job.update(
-            status="ready",
-            pdf_bytes=pdf_bytes,
-            size=len(pdf_bytes),
-            filename=f"{safe}.pdf",
-            finished_at=_now_iso(),
+        # Upload PDF bytes to shared object storage so any pod can serve them.
+        object_path = f"{_PDF_OBJECT_PREFIX}/{job_id}.pdf"
+        await asyncio.to_thread(put_object, object_path, pdf_bytes, "application/pdf")
+        await db.pdf_jobs.update_one(
+            {"job_id": job_id},
+            {"$set": {
+                "status": "ready",
+                "size": len(pdf_bytes),
+                "filename": f"{safe}.pdf",
+                "object_path": object_path,
+                "finished_at": _now_iso(),
+            }},
         )
     except Exception as e:
         logging.exception("PDF job %s failed", job_id)
-        job.update(status="failed", error=str(e)[:300], finished_at=_now_iso())
+        await db.pdf_jobs.update_one(
+            {"job_id": job_id},
+            {"$set": {"status": "failed", "error": str(e)[:300],
+                      "finished_at": _now_iso()}},
+        )
 
 
 @api_router.post("/books/{book_id}/pdf-jobs")
@@ -615,27 +633,31 @@ async def export_pdf_start(book_id: str, request: Request):
     proxies treat URLs containing `.pdf` as static-file requests and may
     short-circuit them with 404 before they reach the backend.
     """
-    _gc_pdf_jobs()
     # Sanity-check the book exists before we spawn a worker (so the client
     # gets a 404 immediately rather than a "failed" status 20s later).
     exists = await db.books.find_one({"id": book_id}, {"_id": 1})
     if not exists:
         raise HTTPException(404, "Book not found")
     job_id = str(uuid.uuid4())
-    _pdf_jobs[job_id] = {
-        "status": "pending",
+    now = datetime.now(timezone.utc)
+    await db.pdf_jobs.insert_one({
+        "job_id": job_id,
         "book_id": book_id,
-        "created_at": _now_iso(),
-        "created_at_ts": datetime.now(timezone.utc).timestamp(),
-    }
+        "status": "pending",
+        "created_at": now.isoformat(),
+        # Mongo TTL index uses a real Date — not an ISO string.
+        "expires_at": now + timedelta(seconds=_PDF_JOB_TTL_SECONDS),
+    })
     asyncio.create_task(_run_pdf_job(job_id, book_id, str(request.base_url).rstrip("/")))
     return {"job_id": job_id, "status": "pending"}
 
 
 @api_router.get("/books/{book_id}/pdf-jobs/{job_id}")
 async def export_pdf_status(book_id: str, job_id: str):
-    job = _pdf_jobs.get(job_id)
-    if not job or job.get("book_id") != book_id:
+    job = await db.pdf_jobs.find_one(
+        {"job_id": job_id, "book_id": book_id}, {"_id": 0}
+    )
+    if not job:
         raise HTTPException(404, "Job not found")
     resp = {"status": job["status"], "created_at": job["created_at"]}
     if job["status"] == "ready":
@@ -648,17 +670,25 @@ async def export_pdf_status(book_id: str, job_id: str):
 
 @api_router.get("/books/{book_id}/pdf-jobs/{job_id}/download")
 async def export_pdf_download(book_id: str, job_id: str):
-    job = _pdf_jobs.get(job_id)
-    if not job or job.get("book_id") != book_id:
+    job = await db.pdf_jobs.find_one(
+        {"job_id": job_id, "book_id": book_id}, {"_id": 0}
+    )
+    if not job:
         raise HTTPException(404, "Job not found")
     if job["status"] != "ready":
         raise HTTPException(409, f"Job is {job['status']}, not ready for download")
-    pdf_bytes = job.get("pdf_bytes")
+    object_path = job.get("object_path")
     filename = job.get("filename", "book.pdf")
-    if not pdf_bytes:
-        raise HTTPException(500, "Job is ready but has no bytes")
-    # Free the memory now that the user has the file.
-    _pdf_jobs.pop(job_id, None)
+    if not object_path:
+        raise HTTPException(500, "Job is ready but has no storage path")
+    try:
+        pdf_bytes, _ = await asyncio.to_thread(get_object, object_path)
+    except Exception as e:
+        logging.exception("PDF download fetch failed")
+        raise HTTPException(500, f"PDF retrieval failed: {e}")
+    # Consume the job: drop the Mongo record so the user can't re-download by
+    # replaying the URL. (Object storage entry expires via the TTL anyway.)
+    await db.pdf_jobs.delete_one({"job_id": job_id})
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
