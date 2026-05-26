@@ -606,10 +606,15 @@ async def _run_pdf_job(job_id: str, book_id: str, base_url: str) -> None:
         job.update(status="failed", error=str(e)[:300], finished_at=_now_iso())
 
 
-@api_router.post("/books/{book_id}/export.pdf/start")
+@api_router.post("/books/{book_id}/pdf-jobs")
 async def export_pdf_start(book_id: str, request: Request):
     """Kick off a background PDF build. Returns a job_id the client polls.
-    Each call returns in ~milliseconds — no risk of proxy/CDN timeouts."""
+    Each call returns in ~milliseconds — no risk of proxy/CDN timeouts.
+
+    Note: route path deliberately avoids `.pdf` in it because some CDNs/edge
+    proxies treat URLs containing `.pdf` as static-file requests and may
+    short-circuit them with 404 before they reach the backend.
+    """
     _gc_pdf_jobs()
     # Sanity-check the book exists before we spawn a worker (so the client
     # gets a 404 immediately rather than a "failed" status 20s later).
@@ -627,7 +632,7 @@ async def export_pdf_start(book_id: str, request: Request):
     return {"job_id": job_id, "status": "pending"}
 
 
-@api_router.get("/books/{book_id}/export.pdf/status/{job_id}")
+@api_router.get("/books/{book_id}/pdf-jobs/{job_id}")
 async def export_pdf_status(book_id: str, job_id: str):
     job = _pdf_jobs.get(job_id)
     if not job or job.get("book_id") != book_id:
@@ -641,7 +646,7 @@ async def export_pdf_status(book_id: str, job_id: str):
     return resp
 
 
-@api_router.get("/books/{book_id}/export.pdf/download/{job_id}")
+@api_router.get("/books/{book_id}/pdf-jobs/{job_id}/download")
 async def export_pdf_download(book_id: str, job_id: str):
     job = _pdf_jobs.get(job_id)
     if not job or job.get("book_id") != book_id:

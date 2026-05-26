@@ -826,7 +826,9 @@ export default function Editor() {
       await saveBook(false);
       // Kick off the background job. This call returns in milliseconds —
       // proxies and CDNs never see a long-lived request.
-      const startResp = await fetch(`${BASE}/api/books/${book.id}/export.pdf/start`, { method: 'POST' });
+      // Note: URL avoids `.pdf` in the path because some CDNs treat dot-pdf
+      // URLs as static-file fetches and short-circuit with 404.
+      const startResp = await fetch(`${BASE}/api/books/${book.id}/pdf-jobs`, { method: 'POST' });
       if (!startResp.ok) {
         let detail = `HTTP ${startResp.status}`;
         try { const b = await startResp.json(); if (b?.detail) detail = b.detail; } catch {}
@@ -834,7 +836,7 @@ export default function Editor() {
       }
       const { job_id } = await startResp.json();
       // Poll status. Cap at ~3 min so a stuck job eventually surfaces.
-      const STATUS_URL = `${BASE}/api/books/${book.id}/export.pdf/status/${job_id}`;
+      const STATUS_URL = `${BASE}/api/books/${book.id}/pdf-jobs/${job_id}`;
       const start = Date.now();
       let lastStatus = 'pending';
       while (Date.now() - start < 180_000) {
@@ -856,7 +858,7 @@ export default function Editor() {
 
       // Stream the bytes — this is a fast, fully-buffered response, so no
       // proxy timeout risk.
-      const dl = await fetch(`${BASE}/api/books/${book.id}/export.pdf/download/${job_id}`);
+      const dl = await fetch(`${BASE}/api/books/${book.id}/pdf-jobs/${job_id}/download`);
       if (!dl.ok) throw new Error(`Download failed (HTTP ${dl.status})`);
       const blob = await dl.blob();
       const safe = (book.title || 'book').replace(/[^a-z0-9-_]+/gi, '_');
