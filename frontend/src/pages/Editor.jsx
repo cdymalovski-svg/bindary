@@ -119,23 +119,43 @@ export default function Editor() {
   const saveBook = useCallback(async (showToast = true) => {
     if (!book) return;
     setSaving(true);
-    try {
-      await updateBook(book.id, {
-        title: book.title,
-        author: book.author,
-        page_size: book.page_size,
-        page_number_start: book.page_number_start || 1,
-        is_chapter_book: !!book.is_chapter_book,
-        text_presets: book.text_presets || null,
-        pages: book.pages,
-      });
-      setLastSavedAt(new Date());
-      if (showToast) toast.success('Saved');
-    } catch (e) {
-      toast.error('Save failed');
-    } finally {
-      setSaving(false);
+    const payload = {
+      title: book.title,
+      author: book.author,
+      page_size: book.page_size,
+      page_number_start: book.page_number_start || 1,
+      is_chapter_book: !!book.is_chapter_book,
+      text_presets: book.text_presets || null,
+      pages: book.pages,
+    };
+    // Quick retry on transient 5xx / network blips so a container restart
+    // mid-autosave doesn't surface as a scary "Save failed" — we just wait
+    // a second and try once more.
+    let lastErr = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        await updateBook(book.id, payload);
+        setLastSavedAt(new Date());
+        if (showToast) toast.success('Saved');
+        setSaving(false);
+        return;
+      } catch (e) {
+        lastErr = e;
+        const status = e?.response?.status;
+        const retryable = !status || (status >= 500 && status < 600) || status === 0;
+        if (!retryable || attempt > 0) break;
+        await new Promise((r) => setTimeout(r, 1500));
+      }
     }
+    // Both attempts failed — surface the cause if it isn't already obvious.
+    const status = lastErr?.response?.status;
+    if (showToast) {
+      const msg = status === 502 || status === 503
+        ? 'Save failed — the server is restarting. Your edits are still in this tab; try again in a moment.'
+        : 'Save failed';
+      toast.error(msg, { duration: 6000 });
+    }
+    setSaving(false);
   }, [book]);
 
   // Auto-save: debounced 1.2s after the last edit.
