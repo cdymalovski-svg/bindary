@@ -813,32 +813,52 @@ export default function Editor() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedBlockId, saveBook]);
 
-  // --- PDF export (server-side, vector-quality, ~1-2s) ---
+  // --- PDF export (server-side, job-based to survive proxy timeouts) ---
   const onExportPdf = async () => {
     if (!book) return;
     setExporting(true);
     const toastId = 'pdf-export';
     toast.loading('Building PDF…', { id: toastId });
     const t0 = performance.now();
+    const BASE = process.env.REACT_APP_BACKEND_URL;
     try {
-      // Make sure latest edits are persisted before the server renders.
+      // Persist any in-flight edits before the server renders.
       await saveBook(false);
-      const url = `${process.env.REACT_APP_BACKEND_URL}/api/books/${book.id}/export.pdf`;
-      const resp = await fetch(url);
-      if (!resp.ok) {
-        // Surface the backend's detail field so production failures show a
-        // useful reason instead of a generic "Export failed".
-        let detail = `HTTP ${resp.status}`;
-        try {
-          const body = await resp.json();
-          if (body?.detail) detail = body.detail;
-        } catch {
-          // Body wasn't JSON — keep the status-code fallback.
-        }
+      // Kick off the background job. This call returns in milliseconds —
+      // proxies and CDNs never see a long-lived request.
+      const startResp = await fetch(`${BASE}/api/books/${book.id}/export.pdf/start`, { method: 'POST' });
+      if (!startResp.ok) {
+        let detail = `HTTP ${startResp.status}`;
+        try { const b = await startResp.json(); if (b?.detail) detail = b.detail; } catch {}
         throw new Error(detail);
       }
-      const blob = await resp.blob();
-      // Trigger download
+      const { job_id } = await startResp.json();
+      // Poll status. Cap at ~3 min so a stuck job eventually surfaces.
+      const STATUS_URL = `${BASE}/api/books/${book.id}/export.pdf/status/${job_id}`;
+      const start = Date.now();
+      let lastStatus = 'pending';
+      while (Date.now() - start < 180_000) {
+        await new Promise((r) => setTimeout(r, 1200));
+        const s = await fetch(STATUS_URL);
+        if (!s.ok) {
+          if (s.status === 404) throw new Error('PDF job expired — please try again');
+          continue; // transient — keep polling
+        }
+        const body = await s.json();
+        lastStatus = body.status;
+        if (body.status === 'ready') break;
+        if (body.status === 'failed') throw new Error(body.error || 'PDF build failed');
+        // Otherwise (pending) — keep a friendly counter on the toast.
+        const elapsed = Math.round((Date.now() - start) / 1000);
+        toast.loading(`Building PDF… ${elapsed}s`, { id: toastId });
+      }
+      if (lastStatus !== 'ready') throw new Error('PDF timed out — try again');
+
+      // Stream the bytes — this is a fast, fully-buffered response, so no
+      // proxy timeout risk.
+      const dl = await fetch(`${BASE}/api/books/${book.id}/export.pdf/download/${job_id}`);
+      if (!dl.ok) throw new Error(`Download failed (HTTP ${dl.status})`);
+      const blob = await dl.blob();
       const safe = (book.title || 'book').replace(/[^a-z0-9-_]+/gi, '_');
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
@@ -851,9 +871,14 @@ export default function Editor() {
       toast.success(`PDF exported in ${secs}s`, { id: toastId });
     } catch (e) {
       console.error(e);
-      // Truncate to keep the toast readable but show the actual cause.
-      const msg = (e?.message || 'Export failed').slice(0, 200);
-      toast.error(`Export failed: ${msg}`, { id: toastId, duration: 8000 });
+      const raw = e?.message || 'Export failed';
+      const isNetwork =
+        e?.name === 'AbortError' ||
+        /failed to fetch|networkerror|load failed/i.test(raw);
+      const friendly = isNetwork
+        ? 'Couldn\'t reach the PDF service. Check your connection and try again.'
+        : `Export failed: ${raw.slice(0, 200)}`;
+      toast.error(friendly, { id: toastId, duration: 10000 });
     } finally {
       setExporting(false);
     }

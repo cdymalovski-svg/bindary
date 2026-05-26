@@ -6,6 +6,7 @@ import os
 import re
 import logging
 import uuid
+import asyncio
 import requests
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
@@ -534,9 +535,10 @@ async def restore_revision(book_id: str, revision_id: str):
 
 @api_router.get("/books/{book_id}/export.pdf")
 async def export_book_pdf(book_id: str, request: Request):
-    """Server-side PDF export. Renders the book through headless Chromium
-    (Playwright) so the PDF is a 1:1 vector copy of what the editor shows —
-    same fonts, same text wrapping, same block positions."""
+    """Synchronous PDF export — kept for direct/script use. Browsers should
+    prefer the job-based flow (`/export/start` → `/export/status` →
+    `/export/download`) which is resilient to proxy/CDN response timeouts on
+    custom domains."""
     from pdf_builder import build_book_pdf  # local import keeps startup snappy
 
     book = await db.books.find_one({"id": book_id}, {"_id": 0})
@@ -556,6 +558,106 @@ async def export_book_pdf(book_id: str, request: Request):
         content=pdf_bytes,
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{safe}.pdf"'},
+    )
+
+
+# ===== PDF export — job-based flow =====
+# In-memory job store. Keyed by job_id, values carry status + result bytes.
+# Plain dict is fine here: a typical book PDF is 1-50 MB and the typical
+# user generates one at a time. Entries auto-expire 30 min after creation.
+_pdf_jobs: dict[str, dict] = {}
+_PDF_JOB_TTL_SECONDS = 30 * 60
+
+
+def _gc_pdf_jobs() -> None:
+    """Drop expired jobs to keep memory bounded."""
+    now = datetime.now(timezone.utc).timestamp()
+    stale = [
+        jid for jid, j in _pdf_jobs.items()
+        if (now - j.get("created_at_ts", 0)) > _PDF_JOB_TTL_SECONDS
+    ]
+    for jid in stale:
+        _pdf_jobs.pop(jid, None)
+
+
+async def _run_pdf_job(job_id: str, book_id: str, base_url: str) -> None:
+    """Background worker — builds the PDF and stores it on the job."""
+    from pdf_builder import build_book_pdf
+
+    job = _pdf_jobs.get(job_id)
+    if not job:
+        return
+    try:
+        book = await db.books.find_one({"id": book_id}, {"_id": 0})
+        if not book:
+            job.update(status="failed", error="Book not found")
+            return
+        pdf_bytes = await build_book_pdf(book, get_object, public_base_url=base_url)
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", book.get("title") or "book").strip("_") or "book"
+        job.update(
+            status="ready",
+            pdf_bytes=pdf_bytes,
+            size=len(pdf_bytes),
+            filename=f"{safe}.pdf",
+            finished_at=_now_iso(),
+        )
+    except Exception as e:
+        logging.exception("PDF job %s failed", job_id)
+        job.update(status="failed", error=str(e)[:300], finished_at=_now_iso())
+
+
+@api_router.post("/books/{book_id}/export.pdf/start")
+async def export_pdf_start(book_id: str, request: Request):
+    """Kick off a background PDF build. Returns a job_id the client polls.
+    Each call returns in ~milliseconds — no risk of proxy/CDN timeouts."""
+    _gc_pdf_jobs()
+    # Sanity-check the book exists before we spawn a worker (so the client
+    # gets a 404 immediately rather than a "failed" status 20s later).
+    exists = await db.books.find_one({"id": book_id}, {"_id": 1})
+    if not exists:
+        raise HTTPException(404, "Book not found")
+    job_id = str(uuid.uuid4())
+    _pdf_jobs[job_id] = {
+        "status": "pending",
+        "book_id": book_id,
+        "created_at": _now_iso(),
+        "created_at_ts": datetime.now(timezone.utc).timestamp(),
+    }
+    asyncio.create_task(_run_pdf_job(job_id, book_id, str(request.base_url).rstrip("/")))
+    return {"job_id": job_id, "status": "pending"}
+
+
+@api_router.get("/books/{book_id}/export.pdf/status/{job_id}")
+async def export_pdf_status(book_id: str, job_id: str):
+    job = _pdf_jobs.get(job_id)
+    if not job or job.get("book_id") != book_id:
+        raise HTTPException(404, "Job not found")
+    resp = {"status": job["status"], "created_at": job["created_at"]}
+    if job["status"] == "ready":
+        resp["size"] = job.get("size", 0)
+        resp["filename"] = job.get("filename", "book.pdf")
+    elif job["status"] == "failed":
+        resp["error"] = job.get("error") or "PDF build failed"
+    return resp
+
+
+@api_router.get("/books/{book_id}/export.pdf/download/{job_id}")
+async def export_pdf_download(book_id: str, job_id: str):
+    job = _pdf_jobs.get(job_id)
+    if not job or job.get("book_id") != book_id:
+        raise HTTPException(404, "Job not found")
+    if job["status"] != "ready":
+        raise HTTPException(409, f"Job is {job['status']}, not ready for download")
+    pdf_bytes = job.get("pdf_bytes")
+    filename = job.get("filename", "book.pdf")
+    if not pdf_bytes:
+        raise HTTPException(500, "Job is ready but has no bytes")
+    # Free the memory now that the user has the file.
+    _pdf_jobs.pop(job_id, None)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
