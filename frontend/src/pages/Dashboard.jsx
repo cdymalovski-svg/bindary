@@ -168,9 +168,14 @@ export default function Dashboard() {
       {/* Header */}
       <header className="border-b border-rule bg-paper/60 backdrop-blur-sm">
         <div className="max-w-6xl mx-auto px-8 py-6 flex items-center justify-between">
-          <div className="flex items-baseline gap-3">
-            <span className="font-serif italic text-3xl text-ink" data-testid="brand-mark">Bindery</span>
-            <span className="label-caps">Book Studio</span>
+          <div className="flex items-center gap-3">
+            <img
+              src="/logo.png"
+              alt="Bindery — Book Studio"
+              className="h-14 w-auto select-none"
+              data-testid="brand-logo"
+              draggable={false}
+            />
           </div>
           <Dialog open={createOpen} onOpenChange={setCreateOpen}>
             <DialogTrigger asChild>
