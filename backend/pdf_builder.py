@@ -322,16 +322,22 @@ def _render_page(
     )
 
 
-def _build_html(book: dict, image_data_urls: dict) -> tuple[str, int, int]:
+def _build_html(book: dict, image_data_urls: dict, page_range: Optional[tuple[int, int]] = None) -> tuple[str, int, int]:
+    """Render a (slice of a) book to a self-contained HTML document.
+
+    `page_range = (start, end)` renders pages[start:end] but still passes the
+    GLOBAL page index to `_render_page`, so page numbering and cover/back-
+    cover detection stay correct when the book is rendered in chunks."""
     page_size_key = book.get("page_size") or "a4"
     page_w, page_h = PAGE_SIZES_PX.get(page_size_key, PAGE_SIZES_PX["a4"])
     pages = book.get("pages") or []
     page_number_start = int(book.get("page_number_start") or 1)
     total_pages = len(pages)
+    start, end = (0, total_pages) if page_range is None else page_range
 
     pages_html = "".join(
-        _render_page(p, i, total_pages, page_number_start, page_w, page_h, image_data_urls)
-        for i, p in enumerate(pages)
+        _render_page(pages[i], i, total_pages, page_number_start, page_w, page_h, image_data_urls)
+        for i in range(start, end)
     )
 
     css = (
@@ -395,106 +401,175 @@ async def build_book_pdf(
     if public_base_url:
         os.environ["PUBLIC_BACKEND_URL"] = public_base_url
 
-    # Strategy: keep the HTML tiny (no base64 images), but intercept every
-    # `/api/files/...` request Chromium makes and serve the bytes straight
-    # from this process. This avoids both:
-    #   - the OOM from inlining everything as base64 (the cause of 520s)
-    #   - the unreliability of having Chromium re-enter the public ingress
-    #     to fetch its own backend's files (some k8s setups block loopback).
-    image_data_urls: dict[str, str] = {}  # only used as a last-resort fallback
+    # Strategy: keep the HTML tiny (no base64 images), and serve each image
+    # Chromium asks for from this process via `page.route()`. Memory profile:
+    #   • upfront pre-fetch of all images at once ⇒ OOM risk on big books
+    #   • on-demand fetch when Chromium requests it ⇒ ~1 image in RAM at a time
+    # We also downscale very large images (max 2000 px on the long edge,
+    # JPEG-recompressed) before handing them off — a 4000×4000 photo decodes
+    # to ~64 MB inside Chromium even when rendered at 600 px, which is what
+    # was pushing the container over its memory limit.
+    image_data_urls: dict[str, str] = {}  # placeholder, no inline base64 anymore
     paths = _collect_image_paths(book)
     log.info("PDF export: book has %d unique image path(s)", len(paths))
 
-    # Pre-fetch every image so the route handler can serve them instantly
-    # without round-tripping to object storage during render.
-    # Run fetches in parallel via a thread pool — `get_image` uses sync
-    # `requests`, so asyncio.to_thread keeps the event loop free. With 35+
-    # images this turns a 9-second sequential pre-fetch into ~1.5s.
-    fetched_images: dict[str, tuple[bytes, str]] = {}
+    # Small process-local cache so the SAME image isn't re-fetched if it
+    # appears on multiple pages. Cap memory at a few images worth.
+    image_cache: dict[str, tuple[bytes, str]] = {}
+    # 300 DPI cap (standard offset-print resolution). For an 8-inch-wide
+    # content block this yields 2400 px; an 11-inch letter full-bleed image
+    # caps at the 3300 px long-edge ceiling below. Indistinguishable from
+    # 600 DPI to the eye and halves Chromium's per-image decoded memory.
+    MAX_DIM = 3300
+    MAX_BYTES_BEFORE_RESIZE = 1_500_000  # ~1.5 MB
 
-    async def _fetch_one(p: str) -> tuple[str, Optional[tuple[bytes, str]]]:
+    def _maybe_downscale(data: bytes, ctype: str) -> tuple[bytes, str]:
+        """Return resized bytes (+ adjusted content-type) when the image is
+        bigger than the print target needs. Falls back to the original on any
+        decoding error so we never lose an image just because of resize."""
+        if not data or len(data) < MAX_BYTES_BEFORE_RESIZE:
+            return data, ctype
         try:
-            data, ctype = await asyncio.to_thread(get_image, p)
-            if data:
-                return p, (data, ctype or "image/png")
-            log.warning("PDF export: empty bytes for image %s", p)
+            from PIL import Image
+            import io
+            img = Image.open(io.BytesIO(data))
+            w, h = img.size
+            long_edge = max(w, h)
+            if long_edge <= MAX_DIM:
+                return data, ctype
+            scale = MAX_DIM / long_edge
+            new_size = (max(1, int(w * scale)), max(1, int(h * scale)))
+            resized = img.resize(new_size, Image.LANCZOS)
+            buf = io.BytesIO()
+            # Flatten any alpha → JPEG (smaller, faster decode) unless the
+            # original truly needs transparency.
+            has_alpha = resized.mode in ("RGBA", "LA") or (
+                resized.mode == "P" and "transparency" in resized.info
+            )
+            if has_alpha:
+                resized.save(buf, format="PNG", optimize=True)
+                out_type = "image/png"
+            else:
+                resized.convert("RGB").save(buf, format="JPEG", quality=85, optimize=True)
+                out_type = "image/jpeg"
+            new_bytes = buf.getvalue()
+            log.info(
+                "PDF export: downscaled image %dx%d → %dx%d, %d → %d bytes",
+                w, h, *new_size, len(data), len(new_bytes),
+            )
+            return new_bytes, out_type
         except Exception as e:
-            log.warning("PDF export: failed to fetch %s: %s", p, e)
-        return p, None
-
-    if paths:
-        results = await asyncio.gather(*(_fetch_one(p) for p in paths))
-        for p, payload in results:
-            if payload is not None:
-                fetched_images[p] = payload
-    log.info("PDF export: pre-fetched %d/%d images for route interception",
-             len(fetched_images), len(paths))
-
-    html, page_w, page_h = _build_html(book, image_data_urls)
+            log.warning("PDF export: downscale failed (%s); using original", e)
+            return data, ctype
 
     # Safety net: ensure Chromium is available. Startup tries this too, but
     # in production the binary might not be there on first boot.
     await ensure_chromium_installed()
 
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                # Memory hygiene — production containers are tight.
-                "--disable-gpu",
-                "--disable-background-networking",
-                "--disable-default-apps",
-                "--disable-extensions",
-                "--disable-sync",
-                "--disable-translate",
-                "--metrics-recording-only",
-                "--no-first-run",
-                "--no-zygote",
-            ],
-        )
-        try:
-            context = await browser.new_context(viewport={"width": page_w, "height": page_h})
-            page = await context.new_page()
+    # Chunked rendering: large books cannot be rendered in one Chromium
+    # session without OOMing the container (each image decodes to tens of
+    # MB; 70 images at once is multi-GB). We render N pages at a time in a
+    # fresh browser, freeing all decoded textures between batches, then
+    # merge the resulting PDFs with pypdf into the final document.
+    total_pages = len(book.get("pages") or [])
+    page_size_key = book.get("page_size") or "a4"
+    page_w, page_h = PAGE_SIZES_PX.get(page_size_key, PAGE_SIZES_PX["a4"])
+    CHUNK_SIZE = 10
+    chunks = [(i, min(i + CHUNK_SIZE, total_pages)) for i in range(0, total_pages, CHUNK_SIZE)] or [(0, 0)]
+    log.info("PDF export: rendering %d page(s) in %d chunk(s) of up to %d",
+             total_pages, len(chunks), CHUNK_SIZE)
 
-            # Intercept any /api/files/... request and answer it from our
-            # in-memory cache. Anything we don't have falls through to the
-            # network (so external assets like Google Fonts still work).
-            async def _handle_route(route):
-                req_url = route.request.url
-                marker = "/api/files/"
-                if marker in req_url:
-                    key = req_url.split(marker, 1)[1].split("?", 1)[0]
-                    cached = fetched_images.get(key)
-                    if cached is not None:
+    async def _render_chunk(start: int, end: int) -> bytes:
+        html, _, _ = _build_html(book, image_data_urls, page_range=(start, end))
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    # Memory hygiene — production containers are tight.
+                    "--disable-gpu",
+                    "--disable-background-networking",
+                    "--disable-default-apps",
+                    "--disable-extensions",
+                    "--disable-sync",
+                    "--disable-translate",
+                    "--metrics-recording-only",
+                    "--no-first-run",
+                    "--no-zygote",
+                ],
+            )
+            try:
+                context = await browser.new_context(viewport={"width": page_w, "height": page_h})
+                page = await context.new_page()
+
+                # Intercept /api/files/... requests and answer from in-process
+                # cache. Falls through for everything else (Google Fonts, etc).
+                async def _handle_route(route):
+                    req_url = route.request.url
+                    marker = "/api/files/"
+                    if marker in req_url:
+                        key = req_url.split(marker, 1)[1].split("?", 1)[0]
+                        cached = image_cache.get(key)
+                        if cached is None:
+                            try:
+                                raw, ctype = await asyncio.to_thread(get_image, key)
+                                if not raw:
+                                    log.warning("PDF export: empty bytes for %s", key)
+                                    await route.fulfill(status=404, body=b"")
+                                    return
+                                data, out_type = _maybe_downscale(raw, ctype or "image/png")
+                                cached = (data, out_type)
+                                image_cache[key] = cached
+                            except Exception as e:
+                                log.warning("PDF export: fetch failed for %s: %s", key, e)
+                                await route.fulfill(status=502, body=b"")
+                                return
                         data, ctype = cached
                         await route.fulfill(status=200, body=data, content_type=ctype)
                         return
-                    log.warning("PDF export: route miss for %s (not pre-fetched)", key)
-                await route.continue_()
+                    await route.continue_()
 
-            await page.route("**/api/files/**", _handle_route)
+                await page.route("**/api/files/**", _handle_route)
 
-            # `load` is enough — it fires after all images + stylesheets are
-            # fetched. `networkidle` adds a 500ms quiescence window that
-            # offers little for static content and risks proxy timeout (520)
-            # on cold containers.
-            await page.set_content(html, wait_until="load", timeout=45_000)
-            # Belt-and-braces: explicitly wait for the FontFace API to settle
-            # so glyphs aren't measured with the fallback metrics.
-            try:
-                await page.evaluate("document.fonts && document.fonts.ready")
-            except Exception:
-                pass
+                await page.set_content(html, wait_until="load", timeout=60_000)
+                try:
+                    await page.evaluate("document.fonts && document.fonts.ready")
+                except Exception:
+                    pass
 
-            pdf_bytes = await page.pdf(
-                width=f"{page_w}px",
-                height=f"{page_h}px",
-                print_background=True,
-                prefer_css_page_size=True,
-                margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
-            )
-            return pdf_bytes
-        finally:
-            await browser.close()
+                return await page.pdf(
+                    width=f"{page_w}px",
+                    height=f"{page_h}px",
+                    print_background=True,
+                    prefer_css_page_size=True,
+                    margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
+                )
+            finally:
+                await browser.close()
+
+    chunk_pdfs: list[bytes] = []
+    for idx, (start, end) in enumerate(chunks):
+        t0 = asyncio.get_event_loop().time()
+        chunk_bytes = await _render_chunk(start, end)
+        t1 = asyncio.get_event_loop().time()
+        log.info("PDF export: chunk %d/%d (pages %d-%d) rendered in %.1fs, %d bytes",
+                 idx + 1, len(chunks), start + 1, end, t1 - t0, len(chunk_bytes))
+        chunk_pdfs.append(chunk_bytes)
+
+    # Single chunk? Skip the merge — saves time and avoids pypdf re-encoding.
+    if len(chunk_pdfs) == 1:
+        return chunk_pdfs[0]
+
+    # Merge with pypdf. Use a writer rather than the deprecated PdfMerger.
+    import io
+    from pypdf import PdfReader, PdfWriter
+
+    writer = PdfWriter()
+    for blob in chunk_pdfs:
+        reader = PdfReader(io.BytesIO(blob))
+        for page in reader.pages:
+            writer.add_page(page)
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
