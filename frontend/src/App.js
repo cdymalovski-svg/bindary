@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { Toaster } from 'sonner';
 import Dashboard from '@/pages/Dashboard';
 import Editor from '@/pages/Editor';
+import ErrorBoundary from '@/components/ErrorBoundary';
 import '@/App.css';
 
 export default function App() {
@@ -25,7 +26,14 @@ export default function App() {
       />
       <Routes>
         <Route path="/" element={<Dashboard />} />
-        <Route path="/editor/:id" element={<Editor />} />
+        <Route
+          path="/editor/:id"
+          element={(
+            <ErrorBoundary>
+              <Editor />
+            </ErrorBoundary>
+          )}
+        />
       </Routes>
     </BrowserRouter>
   );
