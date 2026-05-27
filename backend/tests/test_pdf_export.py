@@ -135,3 +135,61 @@ class TestPdfExport:
             assert r.content[:5] == b"%PDF-"
         finally:
             s.delete(f"{API}/books/{bid}")
+
+
+    def test_pdf_export_embeds_image_blocks(self, s):
+        """REGRESSION: the PDF must actually contain image data when the book
+        has image blocks. The 2026-05-27 export refactor that switched
+        Chromium's `wait_until` from `load` to `domcontentloaded` accidentally
+        skipped image loading entirely — chunks finished in ~10s each but the
+        resulting PDF contained zero artwork. This test guards that path.
+
+        Strategy: upload a real PNG, create a book that uses it on the cover,
+        export to PDF, and assert the PDF body contains BOTH the PDF magic
+        header AND at least one embedded image stream (PDF uses the `/Image`
+        XObject subtype marker for raster images).
+        """
+        import io
+        # A distinctive 2x2 RGB PNG — small but real bytes that Chromium will
+        # actually decode and embed.
+        PNG = bytes.fromhex(
+            "89504E470D0A1A0A0000000D49484452000000020000000208060000007274"
+            "5E8800000016494441547801635CCBC0F03F0303030303030383B0E801001A"
+            "0306013F01E1A0F50000000049454E44AE426082"
+        )
+        # 1) upload
+        upload = s.post(
+            f"{API}/upload",
+            files={"file": ("TEST_pdf_image_regression.png", io.BytesIO(PNG), "image/png")},
+        )
+        assert upload.status_code == 200, upload.text
+        img = upload.json()
+        # 2) create a book using the image on page 1
+        c = s.post(f"{API}/books", json={"title": "TEST_PDF_Image_Regression", "page_size": "a4"})
+        assert c.status_code == 200
+        bid = c.json()["id"]
+        try:
+            book = c.json()
+            page = book["pages"][0]
+            page["blocks"] = [{
+                "id": str(uuid.uuid4()),
+                "type": "image",
+                "x": 100, "y": 100, "width": 400, "height": 400, "z_index": 1,
+                "image_url": img["url"],
+                "image_path": img["path"],
+            }]
+            u = s.put(f"{API}/books/{bid}", json={"pages": [page]})
+            assert u.status_code == 200, u.text
+
+            r = s.get(f"{API}/books/{bid}/export.pdf", timeout=60)
+            assert r.status_code == 200, r.text
+            assert r.content[:5] == b"%PDF-"
+            # The actual regression guard: a PDF that rendered with no images
+            # would have ZERO `/Subtype /Image` markers. If even one image
+            # was successfully fetched + embedded, this matches.
+            assert b"/Image" in r.content, (
+                "PDF contains no embedded image XObjects — Chromium probably "
+                "called page.pdf() before <img> elements finished loading."
+            )
+        finally:
+            s.delete(f"{API}/books/{bid}")

@@ -587,6 +587,30 @@ async def build_book_pdf(
                 )
             except Exception:
                 pass
+            # CRITICAL: `domcontentloaded` does not wait for images. If we
+            # called `page.pdf()` now, Chromium would render before any
+            # <img> finished fetching, producing a PDF with zero artwork.
+            # Wait for every image to settle (load OR error — we don't care
+            # which, broken images just become blanks), capped so a single
+            # stuck request can't hang the chunk.
+            try:
+                await page.evaluate(
+                    """
+                    Promise.race([
+                      Promise.all(Array.from(document.images).map(img =>
+                        img.complete
+                          ? Promise.resolve()
+                          : new Promise(r => {
+                              img.addEventListener('load', r, { once: true });
+                              img.addEventListener('error', r, { once: true });
+                            })
+                      )),
+                      new Promise(r => setTimeout(r, 20000))
+                    ])
+                    """
+                )
+            except Exception:
+                pass
 
             return await page.pdf(
                 width=f"{page_w}px",
