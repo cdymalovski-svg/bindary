@@ -855,11 +855,13 @@ export default function Editor() {
         throw new Error(detail);
       }
       const { job_id } = await startResp.json();
-      // Poll status. Cap at ~3 min so a stuck job eventually surfaces.
+      // Poll status. Cap at ~5 min so a cold start (Chromium install) or a
+      // very large book still has time to finish. Each individual request
+      // is sub-second; only the wall-clock can grow.
       const STATUS_URL = `${BASE}/api/books/${book.id}/pdf-jobs/${job_id}`;
       const start = Date.now();
       let lastStatus = 'pending';
-      while (Date.now() - start < 180_000) {
+      while (Date.now() - start < 300_000) {
         await new Promise((r) => setTimeout(r, 1200));
         const s = await fetch(STATUS_URL);
         if (!s.ok) {

@@ -49,6 +49,29 @@ async def _try_launch_chromium() -> bool:
         return False
 
 
+def _autodetect_chromium_path() -> Optional[str]:
+    """Look in the common pre-installed locations and return the path with
+    the most recent `chromium*-NNNN` directory inside. Lets us repair a
+    misconfigured `PLAYWRIGHT_BROWSERS_PATH` (e.g. `/pw-browsers` on a
+    deployment image where the binary actually lives in `~/.cache/`)."""
+    candidates = [
+        "/root/.cache/ms-playwright",
+        "/pw-browsers",
+        os.path.expanduser("~/.cache/ms-playwright"),
+    ]
+    for path in candidates:
+        try:
+            if not os.path.isdir(path):
+                continue
+            entries = os.listdir(path)
+            # Any directory matching chromium* is a sign Playwright populated it.
+            if any(e.startswith("chromium") for e in entries):
+                return path
+        except Exception:
+            continue
+    return None
+
+
 async def _run_playwright_install() -> None:
     """Download Chromium via `python -m playwright install chromium`.
     Streams output to logs so deployment debugging is easier."""
@@ -83,8 +106,27 @@ async def ensure_chromium_installed() -> None:
         if await _try_launch_chromium():
             _chromium_ready = True
             return
-        # Pre-flight install. Use whatever path Playwright defaults to
-        # (respects PLAYWRIGHT_BROWSERS_PATH if set, else ~/.cache/ms-playwright).
+
+        # Production gotcha: deployment images often pre-bake Chromium under
+        # ~/.cache/ms-playwright but inherit a stale PLAYWRIGHT_BROWSERS_PATH
+        # (e.g. /pw-browsers) where the binary doesn't exist. That makes
+        # every cold start re-download Chromium and risk OOM. Detect the
+        # real install location and rebind the env BEFORE attempting an
+        # expensive install.
+        detected = _autodetect_chromium_path()
+        configured = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+        if detected and detected != configured:
+            log.warning(
+                "PLAYWRIGHT_BROWSERS_PATH was %r but Chromium lives at %r — repairing env.",
+                configured, detected,
+            )
+            os.environ["PLAYWRIGHT_BROWSERS_PATH"] = detected
+            if await _try_launch_chromium():
+                _chromium_ready = True
+                return
+
+        # Last resort: download. Honours whatever PLAYWRIGHT_BROWSERS_PATH
+        # is set to now (either repaired above or the original).
         await _run_playwright_install()
         if not await _try_launch_chromium():
             raise RuntimeError(
