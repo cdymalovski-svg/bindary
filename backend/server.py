@@ -952,6 +952,50 @@ async def delete_asset(asset_id: str):
     return {"deleted": True}
 
 
+@api_router.post("/assets/{asset_id}/replace")
+async def replace_asset(asset_id: str, file: UploadFile = File(...)):
+    """Overwrite an existing asset's bytes in-place. The asset's
+    `storage_path` and DB id are preserved, so every block in every book
+    that references this asset's URL keeps working without a single edit
+    to canvas. This is the recovery path for orphaned assets — e.g. DB
+    records migrated between environments while the object-storage
+    buckets weren't kept in sync."""
+    record = await db.files.find_one({"id": asset_id, "is_deleted": False})
+    if not record:
+        raise HTTPException(404, "Asset not found")
+
+    ext = (file.filename or "bin").rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else "bin"
+    content_type = file.content_type or MIME_TYPES.get(ext, "application/octet-stream")
+    if not content_type.startswith("image/"):
+        raise HTTPException(400, "Only image uploads are supported")
+    data = await file.read()
+    if len(data) > 10 * 1024 * 1024:
+        raise HTTPException(413, "File too large (max 10MB)")
+
+    # Re-upload to the SAME storage path so existing block.image_url
+    # references resolve immediately. Object storage PUT is idempotent.
+    storage_path = record["storage_path"]
+    result = put_object(storage_path, data, content_type)
+    await db.files.update_one(
+        {"id": asset_id},
+        {"$set": {
+            "content_type": content_type,
+            "size": result.get("size", len(data)),
+            "original_filename": file.filename or record.get("original_filename"),
+            "replaced_at": _now_iso(),
+        }},
+    )
+    return {
+        "id": asset_id,
+        "path": storage_path,
+        # Cache-bust on the URL so browsers re-fetch the new bytes
+        # instead of serving the old 404-cached response.
+        "url": f"/api/files/{storage_path}?v={int(datetime.now(timezone.utc).timestamp())}",
+        "content_type": content_type,
+        "size": result.get("size", len(data)),
+    }
+
+
 @api_router.get("/files/{path:path}")
 async def serve_file(path: str):
     record = await db.files.find_one({"storage_path": path, "is_deleted": False})

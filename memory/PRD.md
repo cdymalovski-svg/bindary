@@ -78,6 +78,18 @@ Build me a book template app to be able to add texts and illustrations, page num
 - All 53 backend tests pass (5 dedicated to the job-polling flow). Preview `/api/pdf-health` reports healthy.
 
 
+## What's been implemented (2026-05-27 / iteration 17 — orphaned-asset recovery)
+- **Root cause of broken thumbnails in production**: production's MongoDB had asset records whose `storage_path` pointed at objects only ever uploaded into preview's object-storage bucket (preview and production are isolated buckets). 21 of 23 assets in a real user's library were orphaned: DB record present, bytes missing.
+- **Backend** — new `POST /api/assets/{asset_id}/replace` overwrites bytes at the asset's **existing** `storage_path`, leaving the id and URL untouched. Every block in every book that references the asset's `/api/files/...` URL is healed immediately without a single canvas edit.
+- **Frontend AssetsPanel**:
+  - Per-tile broken-state detection via `<img onError>` — no extra round-trip, robust to any failure mode (404, 500, network blocked).
+  - Broken tiles render an amber "Missing" placeholder with an inline "Re-upload" button (plus a "Re-upload bytes" context-menu item) that fires the new replace endpoint and cache-busts the `<img>` so the new bytes appear immediately.
+  - Broken tiles are non-draggable so users can't drop a placeholder onto canvas.
+  - A panel-wide "Fix N missing images…" button (visible only when broken tiles are detected) opens a multi-file picker that matches uploaded files to broken slots by filename (case-insensitive, with stem-without-extension fallback). Unmatched files are appended as fresh assets so nothing is silently lost.
+- **Canvas cache-busting**: Editor maintains an `assetCacheBuster` integer bumped after any replace. Canvas `<img>` URLs append `?v=<n>` so previously-cached failures are refetched and existing book pages light up the moment the user re-uploads, with no save/reload required.
+- New tests in `tests/test_assets_api.py::TestAssetReplace`: verifies id+path preservation, byte overwrite, 404 on missing asset, and 400 on non-image uploads. All 56 backend tests now pass.
+
+## Prioritized Backlog
 ### P1
 - Refactor `Editor.jsx` (now ~1672 lines): split into toolbar / canvas / TOC builder modules + custom hooks for autosave & selection.
 - Multi-select + alignment guides + snapping.

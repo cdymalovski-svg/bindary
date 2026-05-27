@@ -86,6 +86,10 @@ export default function Editor() {
   const [rightTab, setRightTab] = useState('assets'); // 'assets' | 'page' | 'block'
   const [viewMode, setViewMode] = useState('single'); // 'single' | 'spread'
   const [lastSavedAt, setLastSavedAt] = useState(null);
+  // Bumped after any asset replacement (re-uploading bytes for a missing
+  // asset). Appended to every canvas <img> URL so the browser refetches
+  // instead of showing the previously-cached 404.
+  const [assetCacheBuster, setAssetCacheBuster] = useState(0);
   const fileInputRef = useRef(null);
   const autoSaveTimerRef = useRef(null);
   const skipNextAutoSaveRef = useRef(true);
@@ -956,6 +960,7 @@ export default function Editor() {
           isFocused={idx === activePageIndex}
           selectedBlockId={selectedBlockId}
           editingTextId={editingTextId}
+          assetCacheBuster={assetCacheBuster}
           onSelectBlock={(blockId) => { setActivePageIndex(idx); setSelectedBlockId(blockId); }}
           onChangeBlock={(blockId, patch) => updateBlock(blockId, patch, idx)}
           onStartTextEdit={(blockId) => { setActivePageIndex(idx); setSelectedBlockId(blockId); setEditingTextId(blockId); }}
@@ -1221,6 +1226,7 @@ export default function Editor() {
                 pageNumberStart={book.page_number_start || 1}
                 selectedBlockId={selectedBlockId}
                 editingTextId={editingTextId}
+                assetCacheBuster={assetCacheBuster}
                 onSelectBlock={(blockId) => setSelectedBlockId(blockId)}
                 onChangeBlock={updateBlock}
                 onStartTextEdit={(blockId) => { setSelectedBlockId(blockId); setEditingTextId(blockId); }}
@@ -1262,6 +1268,7 @@ export default function Editor() {
               <AssetsPanel
                 bookId={book.id}
                 onAssetUploaded={() => { /* refresh inside */ }}
+                onAssetReplaced={() => setAssetCacheBuster((n) => n + 1)}
                 onInsertAsset={(asset) => addImageBlockFromAsset(asset)}
                 onReplaceSelectedImage={replaceSelectedImageWithAsset}
                 onSetAsCoverBackdrop={setAssetAsCoverBackdrop}
@@ -1370,6 +1377,7 @@ function PageCanvas({
   forExport = false,
   totalPages = 1,
   pageNumberStart = 1,
+  assetCacheBuster = 0,
 }) {  // Scale to fit viewport for editing mode (export uses full size)
   const [scale, setScale] = useState(1);
   const [dropHover, setDropHover] = useState(false);
@@ -1624,7 +1632,12 @@ function PageThumbnail({ page, index, active, pageSize, totalPages = 1, pageNumb
                   dangerouslySetInnerHTML={{ __html: sanitizeHtml(b.html || '') }}
                 />
               ) : b.image_url ? (
-                <img alt="" src={(b.image_url.startsWith('http') ? b.image_url : `${process.env.REACT_APP_BACKEND_URL}${b.image_url}`)} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                <img alt="" src={(() => {
+                  const base = b.image_url.startsWith('http') ? b.image_url : `${process.env.REACT_APP_BACKEND_URL}${b.image_url}`;
+                  return assetCacheBuster
+                    ? `${base}${base.includes('?') ? '&' : '?'}v=${assetCacheBuster}`
+                    : base;
+                })()} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
               ) : null}
             </div>
             );

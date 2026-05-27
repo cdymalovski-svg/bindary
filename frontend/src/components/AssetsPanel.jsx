@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Upload, Trash2, Loader2, ImageIcon, Search, Replace, BookOpen, Plus } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Upload, Trash2, Loader2, ImageIcon, Search, Replace, BookOpen, Plus, AlertTriangle, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
-import { listAssets, uploadImage, deleteAsset, fileUrl } from '@/lib/api';
+import { listAssets, uploadImage, deleteAsset, replaceAsset, fileUrl } from '@/lib/api';
 import { Input } from '@/components/ui/input';
 import {
   ContextMenu,
@@ -16,6 +16,7 @@ export const ASSET_DRAG_MIME = 'application/x-bindery-asset';
 export default function AssetsPanel({
   bookId,
   onAssetUploaded,
+  onAssetReplaced,
   onInsertAsset,
   onReplaceSelectedImage,
   onSetAsCoverBackdrop,
@@ -26,12 +27,24 @@ export default function AssetsPanel({
   const [uploading, setUploading] = useState(false);
   const [search, setSearch] = useState('');
   const [dragging, setDragging] = useState(false);
+  // Tracks which assets failed to load images (orphaned bytes in storage).
+  // Keyed by asset.id; we don't persist this — it's recomputed on each panel
+  // open from <img onError>, which is robust to any failure mode (404, 500,
+  // network blocked) without needing a separate API ping.
+  const [brokenIds, setBrokenIds] = useState(() => new Set());
+  // Bumped after a replace so the <img> re-fetches instead of serving the
+  // browser's cached failure.
+  const [versionTags, setVersionTags] = useState(() => ({}));
   const fileInputRef = useRef(null);
+  const fixAllInputRef = useRef(null);
 
   const refresh = useCallback(async () => {
     try {
       const data = await listAssets(bookId);
       setAssets(data);
+      // Drop stale broken markers when the underlying list changes.
+      setBrokenIds(new Set());
+      setVersionTags({});
     } catch (e) {
       toast.error('Could not load assets');
     } finally {
@@ -40,6 +53,39 @@ export default function AssetsPanel({
   }, [bookId]);
 
   useEffect(() => { refresh(); }, [refresh]);
+
+  const markBroken = useCallback((id) => {
+    setBrokenIds((prev) => {
+      if (prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.add(id);
+      return next;
+    });
+  }, []);
+
+  const markFixed = useCallback((id) => {
+    setBrokenIds((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  }, []);
+
+  const handleReplaceAsset = useCallback(async (id, file) => {
+    if (!file) return;
+    try {
+      await replaceAsset(id, file);
+      // Cache-bust the <img> so the freshly-uploaded bytes appear.
+      setVersionTags((v) => ({ ...v, [id]: Date.now() }));
+      markFixed(id);
+      // Tell the editor so canvas <img> elements re-fetch too.
+      onAssetReplaced?.();
+      toast.success(`Replaced "${file.name}"`);
+    } catch (e) {
+      toast.error(`Could not replace asset: ${e?.response?.data?.detail || e.message}`);
+    }
+  }, [markFixed, onAssetReplaced]);
 
   const handleFiles = async (fileList) => {
     const files = Array.from(fileList || []).filter((f) => f.type.startsWith('image/'));
@@ -61,6 +107,64 @@ export default function AssetsPanel({
     await refresh();
   };
 
+  // Bulk-fix flow: user picks N files, we match each one to a BROKEN asset by
+  // filename (case-insensitive, with a fallback to the basename without
+  // extension). Unmatched files get appended as new uploads so nothing is
+  // silently lost.
+  const handleFixAllFiles = async (fileList) => {
+    const files = Array.from(fileList || []).filter((f) => f.type.startsWith('image/'));
+    if (!files.length) return;
+    const brokenAssets = assets.filter((a) => brokenIds.has(a.id));
+    if (brokenAssets.length === 0) {
+      toast.info('No broken assets to replace.');
+      return;
+    }
+    setUploading(true);
+    const stem = (s) => (s || '').toLowerCase().split('.').slice(0, -1).join('.') || (s || '').toLowerCase();
+    const remaining = [...brokenAssets];
+    let replaced = 0;
+    let appended = 0;
+    let unmatched = 0;
+    for (const f of files) {
+      // Try exact filename match first, then basename-without-extension.
+      let idx = remaining.findIndex((a) => (a.original_filename || '').toLowerCase() === f.name.toLowerCase());
+      if (idx < 0) {
+        idx = remaining.findIndex((a) => stem(a.original_filename) === stem(f.name));
+      }
+      if (idx >= 0) {
+        const asset = remaining.splice(idx, 1)[0];
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          await replaceAsset(asset.id, f);
+          setVersionTags((v) => ({ ...v, [asset.id]: Date.now() }));
+          markFixed(asset.id);
+          replaced += 1;
+        } catch (e) {
+          unmatched += 1;
+        }
+      } else {
+        // No matching broken slot — upload as a new asset so the user
+        // still ends up with the bytes in storage.
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          const uploaded = await uploadImage(f, bookId);
+          onAssetUploaded?.(uploaded);
+          appended += 1;
+        } catch (e) {
+          unmatched += 1;
+        }
+      }
+    }
+    setUploading(false);
+    const parts = [];
+    if (replaced) parts.push(`${replaced} replaced`);
+    if (appended) parts.push(`${appended} added as new`);
+    if (unmatched) parts.push(`${unmatched} failed`);
+    toast.success(parts.join(' · ') || 'Done');
+    if (replaced) onAssetReplaced?.();
+    if (appended) await refresh();
+  };
+
   const onRemove = async (id) => {
     try {
       await deleteAsset(id);
@@ -71,9 +175,13 @@ export default function AssetsPanel({
     }
   };
 
-  const filtered = assets.filter((a) =>
-    !search.trim() || (a.original_filename || '').toLowerCase().includes(search.toLowerCase())
+  const filtered = useMemo(
+    () => assets.filter((a) =>
+      !search.trim() || (a.original_filename || '').toLowerCase().includes(search.toLowerCase())
+    ),
+    [assets, search],
   );
+  const brokenCount = brokenIds.size;
 
   return (
     <div
@@ -109,6 +217,19 @@ export default function AssetsPanel({
           {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
           {uploading ? 'Uploading…' : 'Upload images'}
         </button>
+        {brokenCount > 0 && (
+          <button
+            type="button"
+            onClick={() => fixAllInputRef.current?.click()}
+            disabled={uploading}
+            data-testid="fix-missing-button"
+            title="Re-upload images to replace orphaned assets. We match by filename when possible; un-matched files are appended as new."
+            className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-amber-700/30 hover:bg-amber-700/50 border border-amber-600/60 text-amber-200 rounded-sm text-xs transition-colors disabled:opacity-60"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            Fix {brokenCount} missing image{brokenCount > 1 ? 's' : ''}…
+          </button>
+        )}
         <input
           ref={fileInputRef}
           type="file"
@@ -118,6 +239,18 @@ export default function AssetsPanel({
           data-testid="bulk-upload-input"
           onChange={(e) => {
             handleFiles(e.target.files);
+            e.target.value = '';
+          }}
+        />
+        <input
+          ref={fixAllInputRef}
+          type="file"
+          multiple
+          accept="image/*"
+          className="hidden"
+          data-testid="fix-missing-input"
+          onChange={(e) => {
+            handleFixAllFiles(e.target.files);
             e.target.value = '';
           }}
         />
@@ -152,6 +285,10 @@ export default function AssetsPanel({
               <AssetTile
                 key={a.id}
                 asset={a}
+                version={versionTags[a.id]}
+                isBroken={brokenIds.has(a.id)}
+                onMarkBroken={() => markBroken(a.id)}
+                onReplaceBytes={(file) => handleReplaceAsset(a.id, file)}
                 onRemove={() => onRemove(a.id)}
                 onInsert={onInsertAsset}
                 onReplace={onReplaceSelectedImage}
@@ -166,12 +303,19 @@ export default function AssetsPanel({
   );
 }
 
-function AssetTile({ asset, onRemove, onInsert, onReplace, onCoverBackdrop, canReplace = false }) {
-  const url = fileUrl(asset.url);
+function AssetTile({ asset, version, isBroken, onMarkBroken, onReplaceBytes, onRemove, onInsert, onReplace, onCoverBackdrop, canReplace = false }) {
+  // `version` is bumped after a successful replace so the <img> reloads
+  // instead of serving the browser's cached failure response.
+  const baseUrl = fileUrl(asset.url);
+  const url = version ? `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}v=${version}` : baseUrl;
   const [hovered, setHovered] = useState(false);
   const [previewTop, setPreviewTop] = useState(0);
   const tileRef = useRef(null);
+  const replaceInputRef = useRef(null);
   const handleDragStart = (e) => {
+    // Don't allow dragging a broken asset onto the canvas — it'd just be
+    // a placeholder. The user needs to fix it first.
+    if (isBroken) { e.preventDefault(); return; }
     e.dataTransfer.effectAllowed = 'copy';
     const payload = JSON.stringify({ url: asset.url, path: asset.path });
     e.dataTransfer.setData(ASSET_DRAG_MIME, payload);
@@ -180,6 +324,7 @@ function AssetTile({ asset, onRemove, onInsert, onReplace, onCoverBackdrop, canR
     setHovered(false);
   };
   const showPreview = () => {
+    if (isBroken) return;  // No useful preview for a broken tile.
     if (!tileRef.current) return;
     const r = tileRef.current.getBoundingClientRect();
     // Vertically center the preview on the thumbnail, but clamp to the viewport.
@@ -190,26 +335,69 @@ function AssetTile({ asset, onRemove, onInsert, onReplace, onCoverBackdrop, canR
     setHovered(true);
   };
   const assetPayload = { url: asset.url, path: asset.path };
+  const tileClassName = `group relative aspect-square border rounded-sm overflow-hidden ${
+    isBroken
+      ? 'bg-amber-950/30 border-amber-700/60 cursor-not-allowed'
+      : 'bg-rule-dark/40 border-rule-dark cursor-grab active:cursor-grabbing'
+  }`;
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
         <div
           ref={tileRef}
-          className="group relative aspect-square bg-rule-dark/40 border border-rule-dark rounded-sm overflow-hidden cursor-grab active:cursor-grabbing"
-          draggable
+          className={tileClassName}
+          draggable={!isBroken}
           onDragStart={handleDragStart}
           onMouseEnter={showPreview}
           onMouseLeave={() => setHovered(false)}
           data-testid={`asset-tile-${asset.id}`}
-          title={asset.original_filename || 'image'}
+          data-broken={isBroken ? 'true' : 'false'}
+          title={isBroken ? `${asset.original_filename || 'image'} — missing from storage` : (asset.original_filename || 'image')}
         >
-          <img
-            src={url}
-            alt={asset.original_filename || ''}
-            className="absolute inset-0 w-full h-full object-contain pointer-events-none p-1"
-            crossOrigin="anonymous"
-            draggable={false}
-          />
+          {!isBroken && (
+            <img
+              src={url}
+              alt={asset.original_filename || ''}
+              className="absolute inset-0 w-full h-full object-contain pointer-events-none p-1"
+              crossOrigin="anonymous"
+              draggable={false}
+              onError={() => onMarkBroken?.()}
+            />
+          )}
+          {isBroken && (
+            <div
+              className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 p-2 text-amber-200"
+              data-testid={`asset-broken-${asset.id}`}
+            >
+              <AlertTriangle className="w-5 h-5 text-amber-400" />
+              <p className="text-[10px] text-center leading-tight font-medium">Missing</p>
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); replaceInputRef.current?.click(); }}
+                data-testid={`asset-replace-bytes-${asset.id}`}
+                className="text-[10px] px-2 py-0.5 bg-amber-600/40 hover:bg-amber-600/60 border border-amber-500/60 rounded-sm transition-colors"
+              >
+                Re-upload
+              </button>
+              <input
+                ref={replaceInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                data-testid={`asset-replace-bytes-input-${asset.id}`}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) onReplaceBytes?.(f);
+                  e.target.value = '';
+                }}
+              />
+              {asset.original_filename && (
+                <p className="text-[9px] text-amber-300/70 truncate w-full text-center" title={asset.original_filename}>
+                  {asset.original_filename}
+                </p>
+              )}
+            </div>
+          )}
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); onRemove(); }}
@@ -218,7 +406,7 @@ function AssetTile({ asset, onRemove, onInsert, onReplace, onCoverBackdrop, canR
           >
             <Trash2 className="w-3 h-3" />
           </button>
-          {hovered && (
+          {hovered && !isBroken && (
             <div
               // Floats to the left of the right-side Assets panel (which is 288px wide).
               // Pointer-events disabled so the popup never interferes with dragging.
@@ -250,9 +438,21 @@ function AssetTile({ asset, onRemove, onInsert, onReplace, onCoverBackdrop, canR
         className="bg-paper border-rule rounded-sm w-56"
         data-testid={`asset-context-${asset.id}`}
       >
+        {isBroken && (
+          <>
+            <ContextMenuItem
+              onClick={() => { setHovered(false); replaceInputRef.current?.click(); }}
+              data-testid={`asset-action-reupload-${asset.id}`}
+              className="cursor-pointer"
+            >
+              <RefreshCw className="w-4 h-4 mr-2" /> Re-upload bytes
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+          </>
+        )}
         <ContextMenuItem
           onClick={() => { setHovered(false); onInsert?.(assetPayload); }}
-          disabled={!onInsert}
+          disabled={!onInsert || isBroken}
           data-testid={`asset-action-insert-${asset.id}`}
           className="cursor-pointer"
         >
@@ -260,7 +460,7 @@ function AssetTile({ asset, onRemove, onInsert, onReplace, onCoverBackdrop, canR
         </ContextMenuItem>
         <ContextMenuItem
           onClick={() => { setHovered(false); onReplace?.(assetPayload); }}
-          disabled={!canReplace || !onReplace}
+          disabled={!canReplace || !onReplace || isBroken}
           data-testid={`asset-action-replace-${asset.id}`}
           className="cursor-pointer"
         >
@@ -268,7 +468,7 @@ function AssetTile({ asset, onRemove, onInsert, onReplace, onCoverBackdrop, canR
         </ContextMenuItem>
         <ContextMenuItem
           onClick={() => { setHovered(false); onCoverBackdrop?.(assetPayload); }}
-          disabled={!onCoverBackdrop}
+          disabled={!onCoverBackdrop || isBroken}
           data-testid={`asset-action-cover-${asset.id}`}
           className="cursor-pointer"
         >

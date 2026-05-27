@@ -36,6 +36,14 @@ export const uploadImage = async (file, bookId) => {
 export const listAssets = (bookId) =>
   api.get('/assets', { params: bookId ? { book_id: bookId } : undefined }).then((r) => r.data);
 export const deleteAsset = (id) => api.delete(`/assets/${id}`).then((r) => r.data);
+export const replaceAsset = async (id, file) => {
+  const form = new FormData();
+  form.append('file', file);
+  const res = await api.post(`/assets/${id}/replace`, form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return res.data;
+};
 
 export const listTemplates = () => api.get('/templates').then((r) => r.data);
 export const createTemplate = (data) => api.post('/templates', data).then((r) => r.data);
