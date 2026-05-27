@@ -1176,6 +1176,7 @@ export default function Editor() {
                   pageSize={pageSize}
                   totalPages={book.pages.length}
                   pageNumberStart={book.page_number_start || 1}
+                  assetCacheBuster={assetCacheBuster}
                   onClick={() => { setActivePageIndex(i); setSelectedBlockId(null); }}
                   onDuplicate={() => duplicatePage(i)}
                   onDelete={() => removePage(i)}
@@ -1557,7 +1558,7 @@ function SpreadPlaceholder({ pageSize }) {
   );
 }
 
-function PageThumbnail({ page, index, active, pageSize, totalPages = 1, pageNumberStart = 1, onClick, onDuplicate, onDelete, onTogglePageNumber, onMoveUp, onMoveDown }) {
+function PageThumbnail({ page, index, active, pageSize, totalPages = 1, pageNumberStart = 1, onClick, onDuplicate, onDelete, onTogglePageNumber, onMoveUp, onMoveDown, assetCacheBuster = 0 }) {
   const thumbW = 160;
   const scale = thumbW / pageSize.width;
   const thumbH = pageSize.height * scale;
