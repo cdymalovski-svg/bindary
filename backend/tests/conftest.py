@@ -16,7 +16,7 @@ import requests
 def _api_base() -> str:
     base = os.environ.get("REACT_APP_BACKEND_URL")
     if not base:
-        base = "https://wysiwyg-book-builder.preview.emergentagent.com"
+        base = "https://manuscript-app-2.preview.emergentagent.com"
     return f"{base.rstrip('/')}/api"
 
 

@@ -33,6 +33,6 @@
   "seed_data_creation": "Uploaded TEST_asset_*.png and TEST_bulk_*.png assets and created TEST_AssetsSidebar book; the book was deleted at end of run. Uploaded assets remain in DB but are soft-deleted where required by tests.",
   "retest_needed": false,
   "should_main_agent_self_test": true,
-  "context_for_next_testing_agent": "Backend assets tests at /app/backend/tests/test_assets_api.py. ASSET_DRAG_MIME='application/x-bindery-asset'. The drag-drop was verified via page.evaluate dispatching synthetic DragEvent with DataTransfer (real Playwright .drag_to() is unreliable here). page-drop-zone-0 has onDrop handler that creates an image block via addImageBlockFromAsset; the block is rendered as an <img> inside [data-testid='page-canvas-0']. Block tab auto-switches via useEffect on selectedBlockId. REACT_APP_BACKEND_URL=https://wysiwyg-book-builder.preview.emergentagent.com",
+  "context_for_next_testing_agent": "Backend assets tests at /app/backend/tests/test_assets_api.py. ASSET_DRAG_MIME='application/x-bindery-asset'. The drag-drop was verified via page.evaluate dispatching synthetic DragEvent with DataTransfer (real Playwright .drag_to() is unreliable here). page-drop-zone-0 has onDrop handler that creates an image block via addImageBlockFromAsset; the block is rendered as an <img> inside [data-testid='page-canvas-0']. Block tab auto-switches via useEffect on selectedBlockId. REACT_APP_BACKEND_URL=https://manuscript-app-2.preview.emergentagent.com",
   "rca of the issue": "No bugs found in iteration 2."
 }

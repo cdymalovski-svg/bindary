@@ -14,7 +14,7 @@ import pytest
 import requests
 
 BASE_URL = os.environ.get(
-    'REACT_APP_BACKEND_URL', 'https://wysiwyg-book-builder.preview.emergentagent.com'
+    'REACT_APP_BACKEND_URL', 'https://manuscript-app-2.preview.emergentagent.com'
 ).rstrip('/')
 API = f"{BASE_URL}/api"
 

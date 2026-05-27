@@ -876,7 +876,7 @@ export default function Editor() {
         const elapsed = Math.round((Date.now() - start) / 1000);
         toast.loading(`Building PDF… ${elapsed}s`, { id: toastId });
       }
-      if (lastStatus !== 'ready') throw new Error('PDF timed out — try again');
+      if (lastStatus !== 'ready') throw new Error(`PDF timed out (last status: ${lastStatus}) — try again`);
 
       // Stream the bytes — this is a fast, fully-buffered response, so no
       // proxy timeout risk.
