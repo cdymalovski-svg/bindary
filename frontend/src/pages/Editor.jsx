@@ -855,13 +855,14 @@ export default function Editor() {
         throw new Error(detail);
       }
       const { job_id } = await startResp.json();
-      // Poll status. Cap at ~5 min so a cold start (Chromium install) or a
+      // Poll status. Cap at ~10 min so a cold start (Chromium install) or a
       // very large book still has time to finish. Each individual request
       // is sub-second; only the wall-clock can grow.
       const STATUS_URL = `${BASE}/api/books/${book.id}/pdf-jobs/${job_id}`;
       const start = Date.now();
       let lastStatus = 'pending';
-      while (Date.now() - start < 300_000) {
+      let lastStage = '';
+      while (Date.now() - start < 600_000) {
         await new Promise((r) => setTimeout(r, 1200));
         const s = await fetch(STATUS_URL);
         if (!s.ok) {
@@ -870,13 +871,22 @@ export default function Editor() {
         }
         const body = await s.json();
         lastStatus = body.status;
+        if (body.stage) lastStage = body.stage;
         if (body.status === 'ready') break;
-        if (body.status === 'failed') throw new Error(body.error || 'PDF build failed');
-        // Otherwise (pending) — keep a friendly counter on the toast.
+        if (body.status === 'failed') {
+          const detail = body.error || 'PDF build failed';
+          const tail = body.trace ? ` (${String(body.trace).slice(0, 120)})` : '';
+          throw new Error(`${detail}${tail}`);
+        }
+        // Otherwise (pending) — show stage + elapsed on the toast.
         const elapsed = Math.round((Date.now() - start) / 1000);
-        toast.loading(`Building PDF… ${elapsed}s`, { id: toastId });
+        const label = lastStage ? `${lastStage} · ${elapsed}s` : `${elapsed}s`;
+        toast.loading(`Building PDF… ${label}`, { id: toastId });
       }
-      if (lastStatus !== 'ready') throw new Error(`PDF timed out (last status: ${lastStatus}) — try again`);
+      if (lastStatus !== 'ready') {
+        const stageHint = lastStage ? ` (stuck at: ${lastStage})` : '';
+        throw new Error(`PDF timed out${stageHint} — try again or check /api/pdf-health`);
+      }
 
       // Stream the bytes — this is a fast, fully-buffered response, so no
       // proxy timeout risk.

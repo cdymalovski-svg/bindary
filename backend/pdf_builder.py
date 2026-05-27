@@ -421,6 +421,7 @@ async def build_book_pdf(
     book: dict,
     get_image: Callable[[str], tuple[bytes, str]],
     public_base_url: Optional[str] = None,
+    progress_cb: Optional[Callable[[str], None]] = None,
 ) -> bytes:
     """Render the book to a PDF that exactly mirrors the editor view.
 
@@ -437,7 +438,18 @@ async def build_book_pdf(
         `/api/files/...` URLs when the internal fetch fails — letting
         Chromium pull the image the same way the editor does. When unset
         the env var `PUBLIC_BACKEND_URL` is consulted.
+    progress_cb : callable(stage_str), optional
+        Invoked at each major stage so the surrounding job worker can
+        surface live progress to the client (e.g. "rendering chunk 3/8").
+        Errors inside the callback are swallowed.
     """
+    def _emit(stage: str) -> None:
+        if progress_cb is None:
+            return
+        try:
+            progress_cb(stage)
+        except Exception:
+            pass
     # Make the public base URL available to _render_block via env so we
     # don't have to plumb it through every helper.
     if public_base_url:
@@ -506,104 +518,125 @@ async def build_book_pdf(
 
     # Safety net: ensure Chromium is available. Startup tries this too, but
     # in production the binary might not be there on first boot.
+    _emit("preparing chromium")
     await ensure_chromium_installed()
 
     # Chunked rendering: large books cannot be rendered in one Chromium
     # session without OOMing the container (each image decodes to tens of
-    # MB; 70 images at once is multi-GB). We render N pages at a time in a
-    # fresh browser, freeing all decoded textures between batches, then
-    # merge the resulting PDFs with pypdf into the final document.
+    # MB; 70 images at once is multi-GB). We render N pages at a time
+    # using fresh browser CONTEXTS (cheap) but a SINGLE long-lived browser
+    # (saves ~3-5s per chunk on cold launch), then merge the resulting
+    # PDFs with pypdf into the final document.
     total_pages = len(book.get("pages") or [])
     page_size_key = book.get("page_size") or "a4"
     page_w, page_h = PAGE_SIZES_PX.get(page_size_key, PAGE_SIZES_PX["a4"])
-    CHUNK_SIZE = 10
+    # 5-page chunks halve peak memory vs the previous 10, at the cost of
+    # one extra context teardown per chunk (negligible).
+    CHUNK_SIZE = 5
     chunks = [(i, min(i + CHUNK_SIZE, total_pages)) for i in range(0, total_pages, CHUNK_SIZE)] or [(0, 0)]
     log.info("PDF export: rendering %d page(s) in %d chunk(s) of up to %d",
              total_pages, len(chunks), CHUNK_SIZE)
 
-    async def _render_chunk(start: int, end: int) -> bytes:
-        html, _, _ = _build_html(book, image_data_urls, page_range=(start, end))
-        async with async_playwright() as pw:
-            browser = await pw.chromium.launch(
-                headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    # Memory hygiene — production containers are tight.
-                    "--disable-gpu",
-                    "--disable-background-networking",
-                    "--disable-default-apps",
-                    "--disable-extensions",
-                    "--disable-sync",
-                    "--disable-translate",
-                    "--metrics-recording-only",
-                    "--no-first-run",
-                    "--no-zygote",
-                ],
-            )
-            try:
-                context = await browser.new_context(viewport={"width": page_w, "height": page_h})
-                page = await context.new_page()
-
-                # Intercept /api/files/... requests and answer from in-process
-                # cache. Falls through for everything else (Google Fonts, etc).
-                async def _handle_route(route):
-                    req_url = route.request.url
-                    marker = "/api/files/"
-                    if marker in req_url:
-                        key = req_url.split(marker, 1)[1].split("?", 1)[0]
-                        cached = image_cache.get(key)
-                        if cached is None:
-                            try:
-                                raw, ctype = await asyncio.to_thread(get_image, key)
-                                if not raw:
-                                    log.warning("PDF export: empty bytes for %s", key)
-                                    await route.fulfill(status=404, body=b"")
-                                    return
-                                data, out_type = _maybe_downscale(raw, ctype or "image/png")
-                                cached = (data, out_type)
-                                image_cache[key] = cached
-                            except Exception as e:
-                                log.warning("PDF export: fetch failed for %s: %s", key, e)
-                                await route.fulfill(status=502, body=b"")
-                                return
-                        data, ctype = cached
-                        await route.fulfill(status=200, body=data, content_type=ctype)
-                        return
-                    await route.continue_()
-
-                await page.route("**/api/files/**", _handle_route)
-
-                await page.set_content(html, wait_until="load", timeout=60_000)
+    # Intercept /api/files/... requests and answer from in-process cache.
+    # Falls through for everything else (Google Fonts, etc).
+    async def _handle_route(route):
+        req_url = route.request.url
+        marker = "/api/files/"
+        if marker in req_url:
+            key = req_url.split(marker, 1)[1].split("?", 1)[0]
+            cached = image_cache.get(key)
+            if cached is None:
                 try:
-                    await page.evaluate("document.fonts && document.fonts.ready")
-                except Exception:
-                    pass
+                    raw, ctype = await asyncio.to_thread(get_image, key)
+                    if not raw:
+                        log.warning("PDF export: empty bytes for %s", key)
+                        await route.fulfill(status=404, body=b"")
+                        return
+                    data, out_type = _maybe_downscale(raw, ctype or "image/png")
+                    cached = (data, out_type)
+                    image_cache[key] = cached
+                except Exception as e:
+                    log.warning("PDF export: fetch failed for %s: %s", key, e)
+                    await route.fulfill(status=502, body=b"")
+                    return
+            data, ctype = cached
+            await route.fulfill(status=200, body=data, content_type=ctype)
+            return
+        await route.continue_()
 
-                return await page.pdf(
-                    width=f"{page_w}px",
-                    height=f"{page_h}px",
-                    print_background=True,
-                    prefer_css_page_size=True,
-                    margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
+    async def _render_chunk(browser, idx: int, total: int, start: int, end: int) -> bytes:
+        html, _, _ = _build_html(book, image_data_urls, page_range=(start, end))
+        context = await browser.new_context(viewport={"width": page_w, "height": page_h})
+        try:
+            page = await context.new_page()
+            await page.route("**/api/files/**", _handle_route)
+            # Use `domcontentloaded` not `load`. `load` blocks until every
+            # external resource (Google Fonts CSS + WOFF2 files) finishes,
+            # and a single slow font request in production was hanging the
+            # render for ~60s per chunk → 5+ minute total exports.
+            await page.set_content(html, wait_until="domcontentloaded", timeout=30_000)
+            # Give fonts a short, BOUNDED window to load. Falls back to the
+            # browser's default serif if the network is too slow — visually
+            # acceptable and infinitely better than timing out the export.
+            try:
+                await page.evaluate(
+                    "Promise.race(["
+                    "  (document.fonts ? document.fonts.ready : Promise.resolve()),"
+                    "  new Promise(r => setTimeout(r, 3000))"
+                    "])"
                 )
-            finally:
-                await browser.close()
+            except Exception:
+                pass
+
+            return await page.pdf(
+                width=f"{page_w}px",
+                height=f"{page_h}px",
+                print_background=True,
+                prefer_css_page_size=True,
+                margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
+            )
+        finally:
+            await context.close()
 
     chunk_pdfs: list[bytes] = []
-    for idx, (start, end) in enumerate(chunks):
-        t0 = asyncio.get_event_loop().time()
-        chunk_bytes = await _render_chunk(start, end)
-        t1 = asyncio.get_event_loop().time()
-        log.info("PDF export: chunk %d/%d (pages %d-%d) rendered in %.1fs, %d bytes",
-                 idx + 1, len(chunks), start + 1, end, t1 - t0, len(chunk_bytes))
-        chunk_pdfs.append(chunk_bytes)
+    async with async_playwright() as pw:
+        _emit("launching chromium")
+        browser = await pw.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                # Memory hygiene — production containers are tight.
+                "--disable-gpu",
+                "--disable-background-networking",
+                "--disable-default-apps",
+                "--disable-extensions",
+                "--disable-sync",
+                "--disable-translate",
+                "--metrics-recording-only",
+                "--no-first-run",
+                "--no-zygote",
+            ],
+        )
+        try:
+            for idx, (start, end) in enumerate(chunks):
+                _emit(f"rendering chunk {idx + 1}/{len(chunks)}")
+                t0 = asyncio.get_event_loop().time()
+                chunk_bytes = await _render_chunk(browser, idx, len(chunks), start, end)
+                t1 = asyncio.get_event_loop().time()
+                log.info("PDF export: chunk %d/%d (pages %d-%d) rendered in %.1fs, %d bytes",
+                         idx + 1, len(chunks), start + 1, end, t1 - t0, len(chunk_bytes))
+                chunk_pdfs.append(chunk_bytes)
+        finally:
+            await browser.close()
 
     # Single chunk? Skip the merge — saves time and avoids pypdf re-encoding.
     if len(chunk_pdfs) == 1:
+        _emit("done")
         return chunk_pdfs[0]
 
     # Merge with pypdf. Use a writer rather than the deprecated PdfMerger.
+    _emit("merging chunks")
     import io
     from pypdf import PdfReader, PdfWriter
 
@@ -614,4 +647,5 @@ async def build_book_pdf(
             writer.add_page(page)
     out = io.BytesIO()
     writer.write(out)
+    _emit("done")
     return out.getvalue()

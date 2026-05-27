@@ -591,6 +591,24 @@ async def _run_pdf_job(job_id: str, book_id: str, base_url: str) -> None:
     flips the Mongo record to `ready` (or `failed`)."""
     from pdf_builder import build_book_pdf
 
+    # Per-job stage tracker. Each call writes to Mongo so the polling client
+    # can show "rendering chunk 3/8" instead of just an elapsed counter.
+    # We coalesce updates so a callback storm doesn't hammer Mongo.
+    last_stage: dict = {"v": None}
+
+    def _on_stage(stage: str) -> None:
+        if stage == last_stage["v"]:
+            return
+        last_stage["v"] = stage
+        # Fire-and-forget; failures here must never break the render.
+        # `ensure_future` accepts both coroutines and Motor's Future-like
+        # objects (motor wraps Mongo ops in chained asyncio Futures, which
+        # `create_task` rejects).
+        asyncio.ensure_future(db.pdf_jobs.update_one(
+            {"job_id": job_id},
+            {"$set": {"stage": stage, "stage_at": _now_iso()}},
+        ))
+
     try:
         book = await db.books.find_one({"id": book_id}, {"_id": 0})
         if not book:
@@ -600,15 +618,20 @@ async def _run_pdf_job(job_id: str, book_id: str, base_url: str) -> None:
                           "finished_at": _now_iso()}},
             )
             return
-        pdf_bytes = await build_book_pdf(book, get_object, public_base_url=base_url)
+        _on_stage("starting")
+        pdf_bytes = await build_book_pdf(
+            book, get_object, public_base_url=base_url, progress_cb=_on_stage,
+        )
         safe = re.sub(r"[^A-Za-z0-9._-]+", "_", book.get("title") or "book").strip("_") or "book"
         # Upload PDF bytes to shared object storage so any pod can serve them.
+        _on_stage("uploading")
         object_path = f"{_PDF_OBJECT_PREFIX}/{job_id}.pdf"
         await asyncio.to_thread(put_object, object_path, pdf_bytes, "application/pdf")
         await db.pdf_jobs.update_one(
             {"job_id": job_id},
             {"$set": {
                 "status": "ready",
+                "stage": "ready",
                 "size": len(pdf_bytes),
                 "filename": f"{safe}.pdf",
                 "object_path": object_path,
@@ -616,10 +639,18 @@ async def _run_pdf_job(job_id: str, book_id: str, base_url: str) -> None:
             }},
         )
     except Exception as e:
+        # Capture a snippet of the traceback so the client toast can show
+        # something more useful than a generic "build failed". Truncate
+        # heavily — the full trace is in logs, the toast just needs a hint.
+        import traceback
+        tb = traceback.format_exc().splitlines()
+        last_lines = " | ".join(tb[-3:]) if tb else ""
         logging.exception("PDF job %s failed", job_id)
         await db.pdf_jobs.update_one(
             {"job_id": job_id},
-            {"$set": {"status": "failed", "error": str(e)[:300],
+            {"$set": {"status": "failed",
+                      "error": f"{e}".strip()[:300] or "PDF build failed",
+                      "trace": last_lines[:500],
                       "finished_at": _now_iso()}},
         )
 
@@ -659,12 +690,18 @@ async def export_pdf_status(book_id: str, job_id: str):
     )
     if not job:
         raise HTTPException(404, "Job not found")
-    resp = {"status": job["status"], "created_at": job["created_at"]}
+    resp = {
+        "status": job["status"],
+        "created_at": job["created_at"],
+        "stage": job.get("stage"),
+    }
     if job["status"] == "ready":
         resp["size"] = job.get("size", 0)
         resp["filename"] = job.get("filename", "book.pdf")
     elif job["status"] == "failed":
         resp["error"] = job.get("error") or "PDF build failed"
+        if job.get("trace"):
+            resp["trace"] = job["trace"]
     return resp
 
 
@@ -694,6 +731,76 @@ async def export_pdf_download(book_id: str, job_id: str):
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@api_router.get("/pdf-health")
+async def pdf_health():
+    """Diagnostic endpoint — reports everything the PDF pipeline depends on
+    so we can pinpoint production failures without a redeploy. Safe to
+    expose: contains no secrets, just paths/counts/booleans."""
+    from pdf_builder import (
+        _autodetect_chromium_path,
+        _chromium_ready,
+        _try_launch_chromium,
+    )
+
+    info: dict[str, Any] = {
+        "playwright_browsers_path_env": os.environ.get("PLAYWRIGHT_BROWSERS_PATH"),
+        "detected_browsers_path": _autodetect_chromium_path(),
+        "chromium_ready_cached": _chromium_ready,
+        "python": f"{__import__('sys').version_info.major}.{__import__('sys').version_info.minor}",
+    }
+    # Live launch probe — the cached flag can lie if the binary was wiped.
+    try:
+        info["chromium_launchable"] = await _try_launch_chromium()
+    except Exception as e:
+        info["chromium_launchable"] = False
+        info["chromium_launch_error"] = str(e)[:300]
+
+    # Disk + memory snapshot (helps identify OOM/disk-full failures).
+    try:
+        import shutil
+        du = shutil.disk_usage("/")
+        info["disk_total_mb"] = du.total // (1024 * 1024)
+        info["disk_free_mb"] = du.free // (1024 * 1024)
+    except Exception as e:
+        info["disk_error"] = str(e)[:200]
+    try:
+        # /proc/meminfo is always present on Linux containers and avoids
+        # pulling in psutil just for diagnostics.
+        with open("/proc/meminfo") as f:
+            mem: dict[str, int] = {}
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 2 and parts[0].rstrip(":") in {
+                    "MemTotal", "MemAvailable", "MemFree", "SwapTotal", "SwapFree"
+                }:
+                    mem[parts[0].rstrip(":")] = int(parts[1]) // 1024  # kB → MB
+            info["memory_mb"] = mem
+    except Exception as e:
+        info["memory_error"] = str(e)[:200]
+
+    # Recent failed jobs (last 5) — fastest way to see what's been blowing up.
+    try:
+        recent = await db.pdf_jobs.find(
+            {"status": "failed"}, {"_id": 0, "job_id": 1, "book_id": 1,
+                                    "error": 1, "stage": 1, "finished_at": 1},
+        ).sort("finished_at", -1).to_list(5)
+        info["recent_failures"] = recent
+    except Exception as e:
+        info["recent_failures_error"] = str(e)[:200]
+
+    # Recent in-flight jobs (last 5 pending) — shows what's stuck.
+    try:
+        pending = await db.pdf_jobs.find(
+            {"status": "pending"}, {"_id": 0, "job_id": 1, "book_id": 1,
+                                     "stage": 1, "created_at": 1, "stage_at": 1},
+        ).sort("created_at", -1).to_list(5)
+        info["pending_jobs"] = pending
+    except Exception as e:
+        info["pending_jobs_error"] = str(e)[:200]
+
+    return info
 
 
 

@@ -65,7 +65,19 @@ Build me a book template app to be able to add texts and illustrations, page num
 - **Library page robustness**: `list_books` reverted to simple find after an aggregation attempt broke prod (`$arrayElemAt`/`$size` issues on certain Mongo configurations).
 - All 59 backend tests pass. Production deployed to `bindery.au` (custom domain).
 
-## Prioritized Backlog
+## What's been implemented (2026-05-27 / iteration 16 — production PDF timeout fix)
+- **Root cause of 290s production timeouts identified**: `wait_until="load"` was blocking each chunk on Google Fonts CSS + WOFF2 fetches. With egress latency to `fonts.googleapis.com`, every chunk hung up to 60s — 6 chunks × 60s ≈ matched the observed 290s frontend timeout.
+- **Fixes:**
+  - Switched `page.set_content` to `wait_until="domcontentloaded"` + a bounded 3-second `document.fonts.ready` race. Fonts load best-effort; if the network is slow Chromium falls back to its default serif rather than hanging the entire export.
+  - **Single long-lived browser** across all chunks (saves ~3-5s per chunk launch overhead). Each chunk gets a fresh `context` (cheap) but reuses the launched browser.
+  - **Chunk size 10 → 5 pages** to halve peak memory pressure in production containers.
+  - Per-chunk PDF timeout reduced 60s → 30s — any longer is a stuck render, not a slow one.
+- **Live progress reporting:** `build_book_pdf` now accepts a `progress_cb`. The job worker writes the current `stage` to Mongo on each transition ("launching chromium" → "rendering chunk 3/8" → "merging chunks" → "uploading"). Status endpoint returns `stage`; the frontend toast shows it ("Building PDF… rendering chunk 3/8 · 47s"). Failure path now includes a `trace` snippet so users see the actual exception, not just "PDF build failed".
+- **New `/api/pdf-health` diagnostic endpoint** — reports chromium-launchable status, `PLAYWRIGHT_BROWSERS_PATH` env vs detected install path, disk free, memory (MemTotal/MemAvailable/SwapFree), and recent failed + pending jobs. Tells us in one curl whether the issue is Chromium, disk, memory, or stuck workers.
+- **Frontend poll cap raised 5 min → 10 min** to comfortably accommodate large books with cold-start Chromium installs.
+- All 53 backend tests pass (5 dedicated to the job-polling flow). Preview `/api/pdf-health` reports healthy.
+
+
 ### P1
 - Refactor `Editor.jsx` (now ~1672 lines): split into toolbar / canvas / TOC builder modules + custom hooks for autosave & selection.
 - Multi-select + alignment guides + snapping.
