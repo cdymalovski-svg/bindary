@@ -8,6 +8,7 @@ import {
   duplicateBook,
 } from '@/lib/api';
 import { PAGE_SIZES } from '@/lib/pageSizes';
+import FitText from '@/components/FitText';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -525,12 +526,26 @@ function BookCard({ book, onOpen, onDelete, onDuplicate, onEditDetails }) {
           <p className="text-[11px] text-paper/80">{book.page_count} pages · {book.page_size}</p>
         </div>
       </button>
-      <div className="flex items-center justify-between px-2.5 py-2 border-t border-rule gap-1">
-        <div className="min-w-0 flex-1">
-          <p className="font-serif text-sm text-ink truncate leading-tight">{book.title}</p>
-          <p className="text-[10px] text-ink-mute truncate">{book.author || 'Anonymous'}</p>
-        </div>
-        <div className="flex items-center gap-0.5 shrink-0">
+      <div className="flex flex-col px-2.5 py-2 border-t border-rule gap-0.5">
+        <FitText
+          as="p"
+          min={9}
+          max={18}
+          className="font-serif text-ink"
+          data-testid={`book-card-title-${book.id}`}
+        >
+          {book.title || 'Untitled'}
+        </FitText>
+        <FitText
+          as="p"
+          min={8}
+          max={12}
+          className="text-ink-mute"
+          data-testid={`book-card-author-${book.id}`}
+        >
+          {book.author || 'Anonymous'}
+        </FitText>
+        <div className="flex items-center justify-end gap-0.5 pt-1 mt-0.5 border-t border-rule/60">
           <Dialog open={editOpen} onOpenChange={setEditOpen}>
             <DialogTrigger asChild>
               <button
@@ -539,7 +554,7 @@ function BookCard({ book, onOpen, onDelete, onDuplicate, onEditDetails }) {
                 className="p-1 text-ink-mute hover:text-ink rounded-sm"
                 title="Edit title and author"
               >
-                <Pencil className="w-3 h-3" />
+                <Pencil className="w-3.5 h-3.5" />
               </button>
             </DialogTrigger>
             <DialogContent className="bg-paper border-rule rounded-sm max-w-md">
@@ -598,7 +613,7 @@ function BookCard({ book, onOpen, onDelete, onDuplicate, onEditDetails }) {
             className="p-1 text-ink-mute hover:text-ink rounded-sm"
             title="Duplicate"
           >
-            <Copy className="w-3 h-3" />
+            <Copy className="w-3.5 h-3.5" />
           </button>
           <AlertDialog>
           <AlertDialogTrigger asChild>
@@ -607,7 +622,7 @@ function BookCard({ book, onOpen, onDelete, onDuplicate, onEditDetails }) {
               className="p-1 text-ink-mute hover:text-terracotta rounded-sm"
               title="Delete"
             >
-              <Trash2 className="w-3 h-3" />
+              <Trash2 className="w-3.5 h-3.5" />
             </button>
           </AlertDialogTrigger>
           <AlertDialogContent className="bg-paper border-rule rounded-sm">
