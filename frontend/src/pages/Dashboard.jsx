@@ -451,7 +451,7 @@ export default function Dashboard() {
               );
             }
             return (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
                 {sorted.map((b) => (
                   <BookCard
                     key={b.id}
@@ -511,34 +511,35 @@ function BookCard({ book, onOpen, onDelete, onDuplicate, onEditDetails }) {
         data-testid={`open-book-${book.id}`}
       >
         {cover ? (
-          <img src={cover} alt={book.title} className="absolute inset-0 w-full h-full object-cover" />
+          // object-contain so the entire cover page is visible (no crop).
+          // The desk-colored background fills any letterboxed gutters.
+          <img src={cover} alt={book.title} className="absolute inset-0 w-full h-full object-contain" />
         ) : (
-          <div className="absolute inset-0 flex flex-col items-center justify-center p-6 bg-gradient-to-br from-paper to-desk">
-            <FileText className="w-10 h-10 text-ink-mute mb-3" strokeWidth={1.25} />
-            <p className="font-serif text-2xl text-ink text-center leading-tight">{book.title}</p>
-            {book.author ? <p className="text-ink-mute mt-2 text-sm">by {book.author}</p> : null}
+          <div className="absolute inset-0 flex flex-col items-center justify-center p-3 bg-gradient-to-br from-paper to-desk">
+            <FileText className="w-6 h-6 text-ink-mute mb-1.5" strokeWidth={1.25} />
+            <p className="font-serif text-sm text-ink text-center leading-tight line-clamp-3">{book.title}</p>
+            {book.author ? <p className="text-ink-mute mt-1 text-[10px]">by {book.author}</p> : null}
           </div>
         )}
-        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-ink/85 to-transparent text-paper px-4 py-3 opacity-0 group-hover:opacity-100 transition-opacity">
-          <p className="font-serif text-xl truncate">{book.title}</p>
-          <p className="text-xs text-paper/70">{book.page_count} pages · {book.page_size}</p>
+        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-ink/85 to-transparent text-paper px-2 py-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+          <p className="text-[11px] text-paper/80">{book.page_count} pages · {book.page_size}</p>
         </div>
       </button>
-      <div className="flex items-center justify-between px-4 py-3 border-t border-rule">
-        <div className="min-w-0">
-          <p className="font-serif text-lg text-ink truncate">{book.title}</p>
-          <p className="text-xs text-ink-mute truncate">{book.author || 'Anonymous'} · {book.page_count} pages</p>
+      <div className="flex items-center justify-between px-2.5 py-2 border-t border-rule gap-1">
+        <div className="min-w-0 flex-1">
+          <p className="font-serif text-sm text-ink truncate leading-tight">{book.title}</p>
+          <p className="text-[10px] text-ink-mute truncate">{book.author || 'Anonymous'}</p>
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-0.5 shrink-0">
           <Dialog open={editOpen} onOpenChange={setEditOpen}>
             <DialogTrigger asChild>
               <button
                 type="button"
                 data-testid={`edit-book-${book.id}`}
-                className="p-2 text-ink-mute hover:text-ink rounded-sm"
+                className="p-1 text-ink-mute hover:text-ink rounded-sm"
                 title="Edit title and author"
               >
-                <Pencil className="w-4 h-4" />
+                <Pencil className="w-3 h-3" />
               </button>
             </DialogTrigger>
             <DialogContent className="bg-paper border-rule rounded-sm max-w-md">
@@ -594,19 +595,19 @@ function BookCard({ book, onOpen, onDelete, onDuplicate, onEditDetails }) {
             type="button"
             onClick={onDuplicate}
             data-testid={`duplicate-book-${book.id}`}
-            className="p-2 text-ink-mute hover:text-ink rounded-sm"
+            className="p-1 text-ink-mute hover:text-ink rounded-sm"
             title="Duplicate"
           >
-            <Copy className="w-4 h-4" />
+            <Copy className="w-3 h-3" />
           </button>
           <AlertDialog>
           <AlertDialogTrigger asChild>
             <button
               data-testid={`delete-book-${book.id}`}
-              className="p-2 text-ink-mute hover:text-terracotta rounded-sm"
+              className="p-1 text-ink-mute hover:text-terracotta rounded-sm"
               title="Delete"
             >
-              <Trash2 className="w-4 h-4" />
+              <Trash2 className="w-3 h-3" />
             </button>
           </AlertDialogTrigger>
           <AlertDialogContent className="bg-paper border-rule rounded-sm">
