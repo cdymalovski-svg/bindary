@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { Plus, BookOpen, Trash2, FileText, Bookmark, Copy, Search, Pencil, Upload } from 'lucide-react';
+import { Plus, BookOpen, Trash2, FileText, Bookmark, Copy, Search, Pencil, Upload, LogOut } from 'lucide-react';
 import {
   listBooks, createBook, importBook, deleteBook, fileUrl,
   listTemplates, deleteTemplate, updateBook,
@@ -10,6 +10,7 @@ import {
 import { PAGE_SIZES } from '@/lib/pageSizes';
 import FitText from '@/components/FitText';
 import { Button } from '@/components/ui/button';
+import { useAuth } from '@/auth/AuthContext';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
@@ -178,7 +179,9 @@ export default function Dashboard() {
               draggable={false}
             />
           </div>
-          <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+          <div className="flex items-center gap-2">
+            <SignOutButton />
+            <Dialog open={createOpen} onOpenChange={setCreateOpen}>
             <DialogTrigger asChild>
               <Button
                 data-testid="create-book-button"
@@ -314,6 +317,7 @@ export default function Dashboard() {
               </DialogFooter>
             </DialogContent>
           </Dialog>
+          </div>
         </div>
       </header>
 
@@ -649,3 +653,21 @@ function BookCard({ book, onOpen, onDelete, onDuplicate, onEditDetails }) {
     </div>
   );
 }
+
+function SignOutButton() {
+  const { user, signOut } = useAuth();
+  if (!user) return null;
+  return (
+    <button
+      type="button"
+      onClick={signOut}
+      data-testid="sign-out-button"
+      title={`Signed in as ${user.email} — sign out`}
+      className="inline-flex items-center gap-1.5 px-3 h-9 text-xs text-ink-soft hover:text-ink border border-rule rounded-sm bg-paper hover:bg-desk transition-colors"
+    >
+      <LogOut className="w-3.5 h-3.5" />
+      <span className="hidden sm:inline">Sign out</span>
+    </button>
+  );
+}
+

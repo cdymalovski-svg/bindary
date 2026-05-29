@@ -3,7 +3,45 @@ import axios from 'axios';
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 export const API = `${BACKEND_URL}/api`;
 
+const TOKEN_KEY = 'bindery_token';
+
+export const getStoredToken = () => {
+  try { return localStorage.getItem(TOKEN_KEY); } catch { return null; }
+};
+export const setStoredToken = (t) => {
+  try { if (t) localStorage.setItem(TOKEN_KEY, t); else localStorage.removeItem(TOKEN_KEY); } catch {}
+};
+
 export const api = axios.create({ baseURL: API });
+
+// Attach Bearer token to every outbound request when present.
+api.interceptors.request.use((config) => {
+  const t = getStoredToken();
+  if (t) {
+    config.headers = config.headers || {};
+    config.headers.Authorization = `Bearer ${t}`;
+  }
+  return config;
+});
+
+// Drop the token on 401 so the UI bumps the user back to the login screen.
+// We dispatch a CustomEvent so the AuthContext can react without coupling
+// to axios. (Plain reload would lose unsaved edits.)
+api.interceptors.response.use(
+  (r) => r,
+  (err) => {
+    if (err?.response?.status === 401) {
+      const path = err?.config?.url || '';
+      // Don't nuke the token on the login endpoint itself — its 401 is
+      // "wrong password", not an expired session.
+      if (!path.includes('/auth/login')) {
+        setStoredToken(null);
+        window.dispatchEvent(new CustomEvent('bindery:auth-expired'));
+      }
+    }
+    return Promise.reject(err);
+  },
+);
 
 export const listBooks = () => api.get('/books').then((r) => r.data);
 export const getBook = (id) => api.get(`/books/${id}`).then((r) => r.data);
@@ -60,4 +98,16 @@ export const fileUrl = (urlOrPath) => {
   if (urlOrPath.startsWith('http://') || urlOrPath.startsWith('https://')) return urlOrPath;
   if (urlOrPath.startsWith('/api/')) return `${BACKEND_URL}${urlOrPath}`;
   return `${API}/files/${urlOrPath}`;
+};
+
+// --- Auth ---
+export const authLogin = async (email, password) => {
+  const { data } = await api.post('/auth/login', { email, password });
+  if (data?.access_token) setStoredToken(data.access_token);
+  return data;
+};
+export const authMe = () => api.get('/auth/me').then((r) => r.data);
+export const authLogout = async () => {
+  try { await api.post('/auth/logout'); } catch {}
+  setStoredToken(null);
 };

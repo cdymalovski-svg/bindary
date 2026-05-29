@@ -330,6 +330,14 @@ async def startup():
         logging.info("Storage initialized")
     except Exception as e:
         logging.error(f"Storage init failed: {e}")
+    # Auth: indexes + idempotent admin seed. Must run BEFORE the app starts
+    # serving real traffic so the first login request finds the admin row.
+    try:
+        from auth import ensure_indexes, seed_admin
+        await ensure_indexes(db)
+        await seed_admin(db)
+    except Exception as e:
+        logging.error(f"Auth bootstrap failed: {e}")
     # Ensure the pdf_jobs collection has its TTL + lookup indexes.
     try:
         await _ensure_pdf_jobs_indexes()
@@ -1119,6 +1127,62 @@ async def serve_file(path: str):
 
 
 app.include_router(api_router)
+
+# ----- Auth: mount the auth router and add a global guard middleware -----
+from auth import build_auth_router, _extract_token, _get_secret, JWT_ALGORITHM
+import jwt as _jwt
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
+
+# Auth endpoints live alongside the rest of the API.
+app.include_router(build_auth_router(db), prefix="/api")
+
+
+# Paths under /api/ that DO NOT require authentication. Everything else
+# under /api/ requires a valid access token.
+#  - /api/auth/*  — sign-in, refresh, etc. (would be a chicken-and-egg block).
+#  - /api/files/* — image bytes referenced by <img src> in the editor and PDF
+#                   renderer. Paths are UUID-based so unguessable in practice.
+#  - /api/pdf-health — operator diagnostic.
+_PUBLIC_API_PREFIXES = ("/api/auth/", "/api/files/")
+_PUBLIC_API_EXACT = {"/api/pdf-health"}
+
+
+class AuthGuardMiddleware(BaseHTTPMiddleware):
+    """Rejects any unauthenticated request to /api/* (with a short allow-list).
+    Non-/api paths pass through untouched so the React shell can still load
+    and show the login screen even without a session."""
+
+    async def dispatch(self, request, call_next):
+        path = request.url.path
+        if not path.startswith("/api/"):
+            return await call_next(request)
+        if any(path.startswith(p) for p in _PUBLIC_API_PREFIXES) or path in _PUBLIC_API_EXACT:
+            return await call_next(request)
+        # CORS preflights ride through — the browser strips Authorization.
+        if request.method == "OPTIONS":
+            return await call_next(request)
+        token = _extract_token(request)
+        if not token:
+            return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+        try:
+            payload = _jwt.decode(token, _get_secret(), algorithms=[JWT_ALGORITHM])
+        except _jwt.ExpiredSignatureError:
+            return JSONResponse({"detail": "Session expired"}, status_code=401)
+        except _jwt.InvalidTokenError:
+            return JSONResponse({"detail": "Invalid session"}, status_code=401)
+        if payload.get("type") != "access":
+            return JSONResponse({"detail": "Invalid token type"}, status_code=401)
+        # Stash on request.state so handlers can use it without re-decoding.
+        request.state.user_id = payload.get("sub")
+        request.state.user_email = payload.get("email")
+        return await call_next(request)
+
+
+# CORS must be the OUTERMOST middleware so preflights short-circuit before
+# AuthGuard sees them. Starlette runs middlewares in REVERSE order of
+# addition (last added = first to run), so add AuthGuard BEFORE CORS.
+app.add_middleware(AuthGuardMiddleware)
 
 app.add_middleware(
     CORSMiddleware,

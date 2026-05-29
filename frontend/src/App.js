@@ -3,7 +3,10 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { Toaster } from 'sonner';
 import Dashboard from '@/pages/Dashboard';
 import Editor from '@/pages/Editor';
+import Login from '@/pages/Login';
 import ErrorBoundary from '@/components/ErrorBoundary';
+import { AuthProvider } from '@/auth/AuthContext';
+import ProtectedRoute from '@/auth/ProtectedRoute';
 import '@/App.css';
 
 export default function App() {
@@ -24,17 +27,29 @@ export default function App() {
           },
         }}
       />
-      <Routes>
-        <Route path="/" element={<Dashboard />} />
-        <Route
-          path="/editor/:id"
-          element={(
-            <ErrorBoundary>
-              <Editor />
-            </ErrorBoundary>
-          )}
-        />
-      </Routes>
+      <AuthProvider>
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          <Route
+            path="/"
+            element={(
+              <ProtectedRoute>
+                <Dashboard />
+              </ProtectedRoute>
+            )}
+          />
+          <Route
+            path="/editor/:id"
+            element={(
+              <ProtectedRoute>
+                <ErrorBoundary>
+                  <Editor />
+                </ErrorBoundary>
+              </ProtectedRoute>
+            )}
+          />
+        </Routes>
+      </AuthProvider>
     </BrowserRouter>
   );
 }
