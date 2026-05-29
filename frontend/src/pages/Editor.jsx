@@ -1028,8 +1028,15 @@ export default function Editor() {
 
   return (
     <div className="h-screen w-screen flex flex-col bg-desk overflow-hidden">
-      {/* Top bar */}
-      <header className="h-14 border-b border-rule bg-paper flex items-center px-3 gap-2 z-20 min-w-0">
+      {/* Top bar.
+          Two-section layout so Save + Export PDF are ALWAYS visible:
+          - left: a horizontally-scrollable strip with all secondary
+            controls (title, page-size, view mode, insert tools, etc.).
+          - right: a sticky/pinned cluster with the actions a user reaches
+            for most often. On iPad portrait the left strip becomes
+            scrollable; the right cluster never leaves the viewport. */}
+      <header className="h-14 border-b border-rule bg-paper flex items-center z-20 min-w-0">
+        <div className="flex-1 flex items-center px-3 gap-2 min-w-0 overflow-x-auto desk-scroll">
         <Button
           variant="ghost"
           onClick={() => navigate('/')}
@@ -1064,17 +1071,17 @@ export default function Editor() {
         <Input
           value={book.title}
           onChange={(e) => setBook({ ...book, title: e.target.value })}
-          className="bg-transparent border-0 font-serif text-xl text-ink focus-visible:ring-1 focus-visible:ring-terracotta rounded-sm w-40 lg:w-56 xl:w-64 min-w-0"
+          className="bg-transparent border-0 font-serif text-xl text-ink focus-visible:ring-1 focus-visible:ring-terracotta rounded-sm w-32 sm:w-40 lg:w-56 xl:w-64 min-w-0 shrink-0"
           data-testid="book-title-input"
         />
         <Input
           value={book.author || ''}
           onChange={(e) => setBook({ ...book, author: e.target.value })}
           placeholder="Author"
-          className="bg-transparent border-0 text-ink-soft text-sm italic w-24 lg:w-32 xl:w-40 focus-visible:ring-1 focus-visible:ring-terracotta rounded-sm min-w-0 hidden md:block"
+          className="bg-transparent border-0 text-ink-soft text-sm italic w-24 lg:w-32 xl:w-40 focus-visible:ring-1 focus-visible:ring-terracotta rounded-sm min-w-0 hidden lg:block shrink-0"
           data-testid="book-author-input"
         />
-        <div className="w-px h-6 bg-rule shrink-0 hidden md:block" />
+        <div className="w-px h-6 bg-rule shrink-0 hidden lg:block" />
         <Select value={book.page_size} onValueChange={(v) => setBook({ ...book, page_size: v })}>
           <SelectTrigger className="bg-white border-rule rounded-sm h-8 w-24 lg:w-32 xl:w-36 text-sm shrink-0" data-testid="page-size-trigger">
             <SelectValue />
@@ -1208,6 +1215,9 @@ export default function Editor() {
         <div className="shrink-0">
           <SaveTemplateDialog book={book} />
         </div>
+        </div>
+        {/* Pinned right cluster — never scrolls off-screen. */}
+        <div className="flex items-center gap-2 px-3 border-l border-rule shrink-0 bg-paper h-full">
         <Button
           onClick={() => saveBook()}
           variant="outline"
@@ -1225,6 +1235,7 @@ export default function Editor() {
           onExport={onExportPdf}
           refreshKey={exportsBump}
         />
+        </div>
       </header>
 
       <div className="flex-1 flex overflow-hidden relative">
@@ -1297,8 +1308,31 @@ export default function Editor() {
         </aside>
 
         {/* Desk */}
-        <main className="flex-1 overflow-auto desk-scroll relative" onMouseDown={() => { setSelectedBlockId(null); setEditingTextId(null); }}>
-          <div className="min-h-full flex items-center justify-center p-4 sm:p-6 lg:p-12 gap-6">
+        <main
+          className="flex-1 overflow-auto desk-scroll relative"
+          // Only clear selection when the mousedown lands DIRECTLY on the
+          // desk background — never when it's bubbling up from a child
+          // (block, page canvas, page handles). On iOS Safari the touch
+          // event sequence differs from desktop and the previous unfiltered
+          // handler was tearing down active text-editing as soon as the
+          // user tapped inside the contentEditable to position their caret.
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) {
+              setSelectedBlockId(null);
+              setEditingTextId(null);
+            }
+          }}
+        >
+          <div
+            className="min-h-full flex items-center justify-center p-4 sm:p-6 lg:p-12 gap-6"
+            onMouseDown={(e) => {
+              // Same rule for the inner flex wrapper.
+              if (e.target === e.currentTarget) {
+                setSelectedBlockId(null);
+                setEditingTextId(null);
+              }
+            }}
+          >
             {viewMode === 'spread' ? (
               renderSpread()
             ) : (

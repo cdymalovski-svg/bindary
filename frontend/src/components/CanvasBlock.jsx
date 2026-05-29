@@ -96,6 +96,14 @@ export default function CanvasBlock({
             onSelect(block.id);
           }
         }}
+        onTouchStart={(e) => {
+          // iOS Safari sometimes fires touchstart but no mousedown when a
+          // contentEditable is focused. Without this guard, the touch
+          // bubbles to the desk handler and immediately ends the edit
+          // session — making it impossible to position the caret with a
+          // second tap on iPad.
+          if (editingThisText) e.stopPropagation();
+        }}
         onMouseUp={(e) => {
           // Mouseup-based click detection: only enter edit mode if the pointer
           // didn't move (i.e. not a drag). This bypasses react-rnd's click
