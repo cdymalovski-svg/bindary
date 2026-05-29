@@ -22,6 +22,8 @@ import {
   Wand2,
   ChevronUp,
   ChevronDown,
+  Layers,
+  PanelLeft,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -86,6 +88,32 @@ export default function Editor() {
   const [editingTextId, setEditingTextId] = useState(null);
   const [rightTab, setRightTab] = useState('assets'); // 'assets' | 'page' | 'block'
   const [viewMode, setViewMode] = useState('single'); // 'single' | 'spread'
+  // Sidebar drawer state — below the `lg` breakpoint both sidebars become
+  // overlay drawers triggered from toolbar icons (Pages on the left, Panels
+  // on the right). On lg+ they're always-visible static columns and these
+  // values are ignored thanks to Tailwind `lg:translate-x-0`.
+  // Initialised true if we already know the viewport is lg+, so a desktop
+  // user never sees a flash of "closed" state.
+  const [pagesDrawerOpen, setPagesDrawerOpen] = useState(
+    () => (typeof window !== 'undefined' ? window.innerWidth >= 1024 : false),
+  );
+  const [panelsDrawerOpen, setPanelsDrawerOpen] = useState(
+    () => (typeof window !== 'undefined' ? window.innerWidth >= 1024 : false),
+  );
+  // On window resize, snap drawers to "open" once we cross into lg+. Below
+  // lg we don't auto-close — a user who explicitly opened the drawer on a
+  // tablet keeps their view.
+  useEffect(() => {
+    const onResize = () => {
+      if (window.innerWidth >= 1024) {
+        setPagesDrawerOpen(true);
+        setPanelsDrawerOpen(true);
+      }
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
   const [lastSavedAt, setLastSavedAt] = useState(null);
   // Bumped after a successful export so the popover's history list
   // refetches and shows the just-completed run.
@@ -1010,6 +1038,28 @@ export default function Editor() {
         >
           <ArrowLeft className="w-4 h-4 lg:mr-1" /> <span className="hidden lg:inline">Library</span>
         </Button>
+        {/* Sidebar toggles — only visible below lg. On lg+ the sidebars are
+            statically pinned so these would be redundant. */}
+        <button
+          type="button"
+          onClick={() => setPagesDrawerOpen((o) => !o)}
+          className="lg:hidden h-8 px-2 rounded-sm text-ink hover:bg-desk inline-flex items-center gap-1 shrink-0"
+          data-testid="toggle-pages-drawer"
+          aria-label="Toggle pages panel"
+          aria-pressed={pagesDrawerOpen}
+        >
+          <PanelLeft className="w-4 h-4" />
+        </button>
+        <button
+          type="button"
+          onClick={() => setPanelsDrawerOpen((o) => !o)}
+          className="lg:hidden h-8 px-2 rounded-sm text-ink hover:bg-desk inline-flex items-center gap-1 shrink-0"
+          data-testid="toggle-panels-drawer"
+          aria-label="Toggle properties panel"
+          aria-pressed={panelsDrawerOpen}
+        >
+          <Layers className="w-4 h-4" />
+        </button>
         <div className="w-px h-6 bg-rule shrink-0" />
         <Input
           value={book.title}
@@ -1177,9 +1227,25 @@ export default function Editor() {
         />
       </header>
 
-      <div className="flex-1 flex overflow-hidden">
-        {/* Left sidebar: page thumbnails */}
-        <aside className="w-56 bg-ink text-paper border-r border-rule-dark flex flex-col">
+      <div className="flex-1 flex overflow-hidden relative">
+        {/* Backdrop — covers the desk when either drawer is open on small
+            screens. Tapping it closes both drawers. Hidden entirely on lg+. */}
+        {(pagesDrawerOpen || panelsDrawerOpen) && (
+          <button
+            type="button"
+            onClick={() => { setPagesDrawerOpen(false); setPanelsDrawerOpen(false); }}
+            data-testid="sidebar-backdrop"
+            aria-label="Close panels"
+            className="lg:hidden fixed inset-0 top-14 bg-ink/40 backdrop-blur-[1px] z-20 transition-opacity"
+          />
+        )}
+        {/* Left sidebar: page thumbnails.
+            On lg+: static column. Below lg: slide-in drawer triggered by the
+            "Pages" toolbar icon. Backdrop above closes it. */}
+        <aside
+          data-testid="left-sidebar"
+          className={`bg-ink text-paper border-r border-rule-dark flex flex-col w-56 lg:static lg:translate-x-0 fixed left-0 top-14 bottom-0 z-30 transform transition-transform duration-200 ease-out ${pagesDrawerOpen ? 'translate-x-0' : '-translate-x-full'}`}
+        >
           <div className="px-4 py-3 border-b border-rule-dark flex items-center justify-between">
             <p className="label-caps text-ink-mute">Pages</p>
             <span className="text-xs text-ink-mute">{book.pages.length}</span>
@@ -1232,7 +1298,7 @@ export default function Editor() {
 
         {/* Desk */}
         <main className="flex-1 overflow-auto desk-scroll relative" onMouseDown={() => { setSelectedBlockId(null); setEditingTextId(null); }}>
-          <div className="min-h-full flex items-center justify-center p-12 gap-6">
+          <div className="min-h-full flex items-center justify-center p-4 sm:p-6 lg:p-12 gap-6">
             {viewMode === 'spread' ? (
               renderSpread()
             ) : (
@@ -1257,8 +1323,12 @@ export default function Editor() {
           </div>
         </main>
 
-        {/* Right sidebar: Assets / Page / Block tabs */}
-        <aside className="w-72 bg-ink text-paper border-l border-rule-dark flex flex-col" data-testid="right-sidebar">
+        {/* Right sidebar: Assets / Page / Block tabs.
+            On lg+: static. Below lg: slide-in drawer from the right. */}
+        <aside
+          data-testid="right-sidebar"
+          className={`bg-ink text-paper border-l border-rule-dark flex flex-col w-72 lg:static lg:translate-x-0 fixed right-0 top-14 bottom-0 z-30 transform transition-transform duration-200 ease-out ${panelsDrawerOpen ? 'translate-x-0' : 'translate-x-full'}`}
+        >
           <Tabs value={rightTab} onValueChange={setRightTab} className="flex flex-col h-full">
             <TabsList className="w-full grid grid-cols-3 rounded-none bg-rule-dark/40 border-b border-rule-dark h-10 p-1">
               <TabsTrigger
