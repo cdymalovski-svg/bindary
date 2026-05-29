@@ -586,9 +586,21 @@ async def _ensure_pdf_jobs_indexes() -> None:
         logging.warning(f"pdf_jobs index creation failed (probably already exists): {e}")
 
 
-async def _run_pdf_job(job_id: str, book_id: str, base_url: str) -> None:
+async def _run_pdf_job(
+    job_id: str,
+    book_id: str,
+    base_url: str,
+    start_page: Optional[int] = None,
+    end_page: Optional[int] = None,
+) -> None:
     """Background worker — builds the PDF, uploads bytes to object storage,
-    flips the Mongo record to `ready` (or `failed`)."""
+    flips the Mongo record to `ready` (or `failed`).
+
+    `start_page` / `end_page` are 1-indexed INCLUSIVE. When provided, only
+    those pages are rendered (the full book is loaded then the `pages` list
+    is sliced before handing it to the builder — keeps page-numbering logic
+    on the builder side simple: it always sees a contiguous `pages` array).
+    """
     from pdf_builder import build_book_pdf
 
     # Per-job stage tracker. Each call writes to Mongo so the polling client
@@ -618,11 +630,28 @@ async def _run_pdf_job(job_id: str, book_id: str, base_url: str) -> None:
                           "finished_at": _now_iso()}},
             )
             return
+        # Apply the page-range slice if specified. Clamp to actual book
+        # length so a stale UI can't ask for pages that no longer exist.
+        all_pages = book.get("pages") or []
+        total = len(all_pages)
+        applied_start = start_page if start_page is not None else 1
+        applied_end = end_page if end_page is not None else total
+        applied_start = max(1, min(applied_start, total))
+        applied_end = max(applied_start, min(applied_end, total))
+        if start_page is not None or end_page is not None:
+            book = {**book, "pages": all_pages[applied_start - 1:applied_end]}
+
         _on_stage("starting")
         pdf_bytes = await build_book_pdf(
             book, get_object, public_base_url=base_url, progress_cb=_on_stage,
         )
         safe = re.sub(r"[^A-Za-z0-9._-]+", "_", book.get("title") or "book").strip("_") or "book"
+        # Filename includes the range when partial so users get distinct
+        # downloads on disk: "MyBook_pp_1-50.pdf" / "MyBook_pp_51-112.pdf".
+        if start_page is not None or end_page is not None:
+            filename = f"{safe}_pp_{applied_start}-{applied_end}.pdf"
+        else:
+            filename = f"{safe}.pdf"
         # Upload PDF bytes to shared object storage so any pod can serve them.
         _on_stage("uploading")
         object_path = f"{_PDF_OBJECT_PREFIX}/{job_id}.pdf"
@@ -633,7 +662,9 @@ async def _run_pdf_job(job_id: str, book_id: str, base_url: str) -> None:
                 "status": "ready",
                 "stage": "ready",
                 "size": len(pdf_bytes),
-                "filename": f"{safe}.pdf",
+                "filename": filename,
+                "start_page": applied_start,
+                "end_page": applied_end,
                 "object_path": object_path,
                 "finished_at": _now_iso(),
             }},
@@ -655,10 +686,25 @@ async def _run_pdf_job(job_id: str, book_id: str, base_url: str) -> None:
         )
 
 
+class PdfJobStartRequest(BaseModel):
+    """Optional 1-indexed inclusive page range. Both omitted = full book."""
+    model_config = ConfigDict(extra="ignore")
+    start_page: Optional[int] = None
+    end_page: Optional[int] = None
+
+
 @api_router.post("/books/{book_id}/pdf-jobs")
-async def export_pdf_start(book_id: str, request: Request):
+async def export_pdf_start(
+    book_id: str,
+    request: Request,
+    payload: Optional[PdfJobStartRequest] = None,
+):
     """Kick off a background PDF build. Returns a job_id the client polls.
     Each call returns in ~milliseconds — no risk of proxy/CDN timeouts.
+
+    Optional `start_page` / `end_page` (1-indexed, inclusive) export a
+    contiguous slice — used by the editor's "Export range" UI to ship a
+    100+ page book as several smaller PDFs that can be stitched externally.
 
     Note: route path deliberately avoids `.pdf` in it because some CDNs/edge
     proxies treat URLs containing `.pdf` as static-file requests and may
@@ -666,20 +712,42 @@ async def export_pdf_start(book_id: str, request: Request):
     """
     # Sanity-check the book exists before we spawn a worker (so the client
     # gets a 404 immediately rather than a "failed" status 20s later).
-    exists = await db.books.find_one({"id": book_id}, {"_id": 1})
-    if not exists:
+    book = await db.books.find_one({"id": book_id}, {"_id": 0, "pages": 1})
+    if not book:
         raise HTTPException(404, "Book not found")
+    total_pages = len(book.get("pages") or [])
+
+    start_page = payload.start_page if payload else None
+    end_page = payload.end_page if payload else None
+    if start_page is not None or end_page is not None:
+        if start_page is None or end_page is None:
+            raise HTTPException(400, "start_page and end_page must be provided together")
+        if not isinstance(start_page, int) or not isinstance(end_page, int):
+            raise HTTPException(400, "start_page and end_page must be integers")
+        if start_page < 1 or end_page < 1:
+            raise HTTPException(400, "Page numbers are 1-indexed")
+        if start_page > end_page:
+            raise HTTPException(400, "start_page must be <= end_page")
+        if start_page > total_pages:
+            raise HTTPException(400, f"start_page exceeds book length ({total_pages})")
+        # end_page > total is allowed — we clamp to total_pages in the worker.
+
     job_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
     await db.pdf_jobs.insert_one({
         "job_id": job_id,
         "book_id": book_id,
         "status": "pending",
+        "start_page": start_page,
+        "end_page": end_page,
         "created_at": now.isoformat(),
         # Mongo TTL index uses a real Date — not an ISO string.
         "expires_at": now + timedelta(seconds=_PDF_JOB_TTL_SECONDS),
     })
-    asyncio.create_task(_run_pdf_job(job_id, book_id, str(request.base_url).rstrip("/")))
+    asyncio.create_task(_run_pdf_job(
+        job_id, book_id, str(request.base_url).rstrip("/"),
+        start_page=start_page, end_page=end_page,
+    ))
     return {"job_id": job_id, "status": "pending"}
 
 
@@ -698,6 +766,8 @@ async def export_pdf_status(book_id: str, job_id: str):
     if job["status"] == "ready":
         resp["size"] = job.get("size", 0)
         resp["filename"] = job.get("filename", "book.pdf")
+        resp["start_page"] = job.get("start_page")
+        resp["end_page"] = job.get("end_page")
     elif job["status"] == "failed":
         resp["error"] = job.get("error") or "PDF build failed"
         if job.get("trace"):
@@ -723,6 +793,22 @@ async def export_pdf_download(book_id: str, job_id: str):
     except Exception as e:
         logging.exception("PDF download fetch failed")
         raise HTTPException(500, f"PDF retrieval failed: {e}")
+    # Persist an export-history record BEFORE deleting the job, so the
+    # editor's "Export" popover can show which page ranges have already
+    # been delivered. Failure to record must not fail the download itself —
+    # users care about getting their PDF more than the bookkeeping.
+    try:
+        await db.book_exports.insert_one({
+            "id": str(uuid.uuid4()),
+            "book_id": book_id,
+            "filename": filename,
+            "size": job.get("size", len(pdf_bytes)),
+            "start_page": job.get("start_page"),
+            "end_page": job.get("end_page"),
+            "exported_at": _now_iso(),
+        })
+    except Exception:
+        logging.exception("Failed to record export history for job %s", job_id)
     # Consume the job: drop the Mongo record so the user can't re-download by
     # replaying the URL. (Object storage entry expires via the TTL anyway.)
     await db.pdf_jobs.delete_one({"job_id": job_id})
@@ -731,6 +817,27 @@ async def export_pdf_download(book_id: str, job_id: str):
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@api_router.get("/books/{book_id}/exports")
+async def list_book_exports(book_id: str):
+    """Returns the export history for a book, newest first. Used by the
+    editor's "Export PDF" popover to show which page ranges have already
+    been downloaded — so users assembling a big book in chunks don't
+    duplicate work."""
+    docs = await db.book_exports.find(
+        {"book_id": book_id},
+        {"_id": 0},
+    ).sort("exported_at", -1).to_list(200)
+    return docs
+
+
+@api_router.delete("/books/{book_id}/exports/{export_id}")
+async def delete_book_export(book_id: str, export_id: str):
+    res = await db.book_exports.delete_one({"id": export_id, "book_id": book_id})
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Export record not found")
+    return {"deleted": True}
 
 
 @api_router.get("/pdf-health")
@@ -854,6 +961,8 @@ async def delete_book(book_id: str):
     # Soft-delete asset records scoped to this book so they no longer surface
     # in any asset panel (other books are unaffected — assets are now book-scoped).
     await db.files.update_many({"book_id": book_id}, {"$set": {"is_deleted": True}})
+    # Drop export-history records — the book is gone, the history is meaningless.
+    await db.book_exports.delete_many({"book_id": book_id})
     return {"deleted": True}
 
 

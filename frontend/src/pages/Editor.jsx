@@ -45,6 +45,7 @@ import PagePanel from '@/components/PagePanel';
 import LayersList from '@/components/LayersList';
 import SaveTemplateDialog from '@/components/SaveTemplateDialog';
 import HistoryDialog from '@/components/HistoryDialog';
+import ExportPopover from '@/components/ExportPopover';
 
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 
@@ -86,6 +87,9 @@ export default function Editor() {
   const [rightTab, setRightTab] = useState('assets'); // 'assets' | 'page' | 'block'
   const [viewMode, setViewMode] = useState('single'); // 'single' | 'spread'
   const [lastSavedAt, setLastSavedAt] = useState(null);
+  // Bumped after a successful export so the popover's history list
+  // refetches and shows the just-completed run.
+  const [exportsBump, setExportsBump] = useState(0);
   // Bumped after any asset replacement (re-uploading bytes for a missing
   // asset). Appended to every canvas <img> URL so the browser refetches
   // instead of showing the previously-cached 404.
@@ -838,11 +842,14 @@ export default function Editor() {
   }, [selectedBlockId, saveBook]);
 
   // --- PDF export (server-side, job-based to survive proxy timeouts) ---
-  const onExportPdf = async () => {
+  // `range` is an optional `{ start, end }` 1-indexed inclusive slice.
+  // Used by the export popover to ship a long book as several PDFs.
+  const onExportPdf = async (range = null) => {
     if (!book) return;
     setExporting(true);
     const toastId = 'pdf-export';
-    toast.loading('Building PDF…', { id: toastId });
+    const rangeLabel = range ? ` (pages ${range.start}–${range.end})` : '';
+    toast.loading(`Building PDF${rangeLabel}…`, { id: toastId });
     const t0 = performance.now();
     const BASE = process.env.REACT_APP_BACKEND_URL;
     try {
@@ -852,7 +859,14 @@ export default function Editor() {
       // proxies and CDNs never see a long-lived request.
       // Note: URL avoids `.pdf` in the path because some CDNs treat dot-pdf
       // URLs as static-file fetches and short-circuit with 404.
-      const startResp = await fetch(`${BASE}/api/books/${book.id}/pdf-jobs`, { method: 'POST' });
+      const body = range
+        ? JSON.stringify({ start_page: range.start, end_page: range.end })
+        : undefined;
+      const startResp = await fetch(`${BASE}/api/books/${book.id}/pdf-jobs`, {
+        method: 'POST',
+        headers: body ? { 'Content-Type': 'application/json' } : undefined,
+        body,
+      });
       if (!startResp.ok) {
         let detail = `HTTP ${startResp.status}`;
         try { const b = await startResp.json(); if (b?.detail) detail = b.detail; } catch {}
@@ -866,6 +880,7 @@ export default function Editor() {
       const start = Date.now();
       let lastStatus = 'pending';
       let lastStage = '';
+      let serverFilename = null;
       while (Date.now() - start < 600_000) {
         await new Promise((r) => setTimeout(r, 1200));
         const s = await fetch(STATUS_URL);
@@ -873,19 +888,19 @@ export default function Editor() {
           if (s.status === 404) throw new Error('PDF job expired — please try again');
           continue; // transient — keep polling
         }
-        const body = await s.json();
-        lastStatus = body.status;
-        if (body.stage) lastStage = body.stage;
-        if (body.status === 'ready') break;
-        if (body.status === 'failed') {
-          const detail = body.error || 'PDF build failed';
-          const tail = body.trace ? ` (${String(body.trace).slice(0, 120)})` : '';
+        const sb = await s.json();
+        lastStatus = sb.status;
+        if (sb.stage) lastStage = sb.stage;
+        if (sb.status === 'ready') { serverFilename = sb.filename || null; break; }
+        if (sb.status === 'failed') {
+          const detail = sb.error || 'PDF build failed';
+          const tail = sb.trace ? ` (${String(sb.trace).slice(0, 120)})` : '';
           throw new Error(`${detail}${tail}`);
         }
         // Otherwise (pending) — show stage + elapsed on the toast.
         const elapsed = Math.round((Date.now() - start) / 1000);
         const label = lastStage ? `${lastStage} · ${elapsed}s` : `${elapsed}s`;
-        toast.loading(`Building PDF… ${label}`, { id: toastId });
+        toast.loading(`Building PDF${rangeLabel}… ${label}`, { id: toastId });
       }
       if (lastStatus !== 'ready') {
         const stageHint = lastStage ? ` (stuck at: ${lastStage})` : '';
@@ -897,16 +912,21 @@ export default function Editor() {
       const dl = await fetch(`${BASE}/api/books/${book.id}/pdf-jobs/${job_id}/download`);
       if (!dl.ok) throw new Error(`Download failed (HTTP ${dl.status})`);
       const blob = await dl.blob();
-      const safe = (book.title || 'book').replace(/[^a-z0-9-_]+/gi, '_');
+      // Prefer the server's filename (carries the page-range suffix for
+      // partial exports). Fall back to a sanitised title if missing.
+      const fallback = `${(book.title || 'book').replace(/[^a-z0-9-_]+/gi, '_')}.pdf`;
+      const downloadName = serverFilename || fallback;
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      a.download = `${safe}.pdf`;
+      a.download = downloadName;
       document.body.appendChild(a);
       a.click();
       a.remove();
       URL.revokeObjectURL(a.href);
       const secs = ((performance.now() - t0) / 1000).toFixed(1);
       toast.success(`PDF exported in ${secs}s`, { id: toastId });
+      // Refresh the export-history list so the popover updates immediately.
+      setExportsBump((n) => n + 1);
     } catch (e) {
       console.error(e);
       const raw = e?.message || 'Export failed';
@@ -1148,15 +1168,13 @@ export default function Editor() {
           {saving ? <Loader2 className="w-4 h-4 lg:mr-1 animate-spin" /> : <Save className="w-4 h-4 lg:mr-1" />}
           <span className="hidden lg:inline">Save</span>
         </Button>
-        <Button
-          onClick={onExportPdf}
-          disabled={exporting}
-          className="bg-terracotta hover:bg-terracotta-dark text-paper rounded-sm h-8 shrink-0 px-2 lg:px-3"
-          data-testid="export-pdf-button"
-        >
-          {exporting ? <Loader2 className="w-4 h-4 lg:mr-1 animate-spin" /> : <Download className="w-4 h-4 lg:mr-1" />}
-          <span className="hidden lg:inline">Export PDF</span>
-        </Button>
+        <ExportPopover
+          bookId={book.id}
+          totalPages={book.pages.length}
+          exporting={exporting}
+          onExport={onExportPdf}
+          refreshKey={exportsBump}
+        />
       </header>
 
       <div className="flex-1 flex overflow-hidden">
