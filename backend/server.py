@@ -169,6 +169,10 @@ class BookSummary(BaseModel):
     created_at: str
     updated_at: str
     cover_image_url: Optional[str] = None
+    # Full first-page composition (image blocks + text blocks). Sent so the
+    # library can render covers exactly as designed — title + author text
+    # layered over the artwork — instead of just the bare image.
+    cover_page: Optional[Page] = None
 
 
 class TemplateStyle(BaseModel):
@@ -436,8 +440,13 @@ async def list_books():
     summaries: List[BookSummary] = []
     for b in books:
         cover_url = None
+        cover_page_obj: Optional[Page] = None
         pages = b.get("pages") or []
         if pages:
+            try:
+                cover_page_obj = Page(**pages[0])
+            except Exception:
+                cover_page_obj = None
             for blk in pages[0].get("blocks", []) or []:
                 if blk.get("type") == "image" and blk.get("image_url"):
                     cover_url = blk["image_url"]
@@ -452,6 +461,7 @@ async def list_books():
                 created_at=b.get("created_at", _now_iso()),
                 updated_at=b.get("updated_at", _now_iso()),
                 cover_image_url=cover_url,
+                cover_page=cover_page_obj,
             )
         )
     return summaries

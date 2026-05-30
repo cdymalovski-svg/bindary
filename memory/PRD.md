@@ -89,6 +89,12 @@ Build me a book template app to be able to add texts and illustrations, page num
 - **Canvas cache-busting**: Editor maintains an `assetCacheBuster` integer bumped after any replace. Canvas `<img>` URLs append `?v=<n>` so previously-cached failures are refetched and existing book pages light up the moment the user re-uploads, with no save/reload required.
 - New tests in `tests/test_assets_api.py::TestAssetReplace`: verifies id+path preservation, byte overwrite, 404 on missing asset, and 400 on non-image uploads. All 56 backend tests now pass.
 
+## What's been implemented (2026-05-30 / iteration 19 — cover title visible in library)
+- **Bug**: Library cards rendered only the cover's image block (`cover_image_url`), so any title/author text laid over the artwork (e.g. via "Design cover") was missing from the thumbnail. Editor's first-page thumbnail had no issue but was duplicating render logic.
+- **Backend**: `BookSummary` now also includes `cover_page` — the full first-page object (image + text blocks). `list_books` populates it from `pages[0]`.
+- **Frontend**: New `components/PagePreview.jsx` — a single shared component that renders a page composition (any blocks, optional page number, fitted to a given pixel width). `Dashboard.jsx` BookCard uses it with a `ResizeObserver` so covers always fit the card without cropping, regardless of grid breakpoint or page aspect ratio. Falls back to the legacy image render, then to the placeholder, if `cover_page` is missing.
+- All 87 backend tests pass; library and editor verified via screenshot.
+
 ## What's been implemented (2026-05-30 / iteration 18 — AI illustration generator)
 - **`POST /api/assets/generate`** — takes `{prompt, book_id?}`, calls Gemini Nano Banana (`gemini-3.1-flash-image-preview`) via `emergentintegrations` using the universal `EMERGENT_LLM_KEY`, decodes the base64 image, persists it through the same object-storage path as `/upload`, and returns the standard asset shape. The generated asset shows up in the Assets panel exactly like an uploaded one (drag-onto-page, replace, delete all work).
 - **Generate dialog**: new `GenerateImageDialog.jsx` rendered via a React portal (so editor canvas transforms don't trap it). Has a 4-row textarea (2000-char limit), four curated example prompts, `⌘↵` to submit, Escape-to-close, loading spinner, and surfaces upstream errors directly. The dialog is reached from a new "Generate with AI…" button under "Upload images" in the Assets panel.

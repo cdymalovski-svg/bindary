@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import { Plus, BookOpen, Trash2, FileText, Bookmark, Copy, Search, Pencil, Upload, LogOut, ShieldCheck } from 'lucide-react';
@@ -9,6 +9,7 @@ import {
 } from '@/lib/api';
 import { PAGE_SIZES } from '@/lib/pageSizes';
 import FitText from '@/components/FitText';
+import PagePreview from '@/components/PagePreview';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/auth/AuthContext';
 import { Input } from '@/components/ui/input';
@@ -477,11 +478,36 @@ export default function Dashboard() {
 }
 
 function BookCard({ book, onOpen, onDelete, onDuplicate, onEditDetails }) {
-  const cover = book.cover_image_url ? fileUrl(book.cover_image_url) : null;
+  const fallbackCoverUrl = book.cover_image_url ? fileUrl(book.cover_image_url) : null;
+  const coverPage = book.cover_page;
+  const pageSize = PAGE_SIZES[book.page_size] || PAGE_SIZES.a4;
   const [editOpen, setEditOpen] = useState(false);
   const [editTitle, setEditTitle] = useState(book.title || '');
   const [editAuthor, setEditAuthor] = useState(book.author || '');
   const [saving, setSaving] = useState(false);
+  // Live-measure the cover button so PagePreview renders at the right scale
+  // regardless of card width (grid is responsive).
+  const coverRef = useRef(null);
+  const [coverBox, setCoverBox] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    if (!coverRef.current || typeof ResizeObserver === 'undefined') return;
+    const el = coverRef.current;
+    const ro = new ResizeObserver(() => {
+      setCoverBox({ w: el.clientWidth, h: el.clientHeight });
+    });
+    ro.observe(el);
+    setCoverBox({ w: el.clientWidth, h: el.clientHeight });
+    return () => ro.disconnect();
+  }, []);
+  // Fit the whole page into the card without cropping (matches the existing
+  // object-contain behavior). The page's aspect ratio decides which axis caps.
+  const fitWidth = (() => {
+    if (!coverBox.w || !coverBox.h) return 0;
+    const byWidth = coverBox.w;
+    const byHeight = (coverBox.h * pageSize.width) / pageSize.height;
+    return Math.min(byWidth, byHeight);
+  })();
+  const fitHeight = fitWidth ? (fitWidth * pageSize.height) / pageSize.width : 0;
   // Reset form whenever the dialog opens with the current values.
   useEffect(() => {
     if (editOpen) {
@@ -512,13 +538,24 @@ function BookCard({ book, onOpen, onDelete, onDuplicate, onEditDetails }) {
       <button
         type="button"
         onClick={onOpen}
-        className="w-full text-left aspect-[3/4] bg-desk relative overflow-hidden"
+        ref={coverRef}
+        className="w-full text-left aspect-[3/4] bg-desk relative overflow-hidden flex items-center justify-center"
         data-testid={`open-book-${book.id}`}
       >
-        {cover ? (
-          // object-contain so the entire cover page is visible (no crop).
-          // The desk-colored background fills any letterboxed gutters.
-          <img src={cover} alt={book.title} className="absolute inset-0 w-full h-full object-contain" />
+        {coverPage ? (
+          // Render the FULL first-page composition (artwork + title + author
+          // text blocks) so the library matches what the designed cover
+          // actually looks like in the editor.
+          fitWidth > 0 ? (
+            <PagePreview
+              page={coverPage}
+              pageSizeKey={book.page_size}
+              width={fitWidth}
+              style={{ height: fitHeight }}
+            />
+          ) : null
+        ) : fallbackCoverUrl ? (
+          <img src={fallbackCoverUrl} alt={book.title} className="absolute inset-0 w-full h-full object-contain" />
         ) : (
           <div className="absolute inset-0 flex flex-col items-center justify-center p-3 bg-gradient-to-br from-paper to-desk">
             <FileText className="w-6 h-6 text-ink-mute mb-1.5" strokeWidth={1.25} />
@@ -526,7 +563,7 @@ function BookCard({ book, onOpen, onDelete, onDuplicate, onEditDetails }) {
             {book.author ? <p className="text-ink-mute mt-1 text-[10px]">by {book.author}</p> : null}
           </div>
         )}
-        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-ink/85 to-transparent text-paper px-2 py-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-ink/85 to-transparent text-paper px-2 py-1.5 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
           <p className="text-[11px] text-paper/80">{book.page_count} pages · {book.page_size}</p>
         </div>
       </button>
