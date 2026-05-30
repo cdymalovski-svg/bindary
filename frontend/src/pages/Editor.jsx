@@ -24,6 +24,8 @@ import {
   ChevronDown,
   Layers,
   PanelLeft,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -125,6 +127,9 @@ export default function Editor() {
   const fileInputRef = useRef(null);
   const autoSaveTimerRef = useRef(null);
   const skipNextAutoSaveRef = useRef(true);
+  // Tracks the start of a one-finger horizontal swipe on the desk so we can
+  // navigate to the previous/next page (or spread) on touch release.
+  const deskTouchRef = useRef(null);
 
   // Load book
   useEffect(() => {
@@ -852,10 +857,76 @@ export default function Editor() {
     }
   };
 
+  // --- Page navigation (Single & Spread) ---
+  // Compute prev/next so a click or keyboard ←/→ jumps by 1 page in single
+  // mode and by 2 pages in spread mode (one spread = two pages), with the
+  // cover handled as its own half-spread.
+  const navStep = useMemo(() => {
+    if (!book) return { prev: null, next: null };
+    const total = book.pages.length;
+    if (total === 0) return { prev: null, next: null };
+    const isSpread = viewMode === 'spread';
+    const cur = activePageIndex;
+    let prev = null;
+    let next = null;
+    if (!isSpread) {
+      prev = cur > 0 ? cur - 1 : null;
+      next = cur < total - 1 ? cur + 1 : null;
+    } else {
+      // In spread mode the cover sits alone, then pairs are (1,2), (3,4)…
+      // From cover (0) → next spread starts at 1.
+      // From index N inside a pair → next spread starts at (left of next pair).
+      let leftOfCurrent;
+      if (cur === 0) leftOfCurrent = 0;
+      else leftOfCurrent = cur % 2 === 1 ? cur : cur - 1;
+      // Prev: cover anchors the first half-spread; previous pair begins at
+      // leftOfCurrent - 2 (clamped). If we're on the first pair (1), prev = 0 (cover).
+      if (cur === 0) prev = null;
+      else if (leftOfCurrent === 1) prev = 0;
+      else prev = leftOfCurrent - 2;
+      // Next: cover advances to pair start (1). Otherwise advance by 2.
+      if (cur === 0) next = total > 1 ? 1 : null;
+      else {
+        const candidate = leftOfCurrent + 2;
+        next = candidate < total ? candidate : null;
+      }
+    }
+    return { prev, next };
+  }, [book, activePageIndex, viewMode]);
+
+  const goPrevPage = useCallback(() => {
+    if (navStep.prev === null) return;
+    setActivePageIndex(navStep.prev);
+    setSelectedBlockId(null);
+    setEditingTextId(null);
+  }, [navStep.prev]);
+
+  const goNextPage = useCallback(() => {
+    if (navStep.next === null) return;
+    setActivePageIndex(navStep.next);
+    setSelectedBlockId(null);
+    setEditingTextId(null);
+  }, [navStep.next]);
+
   // --- Keyboard shortcuts ---
   useEffect(() => {
     const onKey = (e) => {
       if (e.target.isContentEditable) return;
+      // Don't steal arrow keys when the user is typing in an input/textarea.
+      const tag = (e.target?.tagName || '').toLowerCase();
+      const inField = tag === 'input' || tag === 'textarea' || tag === 'select';
+      if (!inField && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (e.key === 'ArrowLeft') {
+          e.preventDefault();
+          goPrevPage();
+          return;
+        }
+        if (e.key === 'ArrowRight') {
+          e.preventDefault();
+          goNextPage();
+          return;
+        }
+      }
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedBlockId) {
         deleteBlock(selectedBlockId);
       }
@@ -867,7 +938,7 @@ export default function Editor() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedBlockId, saveBook]);
+  }, [selectedBlockId, saveBook, goPrevPage, goNextPage]);
 
   // --- PDF export (server-side, job-based to survive proxy timeouts) ---
   // `range` is an optional `{ start, end }` 1-indexed inclusive slice.
@@ -1356,7 +1427,52 @@ export default function Editor() {
               setEditingTextId(null);
             }
           }}
+          // Horizontal swipe to navigate pages (iPad / trackpad). We only
+          // act on a clear horizontal flick — vertical scroll is preserved.
+          onTouchStart={(e) => {
+            if (e.touches.length !== 1) { deskTouchRef.current = null; return; }
+            const t = e.touches[0];
+            deskTouchRef.current = { x: t.clientX, y: t.clientY, t: Date.now() };
+          }}
+          onTouchEnd={(e) => {
+            const start = deskTouchRef.current;
+            deskTouchRef.current = null;
+            if (!start) return;
+            const t = e.changedTouches[0];
+            const dx = t.clientX - start.x;
+            const dy = t.clientY - start.y;
+            const dt = Date.now() - start.t;
+            // Require a clean horizontal swipe: large dx, small dy, quick.
+            if (Math.abs(dx) < 70 || Math.abs(dy) > 50 || dt > 600) return;
+            if (dx < 0) goNextPage(); else goPrevPage();
+          }}
         >
+          {/* Page-navigation arrows. Vertically centred over the desk so
+              they're always reachable regardless of scroll position. */}
+          {navStep.prev !== null && (
+            <button
+              type="button"
+              onClick={goPrevPage}
+              data-testid="page-nav-prev"
+              aria-label="Previous page"
+              title={viewMode === 'spread' ? 'Previous spread (←)' : 'Previous page (←)'}
+              className="hidden md:flex absolute left-3 top-1/2 -translate-y-1/2 z-10 w-10 h-10 items-center justify-center rounded-full bg-paper/85 hover:bg-paper border border-rule shadow-sm text-ink hover:text-terracotta transition-colors"
+            >
+              <ChevronLeft className="w-5 h-5" />
+            </button>
+          )}
+          {navStep.next !== null && (
+            <button
+              type="button"
+              onClick={goNextPage}
+              data-testid="page-nav-next"
+              aria-label="Next page"
+              title={viewMode === 'spread' ? 'Next spread (→)' : 'Next page (→)'}
+              className="hidden md:flex absolute right-3 top-1/2 -translate-y-1/2 z-10 w-10 h-10 items-center justify-center rounded-full bg-paper/85 hover:bg-paper border border-rule shadow-sm text-ink hover:text-terracotta transition-colors"
+            >
+              <ChevronRight className="w-5 h-5" />
+            </button>
+          )}
           <div
             className="min-h-full flex items-center justify-center p-4 sm:p-6 lg:p-12 gap-6"
             onMouseDown={(e) => {

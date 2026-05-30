@@ -89,6 +89,12 @@ Build me a book template app to be able to add texts and illustrations, page num
 - **Canvas cache-busting**: Editor maintains an `assetCacheBuster` integer bumped after any replace. Canvas `<img>` URLs append `?v=<n>` so previously-cached failures are refetched and existing book pages light up the moment the user re-uploads, with no save/reload required.
 - New tests in `tests/test_assets_api.py::TestAssetReplace`: verifies id+path preservation, byte overwrite, 404 on missing asset, and 400 on non-image uploads. All 56 backend tests now pass.
 
+## What's been implemented (2026-05-30 / iteration 20 — page navigation)
+- **Editor canvas now scrolls between pages**: floating ← / → buttons on either side of the desk, plus keyboard ←/→ and one-finger horizontal swipe on iPad.
+- **Step size matches view mode**: single view advances 1 page; spread view advances by a full spread (2 pages). Cover is treated as its own half-spread, so prev from "pages 1-2" lands on the cover.
+- Arrows hide at page boundaries (no prev on the cover, no next on the last page). Keyboard handler ignores ←/→ while typing in inputs/textareas/contentEditable so text editing is never hijacked.
+- Verified end-to-end via screenshot (single, spread, arrow click, keyboard).
+
 ## What's been implemented (2026-05-30 / iteration 19 — cover title visible in library)
 - **Bug**: Library cards rendered only the cover's image block (`cover_image_url`), so any title/author text laid over the artwork (e.g. via "Design cover") was missing from the thumbnail. Editor's first-page thumbnail had no issue but was duplicating render logic.
 - **Backend**: `BookSummary` now also includes `cover_page` — the full first-page object (image + text blocks). `list_books` populates it from `pages[0]`.
