@@ -492,13 +492,15 @@ export default function Editor() {
     toast.success(hasArt ? 'Cover designed with your artwork' : 'Cover designed — drop in art for a backdrop');
   };
 
-  // Build a Table of Contents text block from every chapter heading in the book.
-  // The "page number" matches the displayed page-number rule (start offset + back-cover hide).
-  const addTocBlock = () => {
+  // Build the TOC body HTML (header + one row per chapter) from the current
+  // book. Pure — does not touch state. Used by both the one-shot inserter
+  // and the live-sync effect below so the two paths can never drift.
+  const computeTocPayload = useCallback(() => {
+    if (!book?.pages?.length) return null;
     const start = book?.page_number_start || 1;
     const last = (book?.pages?.length || 1) - 1;
     const entries = [];
-    (book?.pages || []).forEach((p, pi) => {
+    book.pages.forEach((p, pi) => {
       (p.blocks || []).forEach((b) => {
         if (!b.is_chapter) return;
         const tmp = document.createElement('div');
@@ -509,10 +511,7 @@ export default function Editor() {
         entries.push({ title, displayed });
       });
     });
-    if (entries.length === 0) {
-      toast.error('Add chapters first');
-      return;
-    }
+    if (entries.length === 0) return null;
     const rows = entries
       .map((e) =>
         `<p style="display:flex;justify-content:space-between;gap:1em;margin:0 0 .35em 0;">` +
@@ -520,10 +519,22 @@ export default function Editor() {
         `</p>`
       ).join('');
     const headerHtml = `<p style="text-align:center;font-size:1.4em;margin:0 0 .6em 0;">Contents</p>`;
+    return { html: headerHtml + rows, entryCount: entries.length };
+  }, [book]);
+
+  // Build a Table of Contents text block from every chapter heading in the
+  // book. Inserted blocks are tagged `is_toc: true` so the live-sync effect
+  // below keeps them current as chapters are added, edited, or reordered.
+  const addTocBlock = () => {
+    const payload = computeTocPayload();
+    if (!payload) {
+      toast.error('Add chapters first');
+      return;
+    }
     const pageW = pageSize.width;
     const margin = activePage?.full_bleed ? 0 : PAGE_MARGIN_PX;
     const width = Math.min(pageW - margin * 2 - 40, 540);
-    const height = Math.max(180, 60 + entries.length * 28);
+    const height = Math.max(180, 60 + payload.entryCount * 28);
     const block = {
       id: uid(),
       type: 'text',
@@ -532,11 +543,12 @@ export default function Editor() {
       width,
       height,
       z_index: 1,
-      html: headerHtml + rows,
+      html: payload.html,
       font_family: 'Cormorant Garamond',
       font_size: 20,
       text_align: 'left',
       color: '#000000',
+      is_toc: true,
     };
     updatePages((pages) =>
       pages.map((p, i) => {
@@ -549,8 +561,39 @@ export default function Editor() {
       })
     );
     setSelectedBlockId(block.id);
-    toast.success(`Contents inserted (${entries.length} chapter${entries.length === 1 ? '' : 's'})`);
+    toast.success(`Contents inserted (${payload.entryCount} chapter${payload.entryCount === 1 ? '' : 's'}) — auto-updates as you go`);
   };
+
+  // Live-sync any block tagged `is_toc: true` with the current chapter list.
+  // Triggers whenever the book changes; early-exits when the computed html
+  // already matches what's on the block, so this is a no-op once the TOC
+  // is in steady state. Skips runs while the user is actively editing the
+  // TOC's own text so we don't yank the caret mid-edit.
+  useEffect(() => {
+    if (!book?.pages) return;
+    const payload = computeTocPayload();
+    if (!payload) return;
+    let changed = false;
+    const newPages = book.pages.map((p) => {
+      let pageChanged = false;
+      const newBlocks = (p.blocks || []).map((b) => {
+        if (!b.is_toc) return b;
+        if (editingTextId === b.id) return b; // user is typing inside it
+        if (b.html === payload.html) return b;
+        pageChanged = true;
+        return { ...b, html: payload.html };
+      });
+      if (!pageChanged) return p;
+      changed = true;
+      return { ...p, blocks: newBlocks };
+    });
+    if (!changed) return;
+    // Bypass autosave for THIS state update — the user didn't make this
+    // change, the TOC just refreshed itself. Without this every chapter
+    // edit would flip the dirty flag and re-save.
+    skipNextAutoSaveRef.current = true;
+    setBook((prev) => ({ ...prev, pages: newPages }));
+  }, [book, computeTocPayload, editingTextId]);
 
   const handleImageUpload = async (file) => {
     if (!file) return;

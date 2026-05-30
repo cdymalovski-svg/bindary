@@ -89,6 +89,12 @@ Build me a book template app to be able to add texts and illustrations, page num
 - **Canvas cache-busting**: Editor maintains an `assetCacheBuster` integer bumped after any replace. Canvas `<img>` URLs append `?v=<n>` so previously-cached failures are refetched and existing book pages light up the moment the user re-uploads, with no save/reload required.
 - New tests in `tests/test_assets_api.py::TestAssetReplace`: verifies id+path preservation, byte overwrite, 404 on missing asset, and 400 on non-image uploads. All 56 backend tests now pass.
 
+## What's been implemented (2026-05-30 / iteration 21 — live-sync TOC)
+- **Table of Contents now auto-updates.** TOC blocks inserted via the toolbar are tagged `is_toc: true`. A live-sync `useEffect` watches `book` and any change to chapters (add / delete / rename / reorder pages / change `page_number_start`) regenerates the TOC html in-place so the displayed entries always match reality. Skips the run while the user is actively editing the TOC block so the caret never gets yanked. Uses `skipNextAutoSaveRef` so passive TOC refreshes piggy-back on the originating user edit's autosave instead of triggering a second round-trip.
+- Pure `computeTocPayload(book)` helper extracted so the one-shot inserter and the live-sync use identical entry logic — they can never drift.
+- Backend `Block` model accepts the new `is_toc: bool = False` field; all 87 tests still pass.
+- Verified end-to-end: created a chapter book, added 2 chapters, inserted Contents (2 entries), added a 3rd chapter on a new page — TOC immediately grew to 3 entries and re-paginated the second chapter from blank → "2" without any user action.
+
 ## What's been implemented (2026-05-30 / iteration 20 — page navigation)
 - **Editor canvas now scrolls between pages**: floating ← / → buttons on either side of the desk, plus keyboard ←/→ and one-finger horizontal swipe on iPad.
 - **Step size matches view mode**: single view advances 1 page; spread view advances by a full spread (2 pages). Cover is treated as its own half-spread, so prev from "pages 1-2" lands on the cover.
