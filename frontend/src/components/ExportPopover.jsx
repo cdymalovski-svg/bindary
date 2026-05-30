@@ -22,6 +22,16 @@ export default function ExportPopover({ bookId, totalPages, exporting, onExport,
   const [open, setOpen] = useState(false);
   const [startPage, setStartPage] = useState('1');
   const [endPage, setEndPage] = useState(String(totalPages || 1));
+  // When true, the resulting PDF opens in a new browser tab (uses the
+  // built-in viewer) instead of downloading to disk. Saved per-session in
+  // localStorage so users who iterate on a book stay in their preferred
+  // workflow without re-toggling each export.
+  const [previewInTab, setPreviewInTab] = useState(() => {
+    try { return localStorage.getItem('bindery_preview_in_tab') === '1'; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('bindery_preview_in_tab', previewInTab ? '1' : '0'); } catch {}
+  }, [previewInTab]);
   const [history, setHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
 
@@ -80,12 +90,12 @@ export default function ExportPopover({ bookId, totalPages, exporting, onExport,
     if (!Number.isFinite(s) || !Number.isFinite(en)) return;
     if (s < 1 || en < 1 || s > en || s > totalPages) return;
     setOpen(false);
-    onExport({ start: s, end: Math.min(en, totalPages) });
+    onExport({ start: s, end: Math.min(en, totalPages) }, { previewInTab });
   };
 
   const submitFull = () => {
     setOpen(false);
-    onExport(null);
+    onExport(null, { previewInTab });
   };
 
   return (
@@ -108,6 +118,21 @@ export default function ExportPopover({ bookId, totalPages, exporting, onExport,
         {/* Header + whole-book CTA */}
         <div className="px-4 pt-4 pb-3 border-b border-rule">
           <p className="label-caps text-ink-mute mb-2">Export to PDF</p>
+          {/* Preview-in-tab toggle — applies to BOTH the "Whole book" and
+              "Range" actions below. Persists across sessions. */}
+          <label
+            className="flex items-center gap-2 mb-3 text-xs text-ink-soft cursor-pointer select-none"
+            data-testid="preview-in-tab-label"
+          >
+            <input
+              type="checkbox"
+              checked={previewInTab}
+              onChange={(e) => setPreviewInTab(e.target.checked)}
+              data-testid="preview-in-tab-toggle"
+              className="w-4 h-4 accent-terracotta cursor-pointer"
+            />
+            <span>Open in new tab instead of downloading</span>
+          </label>
           <Button
             onClick={submitFull}
             disabled={exporting || totalPages === 0}

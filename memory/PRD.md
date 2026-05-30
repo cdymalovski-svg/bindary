@@ -89,6 +89,12 @@ Build me a book template app to be able to add texts and illustrations, page num
 - **Canvas cache-busting**: Editor maintains an `assetCacheBuster` integer bumped after any replace. Canvas `<img>` URLs append `?v=<n>` so previously-cached failures are refetched and existing book pages light up the moment the user re-uploads, with no save/reload required.
 - New tests in `tests/test_assets_api.py::TestAssetReplace`: verifies id+path preservation, byte overwrite, 404 on missing asset, and 400 on non-image uploads. All 56 backend tests now pass.
 
+## What's been implemented (2026-05-30 / iteration 18 — AI illustration generator)
+- **`POST /api/assets/generate`** — takes `{prompt, book_id?}`, calls Gemini Nano Banana (`gemini-3.1-flash-image-preview`) via `emergentintegrations` using the universal `EMERGENT_LLM_KEY`, decodes the base64 image, persists it through the same object-storage path as `/upload`, and returns the standard asset shape. The generated asset shows up in the Assets panel exactly like an uploaded one (drag-onto-page, replace, delete all work).
+- **Generate dialog**: new `GenerateImageDialog.jsx` rendered via a React portal (so editor canvas transforms don't trap it). Has a 4-row textarea (2000-char limit), four curated example prompts, `⌘↵` to submit, Escape-to-close, loading spinner, and surfaces upstream errors directly. The dialog is reached from a new "Generate with AI…" button under "Upload images" in the Assets panel.
+- DB records tagged with `source: "ai_generated"` and the original `ai_prompt` for future filtering / analytics.
+- Smoke-tested end-to-end (~17s real generation), 1.14 MB JPEG persisted, listed in `/api/assets`, served by `/api/files/...`.
+
 ## Prioritized Backlog
 ### P1
 - Refactor `Editor.jsx` (now ~1672 lines): split into toolbar / canvas / TOC builder modules + custom hooks for autosave & selection.
@@ -104,9 +110,9 @@ Build me a book template app to be able to add texts and illustrations, page num
 - PDF preview button (open in new tab instead of immediate download).
 
 ### P3
-- AI-assisted illustration generation per page (Nano Banana).
 - AI text editing assistance.
 - Multi-user accounts + library sharing.
+- Pan-while-zoomed gesture on iPad (drag canvas while pinch >100%).
 
 ## Next Tasks
 - Refactor `Editor.jsx` for maintainability (now P1 — file size is regression-prone).

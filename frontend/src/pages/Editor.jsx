@@ -872,7 +872,11 @@ export default function Editor() {
   // --- PDF export (server-side, job-based to survive proxy timeouts) ---
   // `range` is an optional `{ start, end }` 1-indexed inclusive slice.
   // Used by the export popover to ship a long book as several PDFs.
-  const onExportPdf = async (range = null) => {
+  // `options.previewInTab=true` opens the result in a new browser tab
+  // (using the browser's built-in PDF viewer) instead of triggering a
+  // download — useful for iterating on layout without piling up files.
+  const onExportPdf = async (range = null, options = {}) => {
+    const previewInTab = options?.previewInTab === true;
     if (!book) return;
     setExporting(true);
     const toastId = 'pdf-export';
@@ -944,15 +948,45 @@ export default function Editor() {
       // partial exports). Fall back to a sanitised title if missing.
       const fallback = `${(book.title || 'book').replace(/[^a-z0-9-_]+/gi, '_')}.pdf`;
       const downloadName = serverFilename || fallback;
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = downloadName;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(a.href);
+      const url = URL.createObjectURL(blob);
+      if (previewInTab) {
+        // Open in a new tab so the browser's built-in PDF viewer renders
+        // it. We do NOT immediately revoke the object URL — the new tab
+        // still needs it. Schedule revoke after a generous delay; the
+        // browser caches the blob, so navigating away from the tab is
+        // fine, and worst case the OS reclaims the memory on tab close.
+        const win = window.open(url, '_blank', 'noopener,noreferrer');
+        if (!win) {
+          // Popup blocked — fall back to download so the user still gets
+          // their PDF rather than a silent no-op.
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = downloadName;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          toast.warning(
+            'Popup blocked — downloaded instead. Allow popups for this site to use Preview-in-tab.',
+            { id: toastId, duration: 8000 },
+          );
+          // Old toast was replaced; create a new "exported" one below.
+        }
+        // Revoke after 60s; the new tab has well-cached the bytes by then.
+        setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      } else {
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = downloadName;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      }
       const secs = ((performance.now() - t0) / 1000).toFixed(1);
-      toast.success(`PDF exported in ${secs}s`, { id: toastId });
+      toast.success(
+        previewInTab ? `PDF ready in ${secs}s — opened in new tab` : `PDF exported in ${secs}s`,
+        { id: toastId },
+      );
       // Refresh the export-history list so the popover updates immediately.
       setExportsBump((n) => n + 1);
     } catch (e) {

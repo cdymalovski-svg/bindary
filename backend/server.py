@@ -1035,6 +1035,80 @@ async def upload_image(file: UploadFile = File(...), book_id: Optional[str] = Fo
     }
 
 
+class GenerateAssetRequest(BaseModel):
+    prompt: str
+    book_id: Optional[str] = None
+
+
+@api_router.post("/assets/generate")
+async def generate_asset(req: GenerateAssetRequest):
+    """Generate an illustration with Gemini Nano Banana and persist it
+    to object storage as a regular asset — so the user can immediately
+    drag it onto a page from the same Assets panel."""
+    import base64
+    from emergentintegrations.llm.chat import LlmChat, UserMessage
+
+    prompt = (req.prompt or "").strip()
+    if not prompt:
+        raise HTTPException(400, "Prompt is required")
+    if len(prompt) > 2000:
+        raise HTTPException(400, "Prompt is too long (max 2000 chars)")
+    if not EMERGENT_KEY:
+        raise HTTPException(500, "Image generation is not configured (missing EMERGENT_LLM_KEY)")
+
+    chat = LlmChat(
+        api_key=EMERGENT_KEY,
+        session_id=str(uuid.uuid4()),
+        system_message="You generate single high-quality illustration images for use in printed books. Produce one image only. Do not add any text overlays or watermarks unless explicitly requested.",
+    )
+    chat.with_model("gemini", "gemini-3.1-flash-image-preview").with_params(modalities=["image", "text"])
+
+    msg = UserMessage(text=prompt)
+    try:
+        _text, images = await chat.send_message_multimodal_response(msg)
+    except Exception as e:  # network / upstream errors surface to the user
+        raise HTTPException(502, f"Image generation failed: {e}")
+
+    if not images:
+        raise HTTPException(502, "The model returned no image. Try refining your prompt.")
+
+    img = images[0]
+    mime = img.get("mime_type") or "image/png"
+    ext = "png" if "png" in mime else "jpg"
+    try:
+        image_bytes = base64.b64decode(img["data"])
+    except Exception:
+        raise HTTPException(502, "The model returned a malformed image")
+
+    storage_path = f"{APP_NAME}/uploads/{uuid.uuid4()}.{ext}"
+    result = await asyncio.to_thread(put_object, storage_path, image_bytes, mime)
+    canonical_path = result.get("path", storage_path)
+
+    # Use the first 60 chars of the prompt as a readable filename so the
+    # asset is searchable in the panel.
+    pretty_name = (prompt[:60].rstrip() + ("…" if len(prompt) > 60 else "")) + f".{ext}"
+    await db.files.insert_one({
+        "id": str(uuid.uuid4()),
+        "storage_path": canonical_path,
+        "original_filename": pretty_name,
+        "content_type": mime,
+        "size": result.get("size", len(image_bytes)),
+        "is_deleted": False,
+        "created_at": _now_iso(),
+        "book_id": req.book_id,
+        "source": "ai_generated",
+        "ai_prompt": prompt,
+    })
+    return {
+        "path": canonical_path,
+        "url": f"/api/files/{canonical_path}",
+        "content_type": mime,
+        "size": result.get("size", len(image_bytes)),
+        "original_filename": pretty_name,
+        "source": "ai_generated",
+    }
+
+
 @api_router.get("/assets")
 async def list_assets(book_id: Optional[str] = None):
     query: dict = {"is_deleted": False}

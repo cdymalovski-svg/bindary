@@ -83,6 +83,18 @@ export const replaceAsset = async (id, file) => {
   return res.data;
 };
 
+export const generateAsset = async ({ prompt, bookId }) => {
+  // Image generation can take 15-40s — give the request room to breathe
+  // before axios' default 0ms timeout kicks in. (We don't set a hard
+  // timeout; the user can cancel via the dialog.)
+  const res = await api.post(
+    '/assets/generate',
+    { prompt, book_id: bookId },
+    { timeout: 120000 },
+  );
+  return res.data;
+};
+
 export const listTemplates = () => api.get('/templates').then((r) => r.data);
 export const createTemplate = (data) => api.post('/templates', data).then((r) => r.data);
 export const deleteTemplate = (id) => api.delete(`/templates/${id}`).then((r) => r.data);

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Upload, Trash2, Loader2, ImageIcon, Search, Replace, BookOpen, Plus, AlertTriangle, RefreshCw } from 'lucide-react';
+import { Upload, Trash2, Loader2, ImageIcon, Search, Replace, BookOpen, Plus, AlertTriangle, RefreshCw, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 import { listAssets, uploadImage, deleteAsset, replaceAsset, fileUrl } from '@/lib/api';
 import { Input } from '@/components/ui/input';
@@ -10,6 +10,7 @@ import {
   ContextMenuItem,
   ContextMenuSeparator,
 } from '@/components/ui/context-menu';
+import GenerateImageDialog from './GenerateImageDialog';
 
 export const ASSET_DRAG_MIME = 'application/x-bindery-asset';
 
@@ -35,6 +36,7 @@ export default function AssetsPanel({
   // Bumped after a replace so the <img> re-fetches instead of serving the
   // browser's cached failure.
   const [versionTags, setVersionTags] = useState(() => ({}));
+  const [generateOpen, setGenerateOpen] = useState(false);
   const fileInputRef = useRef(null);
   const fixAllInputRef = useRef(null);
 
@@ -217,6 +219,17 @@ export default function AssetsPanel({
           {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
           {uploading ? 'Uploading…' : 'Upload images'}
         </button>
+        <button
+          type="button"
+          onClick={() => setGenerateOpen(true)}
+          disabled={uploading}
+          data-testid="generate-image-button"
+          title="Generate an illustration from a text prompt"
+          className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-rule-dark/40 hover:bg-rule-dark/70 border border-rule-dark text-paper rounded-sm text-xs transition-colors disabled:opacity-60"
+        >
+          <Sparkles className="w-3.5 h-3.5 text-terracotta" />
+          Generate with AI…
+        </button>
         {brokenCount > 0 && (
           <button
             type="button"
@@ -299,6 +312,16 @@ export default function AssetsPanel({
           </div>
         )}
       </div>
+
+      <GenerateImageDialog
+        open={generateOpen}
+        onClose={() => setGenerateOpen(false)}
+        bookId={bookId}
+        onGenerated={(asset) => {
+          onAssetUploaded?.(asset);
+          refresh();
+        }}
+      />
     </div>
   );
 }
