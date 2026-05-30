@@ -422,13 +422,15 @@ async def build_book_pdf(
     get_image: Callable[[str], tuple[bytes, str]],
     public_base_url: Optional[str] = None,
     progress_cb: Optional[Callable[[str], None]] = None,
+    start_page: Optional[int] = None,
+    end_page: Optional[int] = None,
 ) -> bytes:
     """Render the book to a PDF that exactly mirrors the editor view.
 
     Parameters
     ----------
     book : dict
-        The Book document straight from MongoDB.
+        The Book document straight from MongoDB (full, unsliced).
     get_image : callable(path) -> (bytes, content_type)
         Synchronous fetcher returning the raw bytes + Content-Type for an
         asset stored in object storage. We inline these as data: URLs so
@@ -442,6 +444,12 @@ async def build_book_pdf(
         Invoked at each major stage so the surrounding job worker can
         surface live progress to the client (e.g. "rendering chunk 3/8").
         Errors inside the callback are swallowed.
+    start_page, end_page : int, optional (1-indexed, inclusive)
+        Render only this range of pages. Crucially the GLOBAL page index
+        is preserved when passing to `_render_page`, so the displayed page
+        numbers in a range export match the original book numbering
+        (exporting pages 51–112 shows "51, 52, …, 112" — not 1–62) and
+        back-cover detection still keys off the original book length.
     """
     def _emit(stage: str) -> None:
         if progress_cb is None:
@@ -533,9 +541,25 @@ async def build_book_pdf(
     # 5-page chunks halve peak memory vs the previous 10, at the cost of
     # one extra context teardown per chunk (negligible).
     CHUNK_SIZE = 5
-    chunks = [(i, min(i + CHUNK_SIZE, total_pages)) for i in range(0, total_pages, CHUNK_SIZE)] or [(0, 0)]
-    log.info("PDF export: rendering %d page(s) in %d chunk(s) of up to %d",
-             total_pages, len(chunks), CHUNK_SIZE)
+    # Resolve the (optional) 1-indexed inclusive range into a [slice_start,
+    # slice_end) half-open interval against the FULL `pages` array. We do
+    # NOT touch `book["pages"]` itself — the global indices must survive
+    # all the way through to `_render_page` so page numbering and back-
+    # cover detection use the original book's positions.
+    slice_start = 0 if start_page is None else max(0, start_page - 1)
+    slice_end = total_pages if end_page is None else min(total_pages, end_page)
+    if slice_start >= slice_end:
+        # Empty / invalid range — emit a minimal 1-page placeholder rather
+        # than crashing inside Chromium.
+        slice_start, slice_end = 0, min(total_pages, 1)
+    chunks = [
+        (i, min(i + CHUNK_SIZE, slice_end))
+        for i in range(slice_start, slice_end, CHUNK_SIZE)
+    ] or [(slice_start, slice_start)]
+    log.info(
+        "PDF export: rendering pages %d-%d (of %d total) in %d chunk(s) of up to %d",
+        slice_start + 1, slice_end, total_pages, len(chunks), CHUNK_SIZE,
+    )
 
     # Intercept /api/files/... requests and answer from in-process cache.
     # Falls through for everything else (Google Fonts, etc).

@@ -638,28 +638,29 @@ async def _run_pdf_job(
                           "finished_at": _now_iso()}},
             )
             return
-        # Apply the page-range slice if specified. Clamp to actual book
-        # length so a stale UI can't ask for pages that no longer exist.
+        # Range bookkeeping. We do NOT slice `book["pages"]` here — the
+        # builder needs the FULL array so it can preserve original page
+        # numbers and original-length-based cover detection. We just clamp
+        # the user-supplied range against the actual book length and pass
+        # it down for the builder to slice internally.
         all_pages = book.get("pages") or []
         total = len(all_pages)
         applied_start = start_page if start_page is not None else 1
         applied_end = end_page if end_page is not None else total
         applied_start = max(1, min(applied_start, total))
         applied_end = max(applied_start, min(applied_end, total))
-        if start_page is not None or end_page is not None:
-            book = {**book, "pages": all_pages[applied_start - 1:applied_end]}
+        is_range = start_page is not None or end_page is not None
 
         _on_stage("starting")
         pdf_bytes = await build_book_pdf(
             book, get_object, public_base_url=base_url, progress_cb=_on_stage,
+            start_page=applied_start if is_range else None,
+            end_page=applied_end if is_range else None,
         )
         safe = re.sub(r"[^A-Za-z0-9._-]+", "_", book.get("title") or "book").strip("_") or "book"
         # Filename includes the range when partial so users get distinct
         # downloads on disk: "MyBook_pp_1-50.pdf" / "MyBook_pp_51-112.pdf".
-        if start_page is not None or end_page is not None:
-            filename = f"{safe}_pp_{applied_start}-{applied_end}.pdf"
-        else:
-            filename = f"{safe}.pdf"
+        filename = f"{safe}_pp_{applied_start}-{applied_end}.pdf" if is_range else f"{safe}.pdf"
         # Upload PDF bytes to shared object storage so any pod can serve them.
         _on_stage("uploading")
         object_path = f"{_PDF_OBJECT_PREFIX}/{job_id}.pdf"

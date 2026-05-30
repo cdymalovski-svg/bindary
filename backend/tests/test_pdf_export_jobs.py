@@ -157,6 +157,57 @@ class TestPdfExportRangeAndHistory:
         finally:
             s.delete(f"{API}/books/{bid}")
 
+    def test_range_export_preserves_original_page_numbers(self, s):
+        """Critical: when exporting pages 3-5 of a 7-page book, the rendered
+        page numbers must show 3, 4, 5 — NOT 1, 2, 3. This is what users
+        need when stitching big books in chunks; they want the page numbers
+        to line up with the original book numbering across all the chunks.
+        """
+        bid = self._make_book_with_pages(s, 7)
+        try:
+            start = s.post(
+                f"{API}/books/{bid}/pdf-jobs",
+                json={"start_page": 3, "end_page": 5},
+                timeout=15,
+            )
+            assert start.status_code == 200, start.text
+            job_id = start.json()["job_id"]
+            _wait_for_ready(s, bid, job_id, timeout=90)
+            dl = s.get(f"{API}/books/{bid}/pdf-jobs/{job_id}/download", timeout=30)
+            assert dl.status_code == 200
+
+            import io
+            from pypdf import PdfReader
+            reader = PdfReader(io.BytesIO(dl.content))
+            assert len(reader.pages) == 3, f"Expected 3 pages, got {len(reader.pages)}"
+
+            # Extract text from each rendered PDF page and check the printed
+            # page number matches the ORIGINAL book position (3, 4, 5) — not
+            # the within-slice position (1, 2, 3). `extract_text` is best-
+            # effort but reliable enough for short numeric strings.
+            extracted = [p.extract_text() or "" for p in reader.pages]
+            expected_numbers = ["3", "4", "5"]
+            for idx, (page_text, expected) in enumerate(zip(extracted, expected_numbers)):
+                assert expected in page_text, (
+                    f"Rendered PDF page {idx + 1} should show original page "
+                    f"number {expected!r}, got text: {page_text!r}"
+                )
+            # Sanity: 1 and 2 must NOT appear as standalone tokens on the
+            # rendered pages (they'd indicate slice-relative numbering).
+            for page_text in extracted:
+                tokens = page_text.split()
+                # The "Page N" body text on page 3 says "Page 3" — '3' appears.
+                # We just check that NEITHER '1' NOR '2' is a standalone token.
+                assert "1" not in tokens, (
+                    f"Slice-relative numbering leaked: '1' appeared in {page_text!r}"
+                )
+                assert "2" not in tokens, (
+                    f"Slice-relative numbering leaked: '2' appeared in {page_text!r}"
+                )
+        finally:
+            s.delete(f"{API}/books/{bid}")
+
+
     def test_range_export_appears_in_history(self, s):
         bid = self._make_book_with_pages(s, 4)
         try:
