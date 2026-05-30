@@ -4,6 +4,7 @@ import { Toaster } from 'sonner';
 import Dashboard from '@/pages/Dashboard';
 import Editor from '@/pages/Editor';
 import Login from '@/pages/Login';
+import Admin from '@/pages/Admin';
 import ErrorBoundary from '@/components/ErrorBoundary';
 import { AuthProvider } from '@/auth/AuthContext';
 import ProtectedRoute from '@/auth/ProtectedRoute';
@@ -44,6 +45,16 @@ export default function App() {
               <ProtectedRoute>
                 <ErrorBoundary>
                   <Editor />
+                </ErrorBoundary>
+              </ProtectedRoute>
+            )}
+          />
+          <Route
+            path="/admin"
+            element={(
+              <ProtectedRoute requireAdmin>
+                <ErrorBoundary>
+                  <Admin />
                 </ErrorBoundary>
               </ProtectedRoute>
             )}

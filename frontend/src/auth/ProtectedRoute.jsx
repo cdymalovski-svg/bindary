@@ -6,8 +6,9 @@ import { useAuth } from '@/auth/AuthContext';
  *  - While the session is still being validated → render nothing (no flash).
  *  - Signed out → redirect to /login, preserving where we wanted to go.
  *  - Signed in → render the protected subtree.
+ *  - `requireAdmin` → also enforce role === "admin" (otherwise → /).
  */
-export default function ProtectedRoute({ children }) {
+export default function ProtectedRoute({ children, requireAdmin = false }) {
   const { user } = useAuth();
   const location = useLocation();
 
@@ -23,6 +24,10 @@ export default function ProtectedRoute({ children }) {
   }
   if (!user) {
     return <Navigate to="/login" replace state={{ from: location }} />;
+  }
+  if (requireAdmin && user.role !== 'admin') {
+    // Don't leak the page existence — bounce non-admins back to the library.
+    return <Navigate to="/" replace />;
   }
   return children;
 }

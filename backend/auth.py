@@ -111,6 +111,28 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1)
 
 
+class CreateUserRequest(BaseModel):
+    """Admin-only: provision a new account."""
+    model_config = ConfigDict(extra="ignore")
+    email: EmailStr
+    password: str = Field(min_length=6)
+    name: Optional[str] = None
+    role: str = Field(default="user", pattern=r"^(user|admin)$")
+
+
+class ChangePasswordRequest(BaseModel):
+    """Self-service: requires the current password."""
+    model_config = ConfigDict(extra="ignore")
+    current_password: str = Field(min_length=1)
+    new_password: str = Field(min_length=6)
+
+
+class AdminResetPasswordRequest(BaseModel):
+    """Admin-only: reset another user's password without their current one."""
+    model_config = ConfigDict(extra="ignore")
+    new_password: str = Field(min_length=6)
+
+
 class UserOut(BaseModel):
     id: str
     email: str
@@ -226,12 +248,19 @@ async def seed_admin(db) -> None:
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
         log.info("Seeded admin account for %s", email)
-    elif not verify_password(password, existing["password_hash"]):
-        await db.users.update_one(
-            {"email": email},
-            {"$set": {"password_hash": hash_password(password)}},
-        )
-        log.info("Updated admin password hash for %s from .env", email)
+        return
+    # Existing row: bring its state in line with .env every restart.
+    updates = {}
+    if not verify_password(password, existing["password_hash"]):
+        updates["password_hash"] = hash_password(password)
+    if existing.get("role") != "admin":
+        # Force the configured admin email to have admin role even if
+        # someone manually demoted it via the DB — the .env is the source
+        # of truth for this account.
+        updates["role"] = "admin"
+    if updates:
+        await db.users.update_one({"email": email}, {"$set": updates})
+        log.info("Reconciled admin row for %s (%s)", email, ", ".join(updates.keys()))
 
 
 # --------------------------------------------------------------------------- #
@@ -316,5 +345,99 @@ def build_auth_router(db) -> APIRouter:
             max_age=ACCESS_TOKEN_MINUTES * 60, path="/",
         )
         return {"refreshed": True}
+
+    # --------------------------------------------------------------------- #
+    # Self-service password change
+    # --------------------------------------------------------------------- #
+    @router.post("/change-password")
+    async def change_password(payload: ChangePasswordRequest, user=Depends(get_current_user)):
+        # Re-fetch the full record so we can verify the current password.
+        full = await db.users.find_one({"id": user["id"]})
+        if not full or not verify_password(payload.current_password, full["password_hash"]):
+            raise HTTPException(401, "Current password is incorrect")
+        if payload.current_password == payload.new_password:
+            raise HTTPException(400, "New password must differ from the current one")
+        await db.users.update_one(
+            {"id": user["id"]},
+            {"$set": {
+                "password_hash": hash_password(payload.new_password),
+                "password_changed_at": datetime.now(timezone.utc).isoformat(),
+            }},
+        )
+        return {"changed": True}
+
+    # --------------------------------------------------------------------- #
+    # Admin: user CRUD
+    # --------------------------------------------------------------------- #
+    def _require_admin(u: dict) -> dict:
+        if u.get("role") != "admin":
+            raise HTTPException(403, "Admin privileges required")
+        return u
+
+    @router.get("/users")
+    async def list_users(user=Depends(get_current_user)):
+        _require_admin(user)
+        docs = await db.users.find({}, {"_id": 0, "password_hash": 0}).to_list(500)
+        # Stable ordering: admin(s) first, then alphabetical email.
+        docs.sort(key=lambda d: (d.get("role") != "admin", (d.get("email") or "").lower()))
+        return [_user_to_out(d) for d in docs]
+
+    @router.post("/users")
+    async def create_user(payload: CreateUserRequest, user=Depends(get_current_user)):
+        _require_admin(user)
+        email = payload.email.strip().lower()
+        if await db.users.find_one({"email": email}):
+            raise HTTPException(409, "A user with that email already exists")
+        new_user = {
+            "id": secrets.token_hex(16),
+            "email": email,
+            "name": payload.name or None,
+            "role": payload.role,
+            "password_hash": hash_password(payload.password),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await db.users.insert_one(new_user)
+        return _user_to_out(new_user)
+
+    @router.delete("/users/{user_id}")
+    async def delete_user(user_id: str, user=Depends(get_current_user)):
+        _require_admin(user)
+        # An admin can't delete their own account — would leave the system
+        # potentially admin-less and lock them out of the very tools they're
+        # using right now.
+        if user_id == user["id"]:
+            raise HTTPException(400, "You can't delete your own account")
+        # Don't allow removing the last admin (whoever they are).
+        target = await db.users.find_one({"id": user_id})
+        if not target:
+            raise HTTPException(404, "User not found")
+        if target.get("role") == "admin":
+            admin_count = await db.users.count_documents({"role": "admin"})
+            if admin_count <= 1:
+                raise HTTPException(400, "Can't delete the last admin")
+        res = await db.users.delete_one({"id": user_id})
+        if res.deleted_count == 0:
+            raise HTTPException(404, "User not found")
+        return {"deleted": True}
+
+    @router.post("/users/{user_id}/reset-password")
+    async def admin_reset_password(
+        user_id: str,
+        payload: AdminResetPasswordRequest,
+        user=Depends(get_current_user),
+    ):
+        _require_admin(user)
+        target = await db.users.find_one({"id": user_id})
+        if not target:
+            raise HTTPException(404, "User not found")
+        await db.users.update_one(
+            {"id": user_id},
+            {"$set": {
+                "password_hash": hash_password(payload.new_password),
+                "password_changed_at": datetime.now(timezone.utc).isoformat(),
+                "password_reset_by": user["id"],
+            }},
+        )
+        return {"reset": True}
 
     return router

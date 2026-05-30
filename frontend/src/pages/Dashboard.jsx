@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { toast } from 'sonner';
-import { Plus, BookOpen, Trash2, FileText, Bookmark, Copy, Search, Pencil, Upload, LogOut } from 'lucide-react';
+import { Plus, BookOpen, Trash2, FileText, Bookmark, Copy, Search, Pencil, Upload, LogOut, ShieldCheck } from 'lucide-react';
 import {
   listBooks, createBook, importBook, deleteBook, fileUrl,
   listTemplates, deleteTemplate, updateBook,
@@ -658,16 +658,29 @@ function SignOutButton() {
   const { user, signOut } = useAuth();
   if (!user) return null;
   return (
-    <button
-      type="button"
-      onClick={signOut}
-      data-testid="sign-out-button"
-      title={`Signed in as ${user.email} — sign out`}
-      className="inline-flex items-center gap-1.5 px-3 h-9 text-xs text-ink-soft hover:text-ink border border-rule rounded-sm bg-paper hover:bg-desk transition-colors"
-    >
-      <LogOut className="w-3.5 h-3.5" />
-      <span className="hidden sm:inline">Sign out</span>
-    </button>
+    <div className="flex items-center gap-2">
+      {user.role === 'admin' && (
+        <Link
+          to="/admin"
+          data-testid="admin-link"
+          title="Manage users and password"
+          className="inline-flex items-center gap-1.5 px-3 h-9 text-xs text-ink-soft hover:text-ink border border-rule rounded-sm bg-paper hover:bg-desk transition-colors"
+        >
+          <ShieldCheck className="w-3.5 h-3.5" />
+          <span className="hidden sm:inline">Admin</span>
+        </Link>
+      )}
+      <button
+        type="button"
+        onClick={signOut}
+        data-testid="sign-out-button"
+        title={`Signed in as ${user.email} — sign out`}
+        className="inline-flex items-center gap-1.5 px-3 h-9 text-xs text-ink-soft hover:text-ink border border-rule rounded-sm bg-paper hover:bg-desk transition-colors"
+      >
+        <LogOut className="w-3.5 h-3.5" />
+        <span className="hidden sm:inline">Sign out</span>
+      </button>
+    </div>
   );
 }
 

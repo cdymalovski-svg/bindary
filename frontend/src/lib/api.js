@@ -111,3 +111,15 @@ export const authLogout = async () => {
   try { await api.post('/auth/logout'); } catch {}
   setStoredToken(null);
 };
+
+// --- Admin user management ---
+export const listUsers = () => api.get('/auth/users').then((r) => r.data);
+export const createUser = (payload) => api.post('/auth/users', payload).then((r) => r.data);
+export const deleteUser = (userId) => api.delete(`/auth/users/${userId}`).then((r) => r.data);
+export const adminResetPassword = (userId, newPassword) =>
+  api.post(`/auth/users/${userId}/reset-password`, { new_password: newPassword }).then((r) => r.data);
+export const changeMyPassword = (currentPassword, newPassword) =>
+  api.post('/auth/change-password', {
+    current_password: currentPassword,
+    new_password: newPassword,
+  }).then((r) => r.data);
