@@ -1502,12 +1502,29 @@ function PageCanvas({
   pageNumberStart = 1,
   assetCacheBuster = 0,
 }) {  // Scale to fit viewport for editing mode (export uses full size)
-  const [scale, setScale] = useState(1);
+  const [fitScale, setFitScale] = useState(1);
+  // User-driven pinch zoom (touch devices). Multiplied with the auto-fit
+  // scale below so a small iPad still gets sensible defaults, but the user
+  // can pinch in/out to inspect detail.
+  const [userZoom, setUserZoom] = useState(1);
+  // Mirror in a ref so the native touch listener can read the latest
+  // value without being reinstalled on every zoom delta (which would
+  // drop in-flight touch events mid-gesture).
+  const userZoomRef = useRef(1);
+  useEffect(() => { userZoomRef.current = userZoom; }, [userZoom]);
+  const scale = fitScale * userZoom;
   const [dropHover, setDropHover] = useState(false);
   const wrapperRef = useRef(null);
+  // Outer touch-target — covers the full page footprint including any
+  // react-rnd blocks. Listener attached with `capture: true` so pinch
+  // works even if a child element (a block being touched) swallows
+  // touch events on its own.
+  const touchHostRef = useRef(null);
+  // Pinch gesture state — only used during an active 2-finger touch.
+  const pinchRef = useRef(null);
 
   useEffect(() => {
-    if (forExport) { setScale(1); return; }
+    if (forExport) { setFitScale(1); return; }
     const compute = () => {
       const padding = 96; // px padding around
       const sidebars = 224 + 288; // left + right
@@ -1520,12 +1537,54 @@ function PageCanvas({
         (availW - gap) / (pageSize.width * widthMultiplier),
         availH / pageSize.height
       );
-      setScale(Math.max(0.18, s));
+      setFitScale(Math.max(0.18, s));
     };
     compute();
     window.addEventListener('resize', compute);
     return () => window.removeEventListener('resize', compute);
   }, [pageSize.width, pageSize.height, forExport, viewMode]);
+
+  // --- Pinch-to-zoom (2-finger gesture, touch only) ---
+  // Implemented with native event listeners (not React's synthetic touch
+  // events) because we need `passive: false` to call preventDefault and
+  // stop iOS's built-in browser pinch-zoom of the whole viewport.
+  useEffect(() => {
+    if (forExport) return undefined;
+    const node = touchHostRef.current;
+    if (!node) return undefined;
+    const dist = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+    const onTouchStart = (e) => {
+      if (e.touches.length !== 2) return;
+      pinchRef.current = {
+        startDist: dist(e.touches[0], e.touches[1]),
+        startZoom: userZoomRef.current,
+      };
+      e.preventDefault();
+    };
+    const onTouchMove = (e) => {
+      if (e.touches.length !== 2 || !pinchRef.current) return;
+      const d = dist(e.touches[0], e.touches[1]);
+      const ratio = d / pinchRef.current.startDist;
+      // Clamp to a sensible range — below 0.5 the page becomes unusable,
+      // above 4 you're effectively just looking at one block.
+      const next = Math.max(0.5, Math.min(4, pinchRef.current.startZoom * ratio));
+      setUserZoom(next);
+      e.preventDefault();
+    };
+    const onTouchEnd = (e) => {
+      if (e.touches.length < 2) pinchRef.current = null;
+    };
+    node.addEventListener('touchstart', onTouchStart, { passive: false, capture: true });
+    node.addEventListener('touchmove', onTouchMove, { passive: false, capture: true });
+    node.addEventListener('touchend', onTouchEnd, { passive: true, capture: true });
+    node.addEventListener('touchcancel', onTouchEnd, { passive: true, capture: true });
+    return () => {
+      node.removeEventListener('touchstart', onTouchStart, { capture: true });
+      node.removeEventListener('touchmove', onTouchMove, { capture: true });
+      node.removeEventListener('touchend', onTouchEnd, { capture: true });
+      node.removeEventListener('touchcancel', onTouchEnd, { capture: true });
+    };
+  }, [forExport]);
 
   if (!page) return null;
 
@@ -1575,10 +1634,16 @@ function PageCanvas({
 
   return (
     <div
+      ref={touchHostRef}
       style={{
         width: pageSize.width * scale,
         height: pageSize.height * scale,
         position: 'relative',
+        // iOS Safari's default touch-action on contentEditable areas is
+        // very permissive. Disabling browser pinch-zoom here ensures our
+        // 2-finger gesture is recognised as a canvas zoom, not a viewport
+        // zoom. Single-finger pan still works for scrolling the desk.
+        touchAction: 'pan-x pan-y',
       }}
       onMouseDown={(e) => { e.stopPropagation(); onFocusPage?.(); }}
       onDragOver={handleDragOver}
@@ -1591,6 +1656,20 @@ function PageCanvas({
       )}
       {showFocusRing && (
         <div className="absolute -inset-1 z-40 ring-2 ring-terracotta/70 rounded-sm pointer-events-none" />
+      )}
+      {/* Pinch-zoom indicator — only visible when the user has zoomed.
+          Tap to reset to fit-scale. Positioned over the page corner so it
+          stays on-screen regardless of where the canvas is scrolled. */}
+      {!forExport && Math.abs(userZoom - 1) > 0.01 && (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); setUserZoom(1); }}
+          data-testid={`zoom-reset-${pageIndex}`}
+          title="Reset zoom to fit"
+          className="absolute z-40 top-2 right-2 px-2.5 py-1 bg-ink/85 text-paper text-[10px] tracking-wider uppercase rounded-sm shadow-lg hover:bg-ink transition-colors"
+        >
+          {Math.round(userZoom * 100)}% · reset
+        </button>
       )}
       <div
         ref={wrapperRef}

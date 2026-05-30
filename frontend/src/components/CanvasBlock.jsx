@@ -102,7 +102,39 @@ export default function CanvasBlock({
           // bubbles to the desk handler and immediately ends the edit
           // session — making it impossible to position the caret with a
           // second tap on iPad.
-          if (editingThisText) e.stopPropagation();
+          if (editingThisText) {
+            e.stopPropagation();
+            return;
+          }
+          // Two-finger touches are pinch-zoom — leave them to the desk.
+          if (e.touches.length >= 2) return;
+          const t = e.touches[0];
+          if (t) downPosRef.current = { x: t.clientX, y: t.clientY };
+          if (!selected) {
+            e.stopPropagation();
+            onSelect(block.id);
+          }
+        }}
+        onTouchEnd={(e) => {
+          // Touch-equivalent of the onMouseUp "tap to enter text edit"
+          // branch. iPad / iOS Safari does NOT reliably fire a synthetic
+          // `dblclick` on double-tap (double-tap is reserved for the OS
+          // zoom gesture), so the desktop double-click pattern is dead in
+          // the water on touch. Single-tap on an already-selected text
+          // block is the standard touch UX and we mirror it here.
+          if (!isText || editingThisText) return;
+          const start = downPosRef.current;
+          downPosRef.current = null;
+          if (!start) return;
+          const t = e.changedTouches[0];
+          if (!t) return;
+          const dx = Math.abs(t.clientX - start.x);
+          const dy = Math.abs(t.clientY - start.y);
+          // Slightly more forgiving threshold than mouse — fingers wobble.
+          if (dx < 8 && dy < 8) {
+            e.stopPropagation();
+            onStartTextEdit(block.id);
+          }
         }}
         onMouseUp={(e) => {
           // Mouseup-based click detection: only enter edit mode if the pointer
