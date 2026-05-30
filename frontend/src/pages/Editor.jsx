@@ -908,6 +908,18 @@ export default function Editor() {
     setEditingTextId(null);
   }, [navStep.next]);
 
+  // Keep the active page's thumbnail in view in the left sidebar when the
+  // active page changes (arrow click, keyboard ←/→, swipe, etc.). Without
+  // this the user can advance past the visible scroll region and lose the
+  // visual breadcrumb of where they are in the book.
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const el = document.querySelector(`[data-testid="page-thumbnail-${activePageIndex}"]`);
+    if (el && typeof el.scrollIntoView === 'function') {
+      el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }, [activePageIndex]);
+
   // --- Keyboard shortcuts ---
   useEffect(() => {
     const onKey = (e) => {
