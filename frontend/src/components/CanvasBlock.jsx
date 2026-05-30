@@ -11,6 +11,7 @@ export default function CanvasBlock({
   onChange,
   onStartTextEdit,
   onStopTextEdit,
+  onTocJump,
   scale = 1,
   pageWidth,
   pageHeight,
@@ -132,6 +133,14 @@ export default function CanvasBlock({
           const dy = Math.abs(t.clientY - start.y);
           // Slightly more forgiving threshold than mouse — fingers wobble.
           if (dx < 8 && dy < 8) {
+            // TOC click → jump to chapter page on tap.
+            const row = e.target?.closest?.('[data-toc-target]');
+            if (block.is_toc && row && onTocJump) {
+              e.stopPropagation();
+              const idx = parseInt(row.getAttribute('data-toc-target'), 10);
+              if (!Number.isNaN(idx)) onTocJump(idx);
+              return;
+            }
             e.stopPropagation();
             onStartTextEdit(block.id);
           }
@@ -147,6 +156,14 @@ export default function CanvasBlock({
           const dx = Math.abs(e.clientX - start.x);
           const dy = Math.abs(e.clientY - start.y);
           if (dx < 4 && dy < 4) {
+            // TOC click → jump to chapter page, never enter edit on a link.
+            const row = e.target?.closest?.('[data-toc-target]');
+            if (block.is_toc && row && onTocJump) {
+              e.stopPropagation();
+              const idx = parseInt(row.getAttribute('data-toc-target'), 10);
+              if (!Number.isNaN(idx)) onTocJump(idx);
+              return;
+            }
             e.stopPropagation();
             onStartTextEdit(block.id);
           }

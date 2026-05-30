@@ -508,13 +508,13 @@ export default function Editor() {
         const title = (tmp.textContent || '').trim() || `Chapter ${entries.length + 1}`;
         const oneBased = pi + 1;
         const displayed = pi === last ? '' : oneBased >= start ? String(oneBased - start + 1) : '';
-        entries.push({ title, displayed });
+        entries.push({ title, displayed, pageIndex: pi });
       });
     });
     if (entries.length === 0) return null;
     const rows = entries
       .map((e) =>
-        `<p style="display:flex;justify-content:space-between;gap:1em;margin:0 0 .35em 0;">` +
+        `<p data-toc-target="${e.pageIndex}" style="display:flex;justify-content:space-between;gap:1em;margin:0 0 .35em 0;cursor:pointer;">` +
         `<span>${e.title}</span><span>${e.displayed}</span>` +
         `</p>`
       ).join('');
@@ -951,6 +951,15 @@ export default function Editor() {
     setEditingTextId(null);
   }, [navStep.next]);
 
+  // Jump straight to a chapter from a TOC click (or tap on iPad).
+  const onTocJump = useCallback((pageIndex) => {
+    if (pageIndex == null || !book?.pages) return;
+    if (pageIndex < 0 || pageIndex >= book.pages.length) return;
+    setActivePageIndex(pageIndex);
+    setSelectedBlockId(null);
+    setEditingTextId(null);
+  }, [book?.pages]);
+
   // Keep the active page's thumbnail in view in the left sidebar when the
   // active page changes (arrow click, keyboard ←/→, swipe, etc.). Without
   // this the user can advance past the visible scroll region and lose the
@@ -1175,6 +1184,7 @@ export default function Editor() {
           onStopTextEdit={() => setEditingTextId(null)}
           onAssetDrop={(asset, pos) => addImageBlockFromAsset(asset, pos, idx)}
           onFocusPage={() => setActivePageIndex(idx)}
+          onTocJump={onTocJump}
         />
       );
     };
@@ -1557,6 +1567,7 @@ export default function Editor() {
                 onStopTextEdit={() => setEditingTextId(null)}
                 onAssetDrop={(asset, pos) => addImageBlockFromAsset(asset, pos)}
                 onFocusPage={() => setActivePageIndex(activePageIndex)}
+                onTocJump={onTocJump}
               />
             )}
           </div>
@@ -1700,6 +1711,7 @@ function PageCanvas({
   onStopTextEdit,
   onAssetDrop,
   onFocusPage,
+  onTocJump,
   viewMode = 'single',
   isFocused = true,
   forExport = false,
@@ -1915,6 +1927,7 @@ function PageCanvas({
             onChange={onChangeBlock}
             onStartTextEdit={onStartTextEdit}
             onStopTextEdit={onStopTextEdit}
+            onTocJump={onTocJump}
             scale={scale}
             pageWidth={pageSize.width}
             pageHeight={pageSize.height}

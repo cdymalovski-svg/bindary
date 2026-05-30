@@ -9,7 +9,7 @@ const ALLOWED_TAGS = [
   'b', 'i', 'u', 'em', 'strong', 'p', 'br', 'span', 'div',
   'ul', 'ol', 'li', 'a',
 ];
-const ALLOWED_ATTR = ['style', 'class', 'href', 'target', 'rel', 'data-placeholder'];
+const ALLOWED_ATTR = ['style', 'class', 'href', 'target', 'rel', 'data-placeholder', 'data-toc-target'];
 
 export function sanitizeHtml(input) {
   if (input == null) return '';

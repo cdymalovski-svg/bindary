@@ -89,6 +89,12 @@ Build me a book template app to be able to add texts and illustrations, page num
 - **Canvas cache-busting**: Editor maintains an `assetCacheBuster` integer bumped after any replace. Canvas `<img>` URLs append `?v=<n>` so previously-cached failures are refetched and existing book pages light up the moment the user re-uploads, with no save/reload required.
 - New tests in `tests/test_assets_api.py::TestAssetReplace`: verifies id+path preservation, byte overwrite, 404 on missing asset, and 400 on non-image uploads. All 56 backend tests now pass.
 
+## What's been implemented (2026-05-30 / iteration 22 — clickable TOC rows)
+- TOC rows are now **clickable hyperlinks**. Each row is emitted with `data-toc-target="<page-index>"` and `cursor: pointer`. `CanvasBlock` intercepts mouseup / touchend on `[data-toc-target]` and routes to `onTocJump(idx)` → `setActivePageIndex(idx)` — only when the block is NOT in edit mode (clicks inside an editing TOC still position the caret normally).
+- Works on mouse and iPad touch. The sidebar thumbnails also render the data attribute but the thumbnail click is intercepted by its parent button — no behaviour conflict.
+- Sanitiser `ALLOWED_ATTR` whitelist extended to include `data-toc-target` so DOMPurify doesn't strip it on save/load.
+- Verified by a 3-chapter book test: clicked "Chapter 2" row → canvas jumped to page 2, sidebar thumbnail 2 became active, page header switched to "PAGE 2".
+
 ## What's been implemented (2026-05-30 / iteration 21 — live-sync TOC)
 - **Table of Contents now auto-updates.** TOC blocks inserted via the toolbar are tagged `is_toc: true`. A live-sync `useEffect` watches `book` and any change to chapters (add / delete / rename / reorder pages / change `page_number_start`) regenerates the TOC html in-place so the displayed entries always match reality. Skips the run while the user is actively editing the TOC block so the caret never gets yanked. Uses `skipNextAutoSaveRef` so passive TOC refreshes piggy-back on the originating user edit's autosave instead of triggering a second round-trip.
 - Pure `computeTocPayload(book)` helper extracted so the one-shot inserter and the live-sync use identical entry logic — they can never drift.
