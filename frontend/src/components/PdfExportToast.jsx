@@ -45,7 +45,7 @@ export default function PdfExportToast({
       <div className="px-4 pb-1 flex items-baseline gap-2 justify-between">
         <p className="text-[11px] text-ink-mute truncate">{stage || 'Starting…'}</p>
         <p className="text-[11px] text-ink-mute tabular-nums shrink-0">
-          {hasFraction ? `${done}/${total}` : `${elapsedSec}s`}
+          {hasFraction ? `${done}/${total} · ${elapsedSec}s` : `${elapsedSec}s`}
         </p>
       </div>
 
