@@ -228,6 +228,11 @@ Build me a book template app to be able to add texts and illustrations, page num
 - Multi-user accounts + library sharing.
 - Pan-while-zoomed gesture on iPad (drag canvas while pinch >100%).
 
+## What's been implemented (2026-05-31 / iteration 31 — Progress bar stays visible between phases)
+- **Bug (production)**: The progress bar would visibly "disappear" between phases — e.g. after "rendering chunk 4/5" the next stage ("merging chunks", "uploading", or Ghostscript warming up before its first page tick) emits a stage string with no numeric fraction, which collapsed the bar to a 30%-wide indeterminate sweep that users couldn't see well. The duration counter ticked alone for several seconds before the next phase's fraction kicked in.
+- **Fix in `Editor.onExportPdf`**: persist the last seen `{done, total}` across poll iterations. When the current stage has no fraction (e.g. "merging chunks", "uploading", "converting to PDF/X-1a" pre-tick), the toast now keeps the bar pinned at the previous phase's 100% so progress looks continuous. As soon as the next phase emits its first numeric tick, the bar resets to that phase's denominator.
+- Verified on the preview environment by sampling the toast once per second through a full Print-ready export — `[BAR]` (determinate) mode held continuously from "rendering chunk 1/1" → "converting to PDF/X-1a (1/4)" → "(2/4)" → …, no indeterminate sweep mid-export.
+
 ## What's been implemented (2026-05-31 / iteration 30 — PDF export Cancel)
 - **Cancel button on the export toast.** The progress toast (`PdfExportToast`) now wires its X button to a backend cancellation flow so users can abort runaway exports instead of waiting 10 minutes.
 - **Backend**: `POST /api/books/{book_id}/pdf-jobs/{job_id}/cancel` marks the job's `cancel_requested` flag. The worker calls `_check_cancelled()` at every coarse checkpoint (between chunks, before/after Ghostscript), raising an internal `_Cancelled` exception that flips the job to `failed` with `error="Cancelled by user"` and frees resources immediately. The status endpoint surfaces `cancel_requested: true` so the frontend can stop polling without waiting for the worker to notice.

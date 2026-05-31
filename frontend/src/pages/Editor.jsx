@@ -1132,6 +1132,15 @@ export default function Editor() {
       // stage string so the toast renders a real progress bar.
       // Matches "converting to PDF/X-1a (12/100)" and "rendering chunk 2/5".
       const STAGE_FRACTION = /\((\d+)\s*\/\s*(\d+)\)|(\d+)\s*\/\s*(\d+)\s*$/;
+      // Persist the last numeric fraction we saw. Between rendering-chunks
+      // and the next ticking phase (merging / uploading / Ghostscript warm-
+      // up) the stage string has no fraction — without this, the bar would
+      // collapse to an easy-to-miss indeterminate sweep and the user would
+      // think it disappeared. We keep the bar pinned full (`done = total`)
+      // during these short transitions so progress always looks continuous.
+      // Reset on phase change (different denominator) so the next phase
+      // restarts cleanly.
+      let lastFraction = { done: 0, total: 0 };
       while (Date.now() - start < 600_000) {
         if (cancelState.cancelled) {
           // Local cancel already fired the backend cancel request. Bail.
@@ -1169,6 +1178,17 @@ export default function Editor() {
         if (match) {
           done = parseInt(match[1] || match[3], 10);
           total = parseInt(match[2] || match[4], 10);
+          // Phase change? (new denominator) Reset the sticky carry-over so
+          // the bar restarts from the new phase's first tick.
+          lastFraction = { done, total };
+        } else if (lastFraction.total > 0) {
+          // Transitional stage with no numeric fraction (e.g. "merging
+          // chunks", "uploading", or Ghostscript warming up before its
+          // first page tick). Pin the bar at 100% of the last known phase
+          // so the user sees continuous progress instead of a vanishing
+          // sweep.
+          done = lastFraction.total;
+          total = lastFraction.total;
         }
         toast.custom(
           () => renderToast({ stage: lastStage || 'Working…', done, total, elapsedSec }),
