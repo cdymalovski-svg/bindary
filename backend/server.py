@@ -1022,6 +1022,29 @@ async def pdf_health():
         "chromium_ready_cached": _chromium_ready,
         "python": f"{__import__('sys').version_info.major}.{__import__('sys').version_info.minor}",
     }
+    # Ghostscript probe — Print-ready (PDF/X-1a) exports fail silently
+    # without `gs`. We detect via `gs --version` because some images
+    # ship a non-executable `gs` stub from the apt index.
+    try:
+        import shutil as _shutil
+        gs_path = _shutil.which("gs")
+        info["ghostscript_path"] = gs_path
+        if gs_path:
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    gs_path, "--version",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                out, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+                info["ghostscript_version"] = out.decode().strip()
+            except Exception as e:
+                info["ghostscript_version_error"] = str(e)[:200]
+        # stdbuf — used to force line-buffered Ghostscript stdout so the
+        # streaming progress bar updates in real time.
+        info["stdbuf_path"] = _shutil.which("stdbuf")
+    except Exception as e:
+        info["ghostscript_probe_error"] = str(e)[:200]
     # Live launch probe — the cached flag can lie if the binary was wiped.
     try:
         info["chromium_launchable"] = await _try_launch_chromium()
@@ -1053,12 +1076,18 @@ async def pdf_health():
         info["memory_error"] = str(e)[:200]
 
     # Recent failed jobs (last 5) — fastest way to see what's been blowing up.
+    # We also report `failed_count_total` so even after the 30-min TTL
+    # purges old failures, a non-zero count is a flag that something has
+    # been unstable. Helpful when a user reports "it kept failing" but the
+    # `recent_failures` list is already empty.
     try:
         recent = await db.pdf_jobs.find(
             {"status": "failed"}, {"_id": 0, "job_id": 1, "book_id": 1,
                                     "error": 1, "stage": 1, "finished_at": 1},
         ).sort("finished_at", -1).to_list(5)
         info["recent_failures"] = recent
+        info["failed_count_total"] = await db.pdf_jobs.count_documents({"status": "failed"})
+        info["ready_count_total"] = await db.pdf_jobs.count_documents({"status": "ready"})
     except Exception as e:
         info["recent_failures_error"] = str(e)[:200]
 
