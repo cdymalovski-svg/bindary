@@ -417,6 +417,240 @@ def _collect_image_paths(book: dict) -> list[str]:
     return paths
 
 
+# IngramSpark / general commercial print: 0.125" bleed (~3 mm) on every
+# OUTSIDE edge of the cover spread. The two inner edges between back/spine
+# and spine/front do not bleed.
+COVER_BLEED_IN = 0.125
+PX_PER_INCH = 96
+COVER_BLEED_PX = round(COVER_BLEED_IN * PX_PER_INCH)  # = 12
+
+# IngramSpark white-paper interior caliper. Spine width (in) =
+# interior_page_count * 0.002252. We round generously for kids' books
+# (lots of art + heavy paper) but expose it to the caller so they can
+# match a specific printer.
+DEFAULT_PAPER_CALIPER_IN = 0.002252
+
+
+def _build_cover_spread_html(
+    book: dict,
+    image_data_urls: dict,
+    spine_width_in: Optional[float] = None,
+    paper_caliper_in: float = DEFAULT_PAPER_CALIPER_IN,
+) -> tuple[str, int, int]:
+    """Build a single-page wide HTML for the cover spread:
+
+        ┌──────────┬─────┬──────────┐
+        │   BACK   │SPINE│  FRONT   │   (+ 0.125" bleed all around)
+        └──────────┴─────┴──────────┘
+
+    Layout is IngramSpark perfect-bound: when you look at the printed cover
+    laid flat from the front, the back cover is on the left, the spine in
+    the middle, and the front cover on the right. The "front cover" is
+    `pages[0]` (the cover the editor designs); the "back cover" is the
+    final page (`pages[-1]`).
+    """
+    page_size_key = book.get("page_size") or "a4"
+    page_w, page_h = PAGE_SIZES_PX.get(page_size_key, PAGE_SIZES_PX["a4"])
+    pages = book.get("pages") or []
+    total = len(pages)
+    if total < 1:
+        raise ValueError("Cover spread requires at least one page in the book")
+
+    # Spine width: explicit user override beats the page-count formula.
+    # When the book has fewer than 24 interior pages, the spine is too
+    # thin for printing — clamp to a 1 mm minimum so we still render.
+    if spine_width_in is None:
+        # interior pages = total - 2 (subtract front + back covers).
+        interior_pages = max(0, total - 2)
+        spine_width_in = interior_pages * paper_caliper_in
+    spine_px = max(4, round(float(spine_width_in) * PX_PER_INCH))
+
+    # Trim dimensions = back + spine + front (no bleed yet).
+    trim_w = page_w * 2 + spine_px
+    trim_h = page_h
+    # Final canvas = trim + bleed all around.
+    total_w = trim_w + COVER_BLEED_PX * 2
+    total_h = trim_h + COVER_BLEED_PX * 2
+
+    back_idx = total - 1
+    front_idx = 0
+    # Reuse the same page renderer the interior uses — same fonts, same
+    # blocks, same artwork. We treat the spread as ONE page so we skip the
+    # page-break-after class.
+    back_html = _render_page(
+        pages[back_idx], back_idx, total, 1, page_w, page_h, image_data_urls
+    )
+    front_html = _render_page(
+        pages[front_idx], front_idx, total, 1, page_w, page_h, image_data_urls
+    )
+
+    # Spine background — try to harmonise with the front cover so the
+    # printed object reads as one design. Falls back to dark editorial
+    # background if the cover doesn't declare a colour.
+    spine_bg = _css_color(pages[front_idx].get("background_color"), "#1C1B19")
+
+    css = (
+        f"{GOOGLE_FONTS_IMPORT}"
+        f"@page {{ size: {total_w}px {total_h}px; margin: 0; }}"
+        "html, body { margin: 0; padding: 0; background: #FFFFFF; "
+        "-webkit-print-color-adjust: exact; print-color-adjust: exact; }"
+        "* { box-sizing: border-box; }"
+        "p, h1, h2, h3, h4, h5, h6, ul, ol, blockquote, pre, figure { margin: 0; padding: 0; }"
+        "ul, ol { list-style: none; }"
+        f".spread {{ position: relative; width: {total_w}px; height: {total_h}px; "
+        f"background: {spine_bg}; }}"
+        # Wrap each half so the existing absolute-positioned blocks inside
+        # `book-page` stay anchored to their own page rectangle.
+        f".cover-slot {{ position: absolute; width: {page_w}px; height: {page_h}px;"
+        f" top: {COVER_BLEED_PX}px; overflow: hidden; }}"
+        f".slot-back  {{ left: {COVER_BLEED_PX}px; }}"
+        f".slot-front {{ left: {COVER_BLEED_PX + page_w + spine_px}px; }}"
+        # Bleed-zone tint (printer side) — pure spine colour so the bled
+        # area visually continues the spine instead of producing a white
+        # halo on trim.
+        f".bleed-band {{ position: absolute; background: {spine_bg}; }}"
+    )
+
+    bleed_bands = (
+        f'<div class="bleed-band" style="top:0;left:0;width:100%;height:{COVER_BLEED_PX}px"></div>'
+        f'<div class="bleed-band" style="bottom:0;left:0;width:100%;height:{COVER_BLEED_PX}px"></div>'
+        f'<div class="bleed-band" style="top:0;left:0;width:{COVER_BLEED_PX}px;height:100%"></div>'
+        f'<div class="bleed-band" style="top:0;right:0;width:{COVER_BLEED_PX}px;height:100%"></div>'
+    )
+
+    html = (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        f"<style>{css}</style></head>"
+        f"<body><div class='spread'>"
+        f"{bleed_bands}"
+        f"<div class='cover-slot slot-back'>{back_html}</div>"
+        f"<div class='cover-slot slot-front'>{front_html}</div>"
+        f"</div></body></html>"
+    )
+    return html, total_w, total_h
+
+
+async def build_cover_spread_pdf(
+    book: dict,
+    get_image: Callable[[str], tuple[bytes, str]],
+    public_base_url: Optional[str] = None,
+    progress_cb: Optional[Callable[[str], None]] = None,
+    spine_width_in: Optional[float] = None,
+    paper_caliper_in: float = DEFAULT_PAPER_CALIPER_IN,
+) -> bytes:
+    """Render the front-cover + spine + back-cover as a single wide PDF
+    page with 0.125" bleed on every outside edge. The result is the
+    print-ready cover file IngramSpark (and most other perfect-bound POD
+    printers) expect: one PDF, one page, BACK | SPINE | FRONT layout."""
+
+    def _emit(stage: str) -> None:
+        if progress_cb is None:
+            return
+        try:
+            progress_cb(stage)
+        except Exception:
+            pass
+
+    if public_base_url:
+        os.environ["PUBLIC_BACKEND_URL"] = public_base_url
+
+    _emit("preparing chromium")
+    await ensure_chromium_installed()
+
+    image_cache: dict[str, tuple[bytes, str]] = {}
+
+    async def _handle_route(route):
+        req_url = route.request.url
+        marker = "/api/files/"
+        if marker in req_url:
+            key = req_url.split(marker, 1)[1].split("?", 1)[0]
+            cached = image_cache.get(key)
+            if cached is None:
+                try:
+                    raw, ctype = await asyncio.to_thread(get_image, key)
+                    if not raw:
+                        await route.fulfill(status=404, body=b"")
+                        return
+                    cached = (raw, ctype or "image/png")
+                    image_cache[key] = cached
+                except Exception:
+                    await route.fulfill(status=502, body=b"")
+                    return
+            data, ctype = cached
+            await route.fulfill(status=200, body=data, content_type=ctype)
+            return
+        await route.continue_()
+
+    html, total_w, total_h = _build_cover_spread_html(
+        book, {}, spine_width_in=spine_width_in, paper_caliper_in=paper_caliper_in
+    )
+    log.info(
+        "Cover spread: %dx%d px (trim %dx%d, bleed %dpx each side, spine %d px)",
+        total_w, total_h,
+        total_w - 2 * COVER_BLEED_PX, total_h - 2 * COVER_BLEED_PX,
+        COVER_BLEED_PX,
+        total_w - 2 * COVER_BLEED_PX - 2 * PAGE_SIZES_PX.get(book.get("page_size") or "a4", PAGE_SIZES_PX["a4"])[0],
+    )
+
+    async with async_playwright() as pw:
+        _emit("launching chromium")
+        browser = await pw.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
+                "--disable-background-networking", "--no-zygote",
+            ],
+        )
+        try:
+            _emit("rendering cover spread")
+            context = await browser.new_context(viewport={"width": total_w, "height": total_h})
+            try:
+                page = await context.new_page()
+                await page.route("**/api/files/**", _handle_route)
+                await page.set_content(html, wait_until="domcontentloaded", timeout=30_000)
+                try:
+                    await page.evaluate(
+                        "Promise.race(["
+                        "  (document.fonts ? document.fonts.ready : Promise.resolve()),"
+                        "  new Promise(r => setTimeout(r, 3000))"
+                        "])"
+                    )
+                except Exception:
+                    pass
+                try:
+                    await page.evaluate(
+                        """
+                        Promise.race([
+                          Promise.all(Array.from(document.images).map(img =>
+                            img.complete
+                              ? Promise.resolve()
+                              : new Promise(r => {
+                                  img.addEventListener('load', r, { once: true });
+                                  img.addEventListener('error', r, { once: true });
+                                })
+                          )),
+                          new Promise(r => setTimeout(r, 20000))
+                        ])
+                        """
+                    )
+                except Exception:
+                    pass
+                pdf_bytes = await page.pdf(
+                    width=f"{total_w}px",
+                    height=f"{total_h}px",
+                    print_background=True,
+                    prefer_css_page_size=True,
+                    margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
+                )
+            finally:
+                await context.close()
+        finally:
+            await browser.close()
+
+    _emit("done")
+    return pdf_bytes
+
+
 async def build_book_pdf(
     book: dict,
     get_image: Callable[[str], tuple[bytes, str]],

@@ -1013,12 +1013,21 @@ export default function Editor() {
   const onExportPdf = async (range = null, options = {}) => {
     const previewInTab = options?.previewInTab === true;
     const pdfx = options?.pdfx === true;
+    const coverSpread = options?.coverSpread === true;
+    const spineWidthIn = options?.spineWidthIn;
     if (!book) return;
     setExporting(true);
     const toastId = 'pdf-export';
-    const rangeLabel = range ? ` (pages ${range.start}–${range.end})` : '';
+    let kindLabel;
+    if (coverSpread) {
+      kindLabel = ' cover spread';
+    } else if (range) {
+      kindLabel = ` (pages ${range.start}–${range.end})`;
+    } else {
+      kindLabel = '';
+    }
     const modeLabel = pdfx ? ' · Print-ready' : '';
-    toast.loading(`Building PDF${rangeLabel}${modeLabel}…`, { id: toastId });
+    toast.loading(`Building PDF${kindLabel}${modeLabel}…`, { id: toastId });
     const t0 = performance.now();
     const BASE = process.env.REACT_APP_BACKEND_URL;
     try {
@@ -1031,6 +1040,8 @@ export default function Editor() {
       const bodyObj = {};
       if (range) { bodyObj.start_page = range.start; bodyObj.end_page = range.end; }
       if (pdfx) bodyObj.pdfx = true;
+      if (coverSpread) bodyObj.cover_spread = true;
+      if (spineWidthIn != null) bodyObj.spine_width_in = spineWidthIn;
       const body = Object.keys(bodyObj).length ? JSON.stringify(bodyObj) : undefined;
       const startResp = await fetch(`${BASE}/api/books/${book.id}/pdf-jobs`, {
         method: 'POST',

@@ -89,6 +89,28 @@ Build me a book template app to be able to add texts and illustrations, page num
 - **Canvas cache-busting**: Editor maintains an `assetCacheBuster` integer bumped after any replace. Canvas `<img>` URLs append `?v=<n>` so previously-cached failures are refetched and existing book pages light up the moment the user re-uploads, with no save/reload required.
 - New tests in `tests/test_assets_api.py::TestAssetReplace`: verifies id+path preservation, byte overwrite, 404 on missing asset, and 400 on non-image uploads. All 56 backend tests now pass.
 
+## What's been implemented (2026-05-31 / iteration 24 — Print-ready cover spread)
+- **Cover spread export**: new "Print-ready cover" section in the Export popover. One click produces a single wide PDF in IngramSpark layout — `BACK | SPINE | FRONT` with 0.125" bleed on every outside edge. Filename suffix `_cov.pdf` (or `_cov_pdfx.pdf` with PDF/X-1a). Spine width auto-computes from `(page_count − 2) × 0.002252` inches (IngramSpark white-paper caliper) or accepts a manual override per printer.
+- **New `build_cover_spread_pdf` in `pdf_builder.py`** — reuses `_render_page` so the cover artwork is byte-identical to the editor. Spine background harmonises with the front cover's `background_color`. Bleed bands tint outside-edge area in spine colour for clean trim.
+- **API**: `POST /api/books/{id}/pdf-jobs` accepts `{cover_spread: bool, spine_width_in: float}`. Combines with `pdfx` for the full PDF/X-1a cover deliverable.
+- **Verified**: Square 8.33" book + 0.25" spine → 17.17" × 8.58" final spread (= 2 × 8.33" trim + 0.25" spine + 0.125" bleed each side). PDF/X-1a markers present when combined with `pdfx=true`.
+- **Test**: `test_cover_spread_export_produces_single_wide_page_with_bleed` asserts single-page, trim+bleed math, and filename suffix. 89/89 backend tests pass.
+
+### IngramSpark print-guide compliance status
+| Requirement | Status |
+|---|---|
+| PDF/X-1a:2001 covers | ✅ |
+| CMYK / no /DeviceRGB / no /sRGB | ✅ |
+| All fonts embedded | ✅ |
+| Cover bleed 0.125" outside edges | ✅ NEW |
+| Cover layout BACK ∣ SPINE ∣ FRONT | ✅ NEW |
+| 300 ppi cap | ✅ |
+| Single-page interior PDFs | ✅ |
+| No crop / reg marks | ✅ |
+| `_cov.pdf` naming | ✅ |
+| **Interior bleed 0.125" on top/bottom/outside** | ❌ **Gap** — interior still renders at trim size |
+| Total ink ≤ 240% | 🟡 effectively yes via default CMYK ICC, not enforced |
+
 ## What's been implemented (2026-05-31 / iteration 23 — Print-ready PDF/X-1a:2001 export)
 - **New toggle in the Export popover**: "Print-ready (PDF/X-1a:2001)". When on, the rendered RGB PDF is post-processed through Ghostscript producing a fully PDF/X-1a:2001-compliant file: PDF 1.3, all colour converted to CMYK, RGB / sRGB profiles stripped, all fonts embedded & subsetted, transparency flattened, SWOP v2 OutputIntent baked in, /GTS_PDFX conformance marker present.
 - **Backend** — new `pdfx_converter.py` module wraps `gs -dPDFX … -sColorConversionStrategy=CMYK -sOutputICCProfile=…/default_cmyk.icc` plus a generated `PDFX_def.ps` that defines the OutputIntent dictionary. Best-effort auto-install of ghostscript on first request (production-safe) — clean error surface if unavailable. Filename gets a `_pdfx` suffix so print-ready exports are unmistakable in Finder.

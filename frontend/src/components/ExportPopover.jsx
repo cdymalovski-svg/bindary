@@ -43,6 +43,15 @@ export default function ExportPopover({ bookId, totalPages, exporting, onExport,
   useEffect(() => {
     try { localStorage.setItem('bindery_pdfx', pdfx ? '1' : '0'); } catch {}
   }, [pdfx]);
+  // Optional explicit spine width (inches) — used when exporting the cover
+  // spread. Empty string = auto-compute from interior page count + paper
+  // caliper (IngramSpark white-paper default 0.002252 in/page).
+  const [spineWidthIn, setSpineWidthIn] = useState(() => {
+    try { return localStorage.getItem('bindery_spine_width_in') || ''; } catch { return ''; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('bindery_spine_width_in', spineWidthIn); } catch {}
+  }, [spineWidthIn]);
   const [history, setHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
 
@@ -107,6 +116,16 @@ export default function ExportPopover({ bookId, totalPages, exporting, onExport,
   const submitFull = () => {
     setOpen(false);
     onExport(null, { previewInTab, pdfx });
+  };
+
+  // Cover spread = a single wide PDF with BACK | SPINE | FRONT layout plus
+  // 0.125" bleed on every outside edge — the exact file IngramSpark and
+  // similar perfect-bound POD printers expect.
+  const submitCoverSpread = () => {
+    setOpen(false);
+    const spineParsed = parseFloat(spineWidthIn);
+    const spine = Number.isFinite(spineParsed) && spineParsed > 0 ? spineParsed : null;
+    onExport(null, { previewInTab, pdfx, coverSpread: true, spineWidthIn: spine });
   };
 
   return (
@@ -241,6 +260,47 @@ export default function ExportPopover({ bookId, totalPages, exporting, onExport,
             </div>
           )}
         </form>
+
+        {/* Cover spread export — IngramSpark / commercial print layout:
+            BACK | SPINE | FRONT on one wide PDF page with 0.125" bleed. */}
+        <div className="px-4 py-3 border-b border-rule" data-testid="cover-spread-section">
+          <p className="label-caps text-ink-mute mb-1">Print-ready cover</p>
+          <p className="text-xs text-ink-mute mb-2 leading-snug">
+            Single wide PDF: back · spine · front, with 0.125&quot; bleed on every outside edge —
+            matches IngramSpark / KDP cover-file specs.
+          </p>
+          <div className="flex items-end gap-2 mb-2">
+            <div className="flex-1 space-y-1">
+              <Label htmlFor="spine-width" className="text-[10px] text-ink-mute uppercase tracking-wider">
+                Spine width (in)
+              </Label>
+              <Input
+                id="spine-width"
+                type="number"
+                step="0.001"
+                min={0}
+                placeholder="auto"
+                value={spineWidthIn}
+                onChange={(e) => setSpineWidthIn(e.target.value)}
+                className="h-8 bg-white border-rule rounded-sm text-sm"
+                data-testid="cover-spread-spine-width"
+              />
+            </div>
+            <Button
+              type="button"
+              onClick={submitCoverSpread}
+              disabled={exporting || totalPages < 1}
+              className="bg-terracotta hover:bg-terracotta-dark text-paper rounded-sm h-8 px-3"
+              data-testid="export-cover-spread"
+            >
+              Export cover
+            </Button>
+          </div>
+          <p className="text-[10px] text-ink-mute leading-snug">
+            Leave spine blank to auto-compute from page count (white paper, 0.002252&quot; per page).
+            For a 100-page book that&apos;s ~0.22&quot;.
+          </p>
+        </div>
 
         {/* History list */}
         <div className="px-4 py-3">

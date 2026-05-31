@@ -331,3 +331,36 @@ class TestPdfExportRangeAndHistory:
             assert b"/DeviceRGB" not in data, "DeviceRGB leaked into PDF/X output"
         finally:
             s.delete(f"{API}/books/{bid}")
+
+    def test_cover_spread_export_produces_single_wide_page_with_bleed(self, s):
+        """Cover spread builds a single wide PDF: back + spine + front
+        with 0.125" bleed on every outside edge. Verifies the trim math
+        and that the filename gets the `_cov` suffix IngramSpark expects."""
+        bid = self._make_book_with_pages(s, 3)
+        try:
+            start = s.post(
+                f"{API}/books/{bid}/pdf-jobs",
+                json={"cover_spread": True, "spine_width_in": 0.5},
+                timeout=15,
+            )
+            assert start.status_code == 200, start.text
+            job_id = start.json()["job_id"]
+            final = _wait_for_ready(s, bid, job_id, timeout=120)
+            assert final["status"] == "ready", final
+            assert final["filename"].endswith("_cov.pdf"), final["filename"]
+            dl = s.get(f"{API}/books/{bid}/pdf-jobs/{job_id}/download", timeout=30)
+            assert dl.status_code == 200
+            from io import BytesIO
+            from pypdf import PdfReader
+            reader = PdfReader(BytesIO(dl.content))
+            assert len(reader.pages) == 1, "Cover spread must be a single page"
+            box = reader.pages[0].mediabox
+            w_pt, h_pt = float(box.width), float(box.height)
+            # The test book uses a4 pages (794x1123 px → 8.27"x11.70").
+            # Trim = back (8.27) + spine (0.5) + front (8.27) = 17.04"
+            # + 0.125" bleed each outside edge = 17.29" wide x 11.95" tall.
+            w_in, h_in = w_pt / 72.0, h_pt / 72.0
+            assert 17.0 < w_in < 17.6, f"unexpected spread width {w_in:.2f}\""
+            assert 11.8 < h_in < 12.1, f"unexpected spread height {h_in:.2f}\""
+        finally:
+            s.delete(f"{API}/books/{bid}")

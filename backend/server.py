@@ -615,6 +615,8 @@ async def _run_pdf_job(
     start_page: Optional[int] = None,
     end_page: Optional[int] = None,
     pdfx: bool = False,
+    cover_spread: bool = False,
+    spine_width_in: Optional[float] = None,
 ) -> None:
     """Background worker — builds the PDF, uploads bytes to object storage,
     flips the Mongo record to `ready` (or `failed`).
@@ -671,11 +673,20 @@ async def _run_pdf_job(
         is_range = start_page is not None or end_page is not None
 
         _on_stage("starting")
-        pdf_bytes = await build_book_pdf(
-            book, get_object, public_base_url=base_url, progress_cb=_on_stage,
-            start_page=applied_start if is_range else None,
-            end_page=applied_end if is_range else None,
-        )
+        if cover_spread:
+            # Cover spread overrides any range — by definition it builds
+            # the cover ONLY, using pages[0] and pages[-1].
+            from pdf_builder import build_cover_spread_pdf
+            pdf_bytes = await build_cover_spread_pdf(
+                book, get_object, public_base_url=base_url, progress_cb=_on_stage,
+                spine_width_in=spine_width_in,
+            )
+        else:
+            pdf_bytes = await build_book_pdf(
+                book, get_object, public_base_url=base_url, progress_cb=_on_stage,
+                start_page=applied_start if is_range else None,
+                end_page=applied_end if is_range else None,
+            )
         # Post-process to PDF/X-1a (CMYK, embedded fonts, OutputIntent) if
         # the caller requested a print-ready file. Runs only when the toggle
         # is on — for everyday previewing the raw RGB PDF is much faster.
@@ -690,10 +701,15 @@ async def _run_pdf_job(
         # downloads on disk: "MyBook_pp_1-50.pdf" / "MyBook_pp_51-112.pdf".
         # "_pdfx" suffix makes print-ready exports unmistakable in Finder.
         pdfx_suffix = "_pdfx" if pdfx else ""
-        filename = (
-            f"{safe}_pp_{applied_start}-{applied_end}{pdfx_suffix}.pdf"
-            if is_range else f"{safe}{pdfx_suffix}.pdf"
-        )
+        if cover_spread:
+            # IngramSpark-style filename hint — "_cov" matches their
+            # cover-file naming convention (`isbn_cov.pdf`).
+            filename = f"{safe}_cov{pdfx_suffix}.pdf"
+        else:
+            filename = (
+                f"{safe}_pp_{applied_start}-{applied_end}{pdfx_suffix}.pdf"
+                if is_range else f"{safe}{pdfx_suffix}.pdf"
+            )
         # Upload PDF bytes to shared object storage so any pod can serve them.
         _on_stage("uploading")
         object_path = f"{_PDF_OBJECT_PREFIX}/{job_id}.pdf"
@@ -731,11 +747,17 @@ async def _run_pdf_job(
 class PdfJobStartRequest(BaseModel):
     """Optional 1-indexed inclusive page range. Both omitted = full book.
     `pdfx=true` runs the final PDF through Ghostscript to produce a
-    PDF/X-1a:2001-compliant CMYK file ready for commercial printing."""
+    PDF/X-1a:2001-compliant CMYK file ready for commercial printing.
+    `cover_spread=true` builds a print-ready cover spread PDF (back +
+    spine + front, with 0.125" bleed all around) instead of the
+    interior. `spine_width_in` overrides the auto-computed spine width
+    when the user knows their printer's paper caliper exactly."""
     model_config = ConfigDict(extra="ignore")
     start_page: Optional[int] = None
     end_page: Optional[int] = None
     pdfx: bool = False
+    cover_spread: bool = False
+    spine_width_in: Optional[float] = None
 
 
 @api_router.post("/books/{book_id}/pdf-jobs")
@@ -765,6 +787,13 @@ async def export_pdf_start(
     start_page = payload.start_page if payload else None
     end_page = payload.end_page if payload else None
     pdfx = bool(payload.pdfx) if payload else False
+    cover_spread = bool(payload.cover_spread) if payload else False
+    spine_width_in = payload.spine_width_in if payload else None
+    # Cover spread always overrides any explicit page range — the cover
+    # is, by definition, only pages[0] + pages[-1].
+    if cover_spread:
+        start_page = None
+        end_page = None
     if start_page is not None or end_page is not None:
         if start_page is None or end_page is None:
             raise HTTPException(400, "start_page and end_page must be provided together")
@@ -787,6 +816,8 @@ async def export_pdf_start(
         "start_page": start_page,
         "end_page": end_page,
         "pdfx": pdfx,
+        "cover_spread": cover_spread,
+        "spine_width_in": spine_width_in,
         "created_at": now.isoformat(),
         # Mongo TTL index uses a real Date — not an ISO string.
         "expires_at": now + timedelta(seconds=_PDF_JOB_TTL_SECONDS),
@@ -794,6 +825,7 @@ async def export_pdf_start(
     asyncio.create_task(_run_pdf_job(
         job_id, book_id, str(request.base_url).rstrip("/"),
         start_page=start_page, end_page=end_page, pdfx=pdfx,
+        cover_spread=cover_spread, spine_width_in=spine_width_in,
     ))
     return {"job_id": job_id, "status": "pending"}
 
