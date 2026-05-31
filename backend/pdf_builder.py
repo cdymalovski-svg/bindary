@@ -145,6 +145,30 @@ PAGE_SIZES_PX = {
 }
 PAGE_MARGIN_PX = 38  # 1cm @ 96dpi — matches frontend PAGE_MARGIN_PX (37.8 rounded).
 
+# IngramSpark / commercial-print interior bleed. Applied only when
+# `pdfx_bleed=True` is passed into build_book_pdf — adds 0.125" on top,
+# bottom, and the OUTSIDE edge of every page (the bind side stays flush).
+INTERIOR_BLEED_IN = 0.125
+INTERIOR_BLEED_PX = round(INTERIOR_BLEED_IN * 96)  # = 12
+
+
+def _page_bleed_sides(page_index: int) -> dict:
+    """Returns the per-page bleed in pixels by side. Convention: page index
+    0 is treated as a recto (right-hand page) — the first thing the reader
+    sees after opening the book — so even indices are right pages and odd
+    indices are left pages. The OUTSIDE edge of each page gets bleed; the
+    bind side stays flush against the spine."""
+    is_right_page = (page_index % 2 == 0)
+    return {
+        "top": INTERIOR_BLEED_PX,
+        "bottom": INTERIOR_BLEED_PX,
+        "right": INTERIOR_BLEED_PX if is_right_page else 0,
+        "left": INTERIOR_BLEED_PX if not is_right_page else 0,
+    }
+
+
+_ZERO_BLEED = {"top": 0, "right": 0, "bottom": 0, "left": 0}
+
 GOOGLE_FONTS_IMPORT = (
     "@import url('https://fonts.googleapis.com/css2?"
     "family=Abril+Fatface"
@@ -310,7 +334,18 @@ def _render_page(
     page_w: int,
     page_h: int,
     image_data_urls: dict,
+    bleed: Optional[dict] = None,
 ) -> str:
+    """Render a single page to HTML. When `bleed` is non-zero on any side,
+    the outer wrapper grows by `(left+right, top+bottom)` and the trim
+    content is offset into the bleed-padded area. The page background
+    fills the entire outer (including the bleed strip) so the printer's
+    trim cuts through colour, not through a white edge."""
+    bleed = bleed or _ZERO_BLEED
+    b_top, b_right, b_bottom, b_left = bleed["top"], bleed["right"], bleed["bottom"], bleed["left"]
+    outer_w = page_w + b_left + b_right
+    outer_h = page_h + b_top + b_bottom
+
     bg = page.get("background_color") or "#FFF8DC"
     full_bleed = bool(page.get("full_bleed"))
     margin = 0 if full_bleed else PAGE_MARGIN_PX
@@ -352,24 +387,63 @@ def _render_page(
 
     page_break = "" if page_index == total_pages - 1 else "page-break-after:always;"
 
+    # Background fill — fills the FULL outer rect so the bleed area shows
+    # the page colour, not white. For full-bleed pages this is the only
+    # bg layer; for non-full-bleed pages we additionally draw a margin-
+    # bounded fill (kept for parity with the editor's appearance).
+    bg_css = _css_color(bg, "#FFF8DC")
+    bg_layer_outer = (
+        f'<div style="position:absolute;top:0;left:0;'
+        f'width:{outer_w}px;height:{outer_h}px;background:{bg_css};"></div>'
+    )
+    if full_bleed:
+        bg_layers = bg_layer_outer
+    else:
+        # Margin-bounded fill matches the editor's inner page rect. Drawn
+        # ON TOP of the outer fill so the page reads identically to the
+        # editor — the outer fill only shows through in the bleed strip.
+        bg_layers = (
+            bg_layer_outer
+            + f'<div style="position:absolute;top:{b_top + margin}px;left:{b_left + margin}px;'
+            f'width:{inner_w}px;height:{inner_h}px;background:{bg_css};"></div>'
+        )
+
+    # The trim-area wrapper holds blocks + page number at their original
+    # (0,0)→(page_w, page_h) coordinates. We just translate it into the
+    # bleed-padded region. This way the existing block/page-number
+    # rendering needs zero further changes.
+    trim_wrapper_open = (
+        f'<div style="position:absolute;top:{b_top}px;left:{b_left}px;'
+        f'width:{page_w}px;height:{page_h}px;">'
+    )
+
     return (
         f'<div class="book-page" style="'
-        f"position:relative;width:{page_w}px;height:{page_h}px;"
+        f"position:relative;width:{outer_w}px;height:{outer_h}px;"
         f"background:#FFFFFF;overflow:hidden;{page_break}\">"
-        f'<div style="position:absolute;top:{margin}px;left:{margin}px;'
-        f'width:{inner_w}px;height:{inner_h}px;background:{_css_color(bg, "#FFF8DC")};"></div>'
+        f"{bg_layers}"
+        f"{trim_wrapper_open}"
         f"{blocks_html}"
         f"{page_number_html}"
-        f"</div>"
+        f"</div>"  # trim wrapper
+        f"</div>"  # book-page
     )
 
 
-def _build_html(book: dict, image_data_urls: dict, page_range: Optional[tuple[int, int]] = None) -> tuple[str, int, int]:
+def _build_html(
+    book: dict,
+    image_data_urls: dict,
+    page_range: Optional[tuple[int, int]] = None,
+    pdfx_bleed: bool = False,
+) -> tuple[str, int, int]:
     """Render a (slice of a) book to a self-contained HTML document.
 
     `page_range = (start, end)` renders pages[start:end] but still passes the
     GLOBAL page index to `_render_page`, so page numbering and cover/back-
-    cover detection stay correct when the book is rendered in chunks."""
+    cover detection stay correct when the book is rendered in chunks.
+
+    `pdfx_bleed=True` adds 0.125" bleed on top/bottom/outside of every page
+    — required by IngramSpark and most other commercial printers."""
     page_size_key = book.get("page_size") or "a4"
     page_w, page_h = PAGE_SIZES_PX.get(page_size_key, PAGE_SIZES_PX["a4"])
     pages = book.get("pages") or []
@@ -377,14 +451,28 @@ def _build_html(book: dict, image_data_urls: dict, page_range: Optional[tuple[in
     total_pages = len(pages)
     start, end = (0, total_pages) if page_range is None else page_range
 
+    # All pages share the same outer (@page) dimensions when bleed is on —
+    # bleed adds INTERIOR_BLEED_PX on one of left/right (the outside edge)
+    # for every page, regardless of parity, so the total width grows by the
+    # same amount on either side. Top/bottom always grow.
+    if pdfx_bleed:
+        outer_w = page_w + INTERIOR_BLEED_PX
+        outer_h = page_h + INTERIOR_BLEED_PX * 2
+    else:
+        outer_w, outer_h = page_w, page_h
+
     pages_html = "".join(
-        _render_page(pages[i], i, total_pages, page_number_start, page_w, page_h, image_data_urls)
+        _render_page(
+            pages[i], i, total_pages, page_number_start,
+            page_w, page_h, image_data_urls,
+            bleed=_page_bleed_sides(i) if pdfx_bleed else None,
+        )
         for i in range(start, end)
     )
 
     css = (
         f"{GOOGLE_FONTS_IMPORT}"
-        f"@page {{ size: {page_w}px {page_h}px; margin: 0; }}"
+        f"@page {{ size: {outer_w}px {outer_h}px; margin: 0; }}"
         "html, body { margin: 0; padding: 0; background: #FFFFFF; "
         "-webkit-print-color-adjust: exact; print-color-adjust: exact; }"
         "* { box-sizing: border-box; }"
@@ -402,7 +490,7 @@ def _build_html(book: dict, image_data_urls: dict, page_range: Optional[tuple[in
         f"<style>{css}</style></head>"
         f"<body>{pages_html}</body></html>"
     )
-    return html, page_w, page_h
+    return html, outer_w, outer_h
 
 
 def _collect_image_paths(book: dict) -> list[str]:
@@ -658,6 +746,7 @@ async def build_book_pdf(
     progress_cb: Optional[Callable[[str], None]] = None,
     start_page: Optional[int] = None,
     end_page: Optional[int] = None,
+    pdfx_bleed: bool = False,
 ) -> bytes:
     """Render the book to a PDF that exactly mirrors the editor view.
 
@@ -823,8 +912,10 @@ async def build_book_pdf(
         await route.continue_()
 
     async def _render_chunk(browser, idx: int, total: int, start: int, end: int) -> bytes:
-        html, _, _ = _build_html(book, image_data_urls, page_range=(start, end))
-        context = await browser.new_context(viewport={"width": page_w, "height": page_h})
+        html, outer_w, outer_h = _build_html(
+            book, image_data_urls, page_range=(start, end), pdfx_bleed=pdfx_bleed,
+        )
+        context = await browser.new_context(viewport={"width": outer_w, "height": outer_h})
         try:
             page = await context.new_page()
             await page.route("**/api/files/**", _handle_route)
@@ -871,8 +962,8 @@ async def build_book_pdf(
                 pass
 
             return await page.pdf(
-                width=f"{page_w}px",
-                height=f"{page_h}px",
+                width=f"{outer_w}px",
+                height=f"{outer_h}px",
                 print_background=True,
                 prefer_css_page_size=True,
                 margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
@@ -913,7 +1004,9 @@ async def build_book_pdf(
             await browser.close()
 
     # Single chunk? Skip the merge — saves time and avoids pypdf re-encoding.
-    if len(chunk_pdfs) == 1:
+    # But if PDF/X bleed was requested we STILL need to set TrimBox per page,
+    # so single-chunk goes through pypdf too in that case.
+    if len(chunk_pdfs) == 1 and not pdfx_bleed:
         _emit("done")
         return chunk_pdfs[0]
 
@@ -921,12 +1014,36 @@ async def build_book_pdf(
     _emit("merging chunks")
     import io
     from pypdf import PdfReader, PdfWriter
+    from pypdf.generic import RectangleObject
 
     writer = PdfWriter()
+    # Per-page TrimBox = the trim rectangle inside the bleed-padded MediaBox.
+    # Convention: even page-index = right page (outside on right) → trim
+    # starts at MediaBox left edge; odd index = left page → trim ends at
+    # MediaBox right edge.
+    bleed_pt = INTERIOR_BLEED_PX * (72.0 / 96.0)  # 12 px @ 96dpi = 9 pt
+    global_page_idx = 0
     for blob in chunk_pdfs:
         reader = PdfReader(io.BytesIO(blob))
         for page in reader.pages:
+            if pdfx_bleed:
+                mb = page.mediabox
+                left, bottom = float(mb.left), float(mb.bottom)
+                right, top = float(mb.right), float(mb.top)
+                is_right_page = (global_page_idx % 2 == 0)
+                # Trim rect = MediaBox shrunk by bleed on the appropriate sides.
+                trim_left = left if is_right_page else left + bleed_pt
+                trim_right = right - bleed_pt if is_right_page else right
+                trim_bottom = bottom + bleed_pt
+                trim_top = top - bleed_pt
+                # PDF/X-1a requires BOTH TrimBox and BleedBox.
+                trim_rect = RectangleObject(
+                    (trim_left, trim_bottom, trim_right, trim_top)
+                )
+                page.trimbox = trim_rect
+                page.bleedbox = RectangleObject((left, bottom, right, top))
             writer.add_page(page)
+            global_page_idx += 1
     out = io.BytesIO()
     writer.write(out)
     _emit("done")

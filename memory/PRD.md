@@ -89,6 +89,34 @@ Build me a book template app to be able to add texts and illustrations, page num
 - **Canvas cache-busting**: Editor maintains an `assetCacheBuster` integer bumped after any replace. Canvas `<img>` URLs append `?v=<n>` so previously-cached failures are refetched and existing book pages light up the moment the user re-uploads, with no save/reload required.
 - New tests in `tests/test_assets_api.py::TestAssetReplace`: verifies id+path preservation, byte overwrite, 404 on missing asset, and 400 on non-image uploads. All 56 backend tests now pass.
 
+## What's been implemented (2026-05-31 / iteration 29 — Interior bleed for PDF/X-1a)
+- **The last IngramSpark gap is closed**: when **Print-ready (PDF/X-1a)** is on, every interior page now ships with **0.125" bleed** on top + bottom + the OUTSIDE edge (bind stays flush). Page parity follows the standard recto/verso convention: even page-index = right page (bleed on right), odd = left page (bleed on left).
+- **Background colour fills the bleed strip** so the printer's trim cuts through coloured paper, not a white edge.
+- **TrimBox + BleedBox** are written into every page via pypdf so the file is fully PDF/X-1a conformant — the printer knows exactly where to cut. Verified on a 3-page export:
+  - MediaBox 609.1 × 618 pt
+  - TrimBox 600.1 × 600 pt
+  - Trim offset (0, 9) on right pages, (9, 9) on left pages — alternating by parity
+  - All four flags present: `/TrimBox` ✓, `/BleedBox` ✓, `/GTS_PDFX` ✓, `/DeviceCMYK` ✓
+- **`pdf_builder.py`** changes: new `INTERIOR_BLEED_PX`, `_page_bleed_sides()`, `pdfx_bleed` parameter threaded through `_build_html` → `_render_page`. Single-chunk path now also goes through pypdf when bleed is on so per-page TrimBox can be written.
+- **Backend wiring**: worker passes `pdfx_bleed=pdfx` so the interior bleed is enabled in lock-step with the PDF/X conversion — no separate toggle needed.
+- **New regression test** `test_pdfx_export_adds_interior_bleed_and_trimbox` validates page-parity alternation and bleed math. 90/90 backend tests pass.
+
+### Updated IngramSpark compliance status
+| Requirement | Status |
+|---|---|
+| PDF/X-1a:2001 covers + interiors | ✅ |
+| CMYK / no /DeviceRGB / no /sRGB | ✅ |
+| All fonts embedded | ✅ |
+| Cover bleed 0.125" outside edges | ✅ |
+| **Interior bleed 0.125" top/bottom/outside** | ✅ **CLOSED** |
+| **TrimBox + BleedBox per page** | ✅ **NEW** |
+| Cover layout BACK ∣ SPINE ∣ FRONT | ✅ |
+| 300 ppi cap | ✅ |
+| Single-page interior PDFs | ✅ |
+| No crop / reg marks | ✅ |
+| `_cov.pdf` naming | ✅ |
+| Total ink ≤ 240% | 🟡 effectively yes via default CMYK ICC (Ink-warning toggle helps designers catch it before export) |
+
 ## What's been implemented (2026-05-31 / iteration 28 — Streaming PDF/X-1a progress)
 - **Live page-by-page progress** during PDF/X-1a conversion. Toast now shows `converting to PDF/X-1a (12/100) · 18s` ticking in real time instead of a static "converting" string.
 - **Backend `pdfx_converter.py`** rewritten to use `asyncio.create_subprocess_exec` and stream Ghostscript's stdout. Drops `-dQUIET`; parses `Page N` lines; calls `progress_cb(f"converting to PDF/X-1a ({n}/{total})")` after each tick. Both stdout and stderr are drained concurrently so the subprocess pipe buffer never fills.

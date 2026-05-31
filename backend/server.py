@@ -686,6 +686,7 @@ async def _run_pdf_job(
                 book, get_object, public_base_url=base_url, progress_cb=_on_stage,
                 start_page=applied_start if is_range else None,
                 end_page=applied_end if is_range else None,
+                pdfx_bleed=pdfx,
             )
         # Post-process to PDF/X-1a (CMYK, embedded fonts, OutputIntent) if
         # the caller requested a print-ready file. Runs only when the toggle

@@ -332,6 +332,55 @@ class TestPdfExportRangeAndHistory:
         finally:
             s.delete(f"{API}/books/{bid}")
 
+    def test_pdfx_export_adds_interior_bleed_and_trimbox(self, s):
+        """When `pdfx=true` is requested for interior pages, each page must
+        carry 0.125" bleed on top/bottom + the outside edge, with a
+        TrimBox declaring the cut line. Bind side stays flush (no bleed).
+        Alternates left/right by page parity."""
+        bid = self._make_book_with_pages(s, 3)
+        try:
+            start = s.post(
+                f"{API}/books/{bid}/pdf-jobs",
+                json={"pdfx": True}, timeout=15,
+            )
+            assert start.status_code == 200, start.text
+            job_id = start.json()["job_id"]
+            final = _wait_for_ready(s, bid, job_id, timeout=120)
+            assert final["status"] == "ready", final
+            dl = s.get(f"{API}/books/{bid}/pdf-jobs/{job_id}/download", timeout=30)
+            from io import BytesIO
+            from pypdf import PdfReader
+            reader = PdfReader(BytesIO(dl.content))
+            # Each page's MediaBox should be 9pt (0.125") larger than its
+            # TrimBox on top + bottom + one of left/right.
+            BLEED_PT = 9
+            for i, p in enumerate(reader.pages):
+                mb, tb = p.mediabox, p.trimbox
+                mw, mh = float(mb.width), float(mb.height)
+                tw, th = float(tb.width), float(tb.height)
+                assert abs(mh - th - 2 * BLEED_PT) < 0.5, (
+                    f"page {i}: media h {mh} - trim h {th} ≠ 18pt"
+                )
+                assert abs(mw - tw - BLEED_PT) < 0.5, (
+                    f"page {i}: media w {mw} - trim w {tw} ≠ 9pt"
+                )
+                # Trim offset alternates: even idx (right page) trim
+                # starts at left=0 (bind on left); odd idx trim is shifted
+                # right by the bleed (bind on right).
+                tl = float(tb.left)
+                if i % 2 == 0:
+                    assert abs(tl) < 0.5, f"page {i} (right): trim left should be 0, got {tl}"
+                else:
+                    assert abs(tl - BLEED_PT) < 0.5, f"page {i} (left): trim left should be {BLEED_PT}, got {tl}"
+            # And the PDF/X markers must all be present.
+            raw = dl.content
+            assert b"/TrimBox" in raw
+            assert b"/BleedBox" in raw
+            assert b"/GTS_PDFX" in raw
+            assert b"/DeviceCMYK" in raw
+        finally:
+            s.delete(f"{API}/books/{bid}")
+
     def test_cover_spread_export_produces_single_wide_page_with_bleed(self, s):
         """Cover spread builds a single wide PDF: back + spine + front
         with 0.125" bleed on every outside edge. Verifies the trim math
