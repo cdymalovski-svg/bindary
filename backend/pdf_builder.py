@@ -35,17 +35,31 @@ _chromium_lock = asyncio.Lock()
 
 
 async def _try_launch_chromium() -> bool:
-    """Lightweight liveness probe — succeeds iff Chromium is launchable."""
+    """Lightweight liveness probe — succeeds iff Chromium is launchable.
+
+    Wrapped in a 30-second timeout so a hung launch (dev/shm exhaustion,
+    missing system libs, ptrace blocked, etc.) can never block the
+    process. Without this, a single bad pod state would keep
+    `_chromium_lock` held forever, freezing every PDF job that lands on
+    it at the `preparing chromium` stage.
+    """
+    async def _probe() -> bool:
+        try:
+            async with async_playwright() as pw:
+                browser = await pw.chromium.launch(
+                    headless=True,
+                    args=["--no-sandbox", "--disable-dev-shm-usage"],
+                )
+                await browser.close()
+            return True
+        except Exception as e:
+            log.info("Chromium not yet launchable: %s", str(e).splitlines()[0])
+            return False
+
     try:
-        async with async_playwright() as pw:
-            browser = await pw.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-dev-shm-usage"],
-            )
-            await browser.close()
-        return True
-    except Exception as e:
-        log.info("Chromium not yet launchable: %s", str(e).splitlines()[0])
+        return await asyncio.wait_for(_probe(), timeout=30)
+    except asyncio.TimeoutError:
+        log.warning("Chromium launch probe timed out after 30s")
         return False
 
 
@@ -74,7 +88,14 @@ def _autodetect_chromium_path() -> Optional[str]:
 
 async def _run_playwright_install() -> None:
     """Download Chromium via `python -m playwright install chromium`.
-    Streams output to logs so deployment debugging is easier."""
+    Streams output to logs so deployment debugging is easier.
+
+    Wrapped in a 5-minute timeout: a 200 MB download over a stable link
+    finishes in under a minute; anything longer means a stalled CDN
+    connection and we need to surface the failure rather than hold the
+    `_chromium_lock` indefinitely (which would freeze every PDF job
+    landing on this pod at the `preparing chromium` stage).
+    """
     log.info("Installing Chromium for Playwright (one-time, ~200MB)…")
     proc = await asyncio.create_subprocess_exec(
         sys.executable,
@@ -85,7 +106,20 @@ async def _run_playwright_install() -> None:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
     )
-    out, _ = await proc.communicate()
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=300)
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        await proc.wait()
+        log.error("playwright install chromium timed out after 5 min")
+        raise RuntimeError(
+            "Chromium download timed out (>5 min). The Playwright CDN "
+            "may be unreachable. Retry the export, or ask Emergent "
+            "support to pre-bake Chromium into the deployment image."
+        ) from None
     text = (out or b"").decode(errors="replace")
     if proc.returncode != 0:
         log.error("playwright install failed (rc=%s): %s", proc.returncode, text[-2000:])
@@ -96,10 +130,30 @@ async def _run_playwright_install() -> None:
 async def ensure_chromium_installed() -> None:
     """Ensure a launchable Chromium exists. Safe to call from concurrent
     requests — guarded by a process-wide lock so we install at most once
-    per container."""
+    per container.
+
+    The whole operation is wall-clock bounded (6 min total). If anything
+    along the chain (lock acquisition, launch probe, CDN download) hangs
+    we raise — keeping the lock held forever would freeze every PDF job
+    that lands on this pod at the `preparing chromium` stage. Callers
+    catch the raise and flip the job to `failed` with the diagnostic.
+    """
     global _chromium_ready
     if _chromium_ready:
         return
+    try:
+        await asyncio.wait_for(_ensure_chromium_installed_inner(), timeout=360)
+    except asyncio.TimeoutError:
+        raise RuntimeError(
+            "Chromium preparation timed out (>6 min). The pod may be "
+            "stuck installing or launching the browser. Retry the export; "
+            "if it persists, contact Emergent support to pre-bake "
+            "Chromium into the deployment image."
+        ) from None
+
+
+async def _ensure_chromium_installed_inner() -> None:
+    global _chromium_ready
     async with _chromium_lock:
         if _chromium_ready:
             return

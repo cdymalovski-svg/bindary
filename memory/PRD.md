@@ -228,6 +228,15 @@ Build me a book template app to be able to add texts and illustrations, page num
 - Multi-user accounts + library sharing.
 - Pan-while-zoomed gesture on iPad (drag canvas while pinch >100%).
 
+## What's been implemented (2026-05-31 / iteration 33 — Chromium prep lock deadlock fix)
+- **Bug (production)**: User's `/api/pdf-health` revealed a job stuck at `stage: "preparing chromium"` with `stage_at` only 22 ms after `created_at` — i.e. the worker emitted the stage, hit `ensure_chromium_installed()`, and **never returned**. `chromium_launchable: true` on the answering pod confirmed multi-pod roulette: one pod healthy, another silently hung.
+- **Root cause**: `ensure_chromium_installed()` acquired `_chromium_lock` (process-wide async lock) and ran `_try_launch_chromium()` + `_run_playwright_install()` with **no timeouts**. A hung launch probe (dev/shm exhaustion, missing libs) or a stalled Playwright CDN download would hold the lock **forever**. The startup background task that holds the lock also has no timeout, so it can freeze every PDF job that lands on that pod for the lifetime of the container.
+- **Fixes in `pdf_builder.py`**:
+  - `_try_launch_chromium()` wrapped in `asyncio.wait_for(..., timeout=30)`. A hung browser launch can no longer block.
+  - `_run_playwright_install()` wrapped in `asyncio.wait_for(communicate(), timeout=300)`. A stalled 200 MB CDN download now kills the subprocess after 5 min and raises a clear error instead of holding the lock indefinitely.
+  - `ensure_chromium_installed()` split into a thin outer wrapper + inner. Outer wraps the whole operation (including lock acquisition) in `asyncio.wait_for(..., timeout=360)`. Worst case the worker's `preparing chromium` stage fails after 6 min with `"Chromium preparation timed out (>6 min)"` — visible in `recent_failures` on `/pdf-health` — instead of sitting in `pending` until the TTL purges it.
+- 17/17 PDF-job + cancel tests pass after the refactor.
+
 ## What's been implemented (2026-05-31 / iteration 32 — Defensive fixes for silent PDF/X-1a hangs)
 - **Bug (production)**: User reported a 22-page Print-ready export visibly reached "chunk 4/5" then the progress bar disappeared and only the duration counter ticked for 5–6 minutes — no final "uploading" stage, no error toast, no completion. Job sat in `pending` indefinitely with no obvious diagnostic.
 - **Root cause #1 — Ghostscript stdout block-buffering**: When `gs` writes to a pipe (not a TTY), libc default-buffers stdout in 4–64KB blocks. Our `_drain_stdout` `readline()` loop saw nothing until the buffer flushed — which on small books can be the entire conversion. The toast went silent for the full Ghostscript run.
