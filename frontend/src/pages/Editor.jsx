@@ -16,6 +16,7 @@ import {
   SlidersHorizontal,
   BookOpen,
   Square,
+  Droplets,
   Palette,
   Heading,
   List,
@@ -42,7 +43,7 @@ import {
 import { getBook, updateBook, uploadImage } from '@/lib/api';
 import { PAGE_SIZES, getPageSize, PAGE_MARGIN_PX } from '@/lib/pageSizes';
 import { sanitizeHtml } from '@/lib/sanitize';
-import CanvasBlock from '@/components/CanvasBlock';
+import CanvasBlock from '@/components/CanvasBlockWithInkWarning';
 import BlockProperties from '@/components/BlockProperties';
 import AssetsPanel, { ASSET_DRAG_MIME } from '@/components/AssetsPanel';
 import PagePanel from '@/components/PagePanel';
@@ -90,6 +91,15 @@ export default function Editor() {
   const [editingTextId, setEditingTextId] = useState(null);
   const [rightTab, setRightTab] = useState('assets'); // 'assets' | 'page' | 'block'
   const [viewMode, setViewMode] = useState('single'); // 'single' | 'spread'
+  // Print-time CMYK total ink warning. When on, blocks whose estimated
+  // total ink exceeds 240% get a red ring overlay so designers can fix
+  // them before sending the file to a commercial printer.
+  const [showInkWarnings, setShowInkWarnings] = useState(() => {
+    try { return localStorage.getItem('bindery_ink_warnings') === '1'; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('bindery_ink_warnings', showInkWarnings ? '1' : '0'); } catch {}
+  }, [showInkWarnings]);
   // Sidebar drawer state — below the `lg` breakpoint both sidebars become
   // overlay drawers triggered from toolbar icons (Pages on the left, Panels
   // on the right). On lg+ they're always-visible static columns and these
@@ -1210,6 +1220,7 @@ export default function Editor() {
           onAssetDrop={(asset, pos) => addImageBlockFromAsset(asset, pos, idx)}
           onFocusPage={() => setActivePageIndex(idx)}
           onTocJump={onTocJump}
+          inkWarningsEnabled={showInkWarnings}
         />
       );
     };
@@ -1309,6 +1320,26 @@ export default function Editor() {
             <BookOpen className="w-3.5 h-3.5" /> <span className="hidden xl:inline">Spread</span>
           </button>
         </div>
+
+        <button
+          type="button"
+          onClick={() => setShowInkWarnings((v) => !v)}
+          data-testid="ink-warnings-toggle"
+          aria-pressed={showInkWarnings}
+          title={
+            showInkWarnings
+              ? 'Hide ink-coverage warnings (>240% CMYK)'
+              : 'Show ink-coverage warnings — flags blocks that exceed 240% total CMYK (rejected by most printers)'
+          }
+          className={`h-8 px-2 flex items-center gap-1.5 rounded-sm text-xs tracking-wide transition-colors shrink-0 border ${
+            showInkWarnings
+              ? 'bg-red-50 text-red-700 border-red-300 hover:bg-red-100'
+              : 'text-ink-soft border-rule hover:bg-desk'
+          }`}
+        >
+          <Droplets className="w-3.5 h-3.5" />
+          <span className="hidden lg:inline">Ink</span>
+        </button>
 
         <div className="flex-1 min-w-0" />
 
@@ -1593,6 +1624,7 @@ export default function Editor() {
                 onAssetDrop={(asset, pos) => addImageBlockFromAsset(asset, pos)}
                 onFocusPage={() => setActivePageIndex(activePageIndex)}
                 onTocJump={onTocJump}
+                inkWarningsEnabled={showInkWarnings}
               />
             )}
           </div>
@@ -1737,6 +1769,7 @@ function PageCanvas({
   onAssetDrop,
   onFocusPage,
   onTocJump,
+  inkWarningsEnabled = false,
   viewMode = 'single',
   isFocused = true,
   forExport = false,
@@ -1956,6 +1989,9 @@ function PageCanvas({
             scale={scale}
             pageWidth={pageSize.width}
             pageHeight={pageSize.height}
+            pageBg={bg}
+            imageBase={process.env.REACT_APP_BACKEND_URL}
+            inkWarningsEnabled={!forExport && inkWarningsEnabled}
           />
         ))}
         {showPageNumber && (

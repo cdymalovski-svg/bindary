@@ -12,6 +12,7 @@ export default function CanvasBlock({
   onStartTextEdit,
   onStopTextEdit,
   onTocJump,
+  inkOverdrawn = false,
   scale = 1,
   pageWidth,
   pageHeight,
@@ -80,7 +81,7 @@ export default function CanvasBlock({
       }}
       enableResizing={selected && !editingThisText}
       lockAspectRatio={isImage}
-      className={`block-wrapper ${selected ? 'block-selected' : 'block-hover'}`}
+      className={`block-wrapper ${selected ? 'block-selected' : 'block-hover'}${inkOverdrawn ? ' block-ink-warning' : ''}`}
       style={{ zIndex: typeof block.z_index === 'number' ? block.z_index : 1 }}
       resizeHandleStyles={selected && !editingThisText ? handleStyles : {}}
     >

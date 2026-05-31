@@ -89,6 +89,14 @@ Build me a book template app to be able to add texts and illustrations, page num
 - **Canvas cache-busting**: Editor maintains an `assetCacheBuster` integer bumped after any replace. Canvas `<img>` URLs append `?v=<n>` so previously-cached failures are refetched and existing book pages light up the moment the user re-uploads, with no save/reload required.
 - New tests in `tests/test_assets_api.py::TestAssetReplace`: verifies id+path preservation, byte overwrite, 404 on missing asset, and 400 on non-image uploads. All 56 backend tests now pass.
 
+## What's been implemented (2026-05-31 / iteration 26 — Ink-coverage warning overlay)
+- New **"Ink"** toggle in the editor toolbar (next to the Single/Spread switch). When on, any block whose estimated CMYK total ink exceeds 240% gets a red ring overlay — the threshold most commercial printers (IngramSpark, KDP, Lulu) reject above.
+- Text blocks: synchronous compute from `block.color` (and the page background that bleeds behind it) via the standard RGB→CMYK formula in `frontend/src/lib/inkCoverage.js`.
+- Image blocks: load asset into a 64×64 offscreen canvas, sample every pixel, compute average CMYK total. Result cached per URL so we sample each image once for the session.
+- Toggle state persists in `localStorage('bindery_ink_warnings')`. Off by default — zero cost when disabled.
+- `CanvasBlockWithInkWarning` wrapper isolates the hook lifecycle per block so the cost scales with visible blocks, not the whole book.
+- Verified end-to-end: pure black `#000000` (100% K only) → no warning ✓; navy `#000080` (249.8%) → red ring ✓; toggle OFF removes the class cleanly ✓.
+
 ## What's been implemented (2026-05-31 / iteration 25 — Fix: PDF export 401)
 - **Bug**: PDF export from the Editor failed with `"Not authenticated"`. Cause: the three PDF-job calls (start, poll, download) used raw `fetch()` which bypasses the axios interceptor that injects the JWT Bearer token. The global `/api/*` AuthGuard then rejected the requests.
 - **Fix**: read `localStorage('bindery_token')` once at the top of `onExportPdf` and merge an `Authorization: Bearer <token>` header into all three fetch calls.

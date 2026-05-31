@@ -99,6 +99,17 @@ body {
     box-shadow: 0 0 0 1px rgba(158, 69, 50, 0.5);
 }
 
+/* Print warning: this block's estimated CMYK total ink > 240%, which will
+   be rejected by most commercial printers (IngramSpark, KDP, Lulu). Stays
+   on top of the selection ring via box-shadow stacking. */
+.block-ink-warning {
+    box-shadow: 0 0 0 2px #DC2626, 0 0 0 5px rgba(220, 38, 38, 0.2) !important;
+}
+.block-ink-warning.block-selected {
+    box-shadow: 0 0 0 2px #DC2626, 0 0 0 5px rgba(220, 38, 38, 0.25),
+                0 0 0 7px #9E4532 !important;
+}
+
 /* Hide outline rings on rnd children we manage manually */
 .react-draggable-dragging .block-wrapper {
     transform: scale(1.02);
