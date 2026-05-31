@@ -228,7 +228,14 @@ Build me a book template app to be able to add texts and illustrations, page num
 - Multi-user accounts + library sharing.
 - Pan-while-zoomed gesture on iPad (drag canvas while pinch >100%).
 
+## What's been implemented (2026-05-31 / iteration 30 — PDF export Cancel)
+- **Cancel button on the export toast.** The progress toast (`PdfExportToast`) now wires its X button to a backend cancellation flow so users can abort runaway exports instead of waiting 10 minutes.
+- **Backend**: `POST /api/books/{book_id}/pdf-jobs/{job_id}/cancel` marks the job's `cancel_requested` flag. The worker calls `_check_cancelled()` at every coarse checkpoint (between chunks, before/after Ghostscript), raising an internal `_Cancelled` exception that flips the job to `failed` with `error="Cancelled by user"` and frees resources immediately. The status endpoint surfaces `cancel_requested: true` so the frontend can stop polling without waiting for the worker to notice.
+- **Frontend**: `Editor.onExportPdf` shares a `cancelState = { cancelled, jobId }` between the cancel handler (inside the custom toast) and the poll loop. Cancel triggers `toast.dismiss` + "Cancelling export…" then fires the backend cancel; the poll loop bails at its next checkpoint. Catch block special-cases the cancellation message and shows a calm "Export cancelled" toast instead of the red error toast.
+- **Race fix**: added a `cancelState.cancelled` guard right before the toast.custom redraw in the poll loop so a late status fetch can never overwrite the "Cancelling…" message.
+- **Tests**: new `tests/test_pdf_cancel.py` (3 cases) verifies 404 on unknown job, cancel flips a pending job to failed with the clean reason, and cancelling a finished job is a 200 no-op. 17/17 PDF tests pass.
+
 ## Next Tasks
-- Refactor `Editor.jsx` for maintainability (now P1 — file size is regression-prone).
+- Refactor `Editor.jsx` for maintainability (now P1 — file size is regression-prone, >2200 lines).
 - Undo/Redo history.
-- Live-sync TOC.
+- Drag-to-reorder pages in the sidebar.

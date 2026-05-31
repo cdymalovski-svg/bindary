@@ -1157,6 +1157,11 @@ export default function Editor() {
           throw new Error(`${detail}${tail}`);
         }
         // Otherwise (pending) — update the custom toast with stage + fraction.
+        // Skip the redraw if a cancel landed between the fetch and now,
+        // otherwise we'd briefly overwrite the "Cancelling…" message.
+        if (cancelState.cancelled) {
+          throw new Error('Cancelled by user');
+        }
         const elapsedSec = Math.round((Date.now() - start) / 1000);
         let done = 0;
         let total = 0;
