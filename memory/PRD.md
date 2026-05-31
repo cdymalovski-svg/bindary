@@ -89,6 +89,15 @@ Build me a book template app to be able to add texts and illustrations, page num
 - **Canvas cache-busting**: Editor maintains an `assetCacheBuster` integer bumped after any replace. Canvas `<img>` URLs append `?v=<n>` so previously-cached failures are refetched and existing book pages light up the moment the user re-uploads, with no save/reload required.
 - New tests in `tests/test_assets_api.py::TestAssetReplace`: verifies id+path preservation, byte overwrite, 404 on missing asset, and 400 on non-image uploads. All 56 backend tests now pass.
 
+## What's been implemented (2026-05-31 / iteration 28 — Streaming PDF/X-1a progress)
+- **Live page-by-page progress** during PDF/X-1a conversion. Toast now shows `converting to PDF/X-1a (12/100) · 18s` ticking in real time instead of a static "converting" string.
+- **Backend `pdfx_converter.py`** rewritten to use `asyncio.create_subprocess_exec` and stream Ghostscript's stdout. Drops `-dQUIET`; parses `Page N` lines; calls `progress_cb(f"converting to PDF/X-1a ({n}/{total})")` after each tick. Both stdout and stderr are drained concurrently so the subprocess pipe buffer never fills.
+- Async-native 10-minute `asyncio.wait_for` ceiling. On timeout the gs subprocess is `kill()`-ed cleanly (no zombies) and the user sees the friendly "conversion timed out — try a smaller range" message.
+- **Backend worker** reads the page count out of the freshly-rendered RGB PDF with `pypdf` and threads it into `convert_to_pdfx(total_pages=…)` so the progress fraction has a denominator.
+- **Mongo writes coalesced** by the existing `_on_stage` dedup — each page tick is a distinct string and writes are fire-and-forget Motor ops; load is ~1.5/sec on a 100-page book.
+- **Frontend** required zero changes — the existing poll loop already displays `${stage} · ${elapsed}s` in the toast.
+- Verified: 4-page book streams "(1/4)" → "(2/4)" → "ready" through the poll endpoint.
+
 ## What's been implemented (2026-05-31 / iteration 27 — Fix: PDF/X-1a export timeout)
 - **Bug**: large books (100+ pages) failed PDF/X-1a export with `"Export failed: Command ['gs', '-dPDFX', '-dBATCH', …"`. That string is `subprocess.TimeoutExpired.__str__()` — Ghostscript hit the 180s ceiling.
 - **Fixes in `pdfx_converter.py`**:

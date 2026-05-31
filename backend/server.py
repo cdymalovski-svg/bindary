@@ -692,9 +692,21 @@ async def _run_pdf_job(
         # is on — for everyday previewing the raw RGB PDF is much faster.
         if pdfx:
             from pdfx_converter import convert_to_pdfx
+            from pypdf import PdfReader
+            from io import BytesIO
+            # Read the page count out of the PDF we just rendered so the
+            # streaming progress bar below has a denominator to count
+            # against ("converting to PDF/X-1a (12/60)").
+            try:
+                total_pages_pdfx = len(PdfReader(BytesIO(pdf_bytes)).pages)
+            except Exception:
+                total_pages_pdfx = None
             _on_stage("converting to PDF/X-1a")
             pdf_bytes = await convert_to_pdfx(
-                pdf_bytes, title=book.get("title") or "book",
+                pdf_bytes,
+                title=book.get("title") or "book",
+                total_pages=total_pages_pdfx,
+                progress_cb=_on_stage,
             )
         safe = re.sub(r"[^A-Za-z0-9._-]+", "_", book.get("title") or "book").strip("_") or "book"
         # Filename includes the range when partial so users get distinct

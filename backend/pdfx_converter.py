@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Callable, Optional
 
 log = logging.getLogger("pdfx")
 
@@ -127,8 +128,19 @@ def _pdfx_def_ps(icc_path: str, title: str) -> str:
 """
 
 
-async def convert_to_pdfx(pdf_bytes: bytes, *, title: str = "Document") -> bytes:
+async def convert_to_pdfx(
+    pdf_bytes: bytes,
+    *,
+    title: str = "Document",
+    total_pages: Optional[int] = None,
+    progress_cb: Optional["Callable[[str], None]"] = None,
+) -> bytes:
     """Convert an RGB PDF to PDF/X-1a:2001 CMYK bytes.
+
+    `total_pages` and `progress_cb` are optional — when both are supplied,
+    Ghostscript's per-page output is parsed and the callback is invoked
+    with strings like `"converting to PDF/X-1a (12/60)"` so the frontend
+    toast can show a live progress counter instead of a static stage.
 
     Raises a RuntimeError with the Ghostscript stderr tail if the
     conversion fails — caller should surface that to the user so they
@@ -157,11 +169,6 @@ async def convert_to_pdfx(pdf_bytes: bytes, *, title: str = "Document") -> bytes
         in_pdf.write_bytes(pdf_bytes)
         defs_ps.write_text(_pdfx_def_ps(icc_path, title))
 
-        # NOTE: -dNOSAFER (not -dSAFER) is required so Ghostscript can read
-        # the ICC profile from /usr/share. The inputs to this conversion
-        # are all generated server-side from our own renderer — there is
-        # no untrusted PostScript to sandbox, so disabling SAFER is the
-        # documented Artifex workflow for PDF/X conversion.
         cmd = [
             "gs",
             "-dPDFX",
@@ -169,8 +176,10 @@ async def convert_to_pdfx(pdf_bytes: bytes, *, title: str = "Document") -> bytes
             "-dNOPAUSE",
             "-dNOOUTERSAVE",
             "-dNOSAFER",
-            "-dQUIET",                        # silence per-page chatter that
-                                              # also blocks on stderr backpressure
+            # NOTE: we DELIBERATELY do not pass -dQUIET — we rely on
+            # Ghostscript's "Page N" stdout line per converted page to
+            # power the streaming progress bar below. Stdout is drained
+            # line-by-line so the pipe buffer never fills.
             "-dNumRenderingThreads=2",        # use both cores when available
             "-dCompatibilityLevel=1.3",       # PDF/X-1a:2001 requires 1.3
             "-sDEVICE=pdfwrite",
@@ -192,26 +201,80 @@ async def convert_to_pdfx(pdf_bytes: bytes, *, title: str = "Document") -> bytes
             str(in_pdf),
         ]
 
-        log.info("PDFX conversion starting (in=%d bytes)", len(pdf_bytes))
+        log.info(
+            "PDFX conversion starting (in=%d bytes, total_pages=%s)",
+            len(pdf_bytes), total_pages,
+        )
 
-        # Run blocking subprocess off the event loop so the worker stays
-        # responsive to other coroutines (status updates, etc.). 10-minute
-        # ceiling so even a 300-page colour book in a slow production pod
-        # gets a chance to finish.
-        def _run() -> subprocess.CompletedProcess:
-            return subprocess.run(
-                cmd,
-                capture_output=True,
-                check=False,
+        def _report(page_done: int) -> None:
+            if progress_cb is None:
+                return
+            try:
+                if total_pages:
+                    progress_cb(f"converting to PDF/X-1a ({page_done}/{total_pages})")
+                else:
+                    progress_cb(f"converting to PDF/X-1a (page {page_done})")
+            except Exception:
+                # Progress is best-effort — never let a callback error
+                # take down the conversion.
+                pass
+
+        # Async subprocess + streaming stdout. 10-minute ceiling so even a
+        # 300-page colour book in a slow production pod gets a chance to
+        # finish.
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError as e:
+            raise RuntimeError(f"Ghostscript could not be launched: {e}") from None
+
+        stderr_chunks: list[bytes] = []
+
+        async def _drain_stderr() -> None:
+            assert proc.stderr is not None
+            while True:
+                chunk = await proc.stderr.readline()
+                if not chunk:
+                    return
+                stderr_chunks.append(chunk)
+
+        async def _drain_stdout() -> None:
+            """Parse Ghostscript's `Page N` lines and emit progress.
+            Ghostscript prints one line per converted page; we use that as
+            our progress tick. We don't fan out work — pdfwrite is
+            single-stream — but watching the counter is the cheapest
+            real-time signal we get."""
+            assert proc.stdout is not None
+            while True:
+                line = await proc.stdout.readline()
+                if not line:
+                    return
+                # Lines look like b"Page 12\n" — be defensive against any
+                # other diagnostic gs might choose to emit.
+                if line.startswith(b"Page "):
+                    try:
+                        n = int(line[5:].strip())
+                    except ValueError:
+                        continue
+                    _report(n)
+
+        # Run both drainers and the process wait concurrently with a single
+        # overall timeout. If the timeout fires we kill the process so it
+        # doesn't linger as a zombie.
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(_drain_stdout(), _drain_stderr(), proc.wait()),
                 timeout=600,
             )
-
-        try:
-            proc = await asyncio.to_thread(_run)
-        except subprocess.TimeoutExpired:
-            # Surface a friendly message INSTEAD of the giant cmd repr that
-            # subprocess.TimeoutExpired stringifies to — that's what the
-            # user saw earlier as "Export failed: Command ['gs', '-dPDFX'…".
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            await proc.wait()
             log.error("PDFX conversion timed out after 600s")
             raise RuntimeError(
                 "PDF/X-1a conversion timed out (>10 min). Try exporting a "
@@ -219,10 +282,12 @@ async def convert_to_pdfx(pdf_bytes: bytes, *, title: str = "Document") -> bytes
                 "ship an RGB PDF and let your printer handle conversion."
             ) from None
 
-        if proc.returncode != 0 or not out_pdf.exists():
-            stderr_tail = (proc.stderr or b"").decode("utf-8", errors="replace")
-            stderr_tail = "\n".join(stderr_tail.splitlines()[-15:])
-            log.error("PDFX conversion failed: %s", stderr_tail)
+        returncode = proc.returncode
+        stderr_text = b"".join(stderr_chunks).decode("utf-8", errors="replace")
+
+        if returncode != 0 or not out_pdf.exists():
+            stderr_tail = "\n".join(stderr_text.splitlines()[-15:])
+            log.error("PDFX conversion failed (rc=%s): %s", returncode, stderr_tail)
             raise RuntimeError(
                 f"PDF/X-1a conversion failed: {stderr_tail or 'no stderr'}"
             )
