@@ -89,6 +89,13 @@ Build me a book template app to be able to add texts and illustrations, page num
 - **Canvas cache-busting**: Editor maintains an `assetCacheBuster` integer bumped after any replace. Canvas `<img>` URLs append `?v=<n>` so previously-cached failures are refetched and existing book pages light up the moment the user re-uploads, with no save/reload required.
 - New tests in `tests/test_assets_api.py::TestAssetReplace`: verifies id+path preservation, byte overwrite, 404 on missing asset, and 400 on non-image uploads. All 56 backend tests now pass.
 
+## What's been implemented (2026-05-31 / iteration 23 — Print-ready PDF/X-1a:2001 export)
+- **New toggle in the Export popover**: "Print-ready (PDF/X-1a:2001)". When on, the rendered RGB PDF is post-processed through Ghostscript producing a fully PDF/X-1a:2001-compliant file: PDF 1.3, all colour converted to CMYK, RGB / sRGB profiles stripped, all fonts embedded & subsetted, transparency flattened, SWOP v2 OutputIntent baked in, /GTS_PDFX conformance marker present.
+- **Backend** — new `pdfx_converter.py` module wraps `gs -dPDFX … -sColorConversionStrategy=CMYK -sOutputICCProfile=…/default_cmyk.icc` plus a generated `PDFX_def.ps` that defines the OutputIntent dictionary. Best-effort auto-install of ghostscript on first request (production-safe) — clean error surface if unavailable. Filename gets a `_pdfx` suffix so print-ready exports are unmistakable in Finder.
+- **API contract**: `POST /api/books/{id}/pdf-jobs` now accepts `{"pdfx": true}`; works in combination with the existing range slicing.
+- **Progress reporting**: the worker emits a `"converting to PDF/X-1a"` stage update so the export toast tells the user where time is going.
+- **Tests**: new `test_pdfx_export_produces_pdfx1a_compliant_file` validates filename suffix, PDF version (1.3), and presence of /GTS_PDFX, /OutputIntent, /DeviceCMYK + absence of /DeviceRGB. 88/88 backend tests pass.
+
 ## What's been implemented (2026-05-30 / iteration 22 — clickable TOC rows)
 - TOC rows are now **clickable hyperlinks**. Each row is emitted with `data-toc-target="<page-index>"` and `cursor: pointer`. `CanvasBlock` intercepts mouseup / touchend on `[data-toc-target]` and routes to `onTocJump(idx)` → `setActivePageIndex(idx)` — only when the block is NOT in edit mode (clicks inside an editing TOC still position the caret normally).
 - Works on mouse and iPad touch. The sidebar thumbnails also render the data attribute but the thumbnail click is intercepted by its parent button — no behaviour conflict.

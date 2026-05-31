@@ -614,6 +614,7 @@ async def _run_pdf_job(
     base_url: str,
     start_page: Optional[int] = None,
     end_page: Optional[int] = None,
+    pdfx: bool = False,
 ) -> None:
     """Background worker — builds the PDF, uploads bytes to object storage,
     flips the Mongo record to `ready` (or `failed`).
@@ -622,6 +623,10 @@ async def _run_pdf_job(
     those pages are rendered (the full book is loaded then the `pages` list
     is sliced before handing it to the builder — keeps page-numbering logic
     on the builder side simple: it always sees a contiguous `pages` array).
+
+    `pdfx` runs the final PDF through Ghostscript to produce a print-ready
+    PDF/X-1a:2001 file (CMYK, embedded fonts, transparency flattened,
+    OutputIntent ICC profile baked in). Adds ~10–30s to export time.
     """
     from pdf_builder import build_book_pdf
 
@@ -671,10 +676,24 @@ async def _run_pdf_job(
             start_page=applied_start if is_range else None,
             end_page=applied_end if is_range else None,
         )
+        # Post-process to PDF/X-1a (CMYK, embedded fonts, OutputIntent) if
+        # the caller requested a print-ready file. Runs only when the toggle
+        # is on — for everyday previewing the raw RGB PDF is much faster.
+        if pdfx:
+            from pdfx_converter import convert_to_pdfx
+            _on_stage("converting to PDF/X-1a")
+            pdf_bytes = await convert_to_pdfx(
+                pdf_bytes, title=book.get("title") or "book",
+            )
         safe = re.sub(r"[^A-Za-z0-9._-]+", "_", book.get("title") or "book").strip("_") or "book"
         # Filename includes the range when partial so users get distinct
         # downloads on disk: "MyBook_pp_1-50.pdf" / "MyBook_pp_51-112.pdf".
-        filename = f"{safe}_pp_{applied_start}-{applied_end}.pdf" if is_range else f"{safe}.pdf"
+        # "_pdfx" suffix makes print-ready exports unmistakable in Finder.
+        pdfx_suffix = "_pdfx" if pdfx else ""
+        filename = (
+            f"{safe}_pp_{applied_start}-{applied_end}{pdfx_suffix}.pdf"
+            if is_range else f"{safe}{pdfx_suffix}.pdf"
+        )
         # Upload PDF bytes to shared object storage so any pod can serve them.
         _on_stage("uploading")
         object_path = f"{_PDF_OBJECT_PREFIX}/{job_id}.pdf"
@@ -710,10 +729,13 @@ async def _run_pdf_job(
 
 
 class PdfJobStartRequest(BaseModel):
-    """Optional 1-indexed inclusive page range. Both omitted = full book."""
+    """Optional 1-indexed inclusive page range. Both omitted = full book.
+    `pdfx=true` runs the final PDF through Ghostscript to produce a
+    PDF/X-1a:2001-compliant CMYK file ready for commercial printing."""
     model_config = ConfigDict(extra="ignore")
     start_page: Optional[int] = None
     end_page: Optional[int] = None
+    pdfx: bool = False
 
 
 @api_router.post("/books/{book_id}/pdf-jobs")
@@ -742,6 +764,7 @@ async def export_pdf_start(
 
     start_page = payload.start_page if payload else None
     end_page = payload.end_page if payload else None
+    pdfx = bool(payload.pdfx) if payload else False
     if start_page is not None or end_page is not None:
         if start_page is None or end_page is None:
             raise HTTPException(400, "start_page and end_page must be provided together")
@@ -763,13 +786,14 @@ async def export_pdf_start(
         "status": "pending",
         "start_page": start_page,
         "end_page": end_page,
+        "pdfx": pdfx,
         "created_at": now.isoformat(),
         # Mongo TTL index uses a real Date — not an ISO string.
         "expires_at": now + timedelta(seconds=_PDF_JOB_TTL_SECONDS),
     })
     asyncio.create_task(_run_pdf_job(
         job_id, book_id, str(request.base_url).rstrip("/"),
-        start_page=start_page, end_page=end_page,
+        start_page=start_page, end_page=end_page, pdfx=pdfx,
     ))
     return {"job_id": job_id, "status": "pending"}
 

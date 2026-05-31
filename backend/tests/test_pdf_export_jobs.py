@@ -300,3 +300,34 @@ class TestPdfExportRangeAndHistory:
         r = s.get(f"{API}/books/{bid}/exports")
         assert r.status_code == 200
         assert r.json() == []
+
+    def test_pdfx_export_produces_pdfx1a_compliant_file(self, s):
+        """When `pdfx: true` is passed, Ghostscript post-processes the
+        rendered PDF and the output should declare PDF/X-1a conformance
+        with a CMYK OutputIntent baked in."""
+        bid = self._make_book_with_pages(s, 2)
+        try:
+            start = s.post(
+                f"{API}/books/{bid}/pdf-jobs",
+                json={"pdfx": True}, timeout=15,
+            )
+            assert start.status_code == 200, start.text
+            job_id = start.json()["job_id"]
+            final = _wait_for_ready(s, bid, job_id, timeout=120)
+            assert final["status"] == "ready", final
+            # PDF/X conversion produces a "_pdfx" suffix on the filename.
+            assert final["filename"].endswith("_pdfx.pdf"), final["filename"]
+            dl = s.get(f"{API}/books/{bid}/pdf-jobs/{job_id}/download", timeout=30)
+            assert dl.status_code == 200
+            data = dl.content
+            # PDF/X-1a:2001 mandates PDF 1.3.
+            assert data[:8] == b"%PDF-1.3"
+            # Conformance markers must be present in the file body.
+            assert b"/GTS_PDFX" in data, "PDF/X conformance marker missing"
+            assert b"/OutputIntent" in data, "OutputIntent missing"
+            assert b"/DeviceCMYK" in data, "CMYK color space missing"
+            # And RGB color profiles must NOT be present — every colour must
+            # have been converted down to CMYK.
+            assert b"/DeviceRGB" not in data, "DeviceRGB leaked into PDF/X output"
+        finally:
+            s.delete(f"{API}/books/{bid}")

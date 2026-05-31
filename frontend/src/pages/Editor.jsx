@@ -1012,11 +1012,13 @@ export default function Editor() {
   // download — useful for iterating on layout without piling up files.
   const onExportPdf = async (range = null, options = {}) => {
     const previewInTab = options?.previewInTab === true;
+    const pdfx = options?.pdfx === true;
     if (!book) return;
     setExporting(true);
     const toastId = 'pdf-export';
     const rangeLabel = range ? ` (pages ${range.start}–${range.end})` : '';
-    toast.loading(`Building PDF${rangeLabel}…`, { id: toastId });
+    const modeLabel = pdfx ? ' · Print-ready' : '';
+    toast.loading(`Building PDF${rangeLabel}${modeLabel}…`, { id: toastId });
     const t0 = performance.now();
     const BASE = process.env.REACT_APP_BACKEND_URL;
     try {
@@ -1026,9 +1028,10 @@ export default function Editor() {
       // proxies and CDNs never see a long-lived request.
       // Note: URL avoids `.pdf` in the path because some CDNs treat dot-pdf
       // URLs as static-file fetches and short-circuit with 404.
-      const body = range
-        ? JSON.stringify({ start_page: range.start, end_page: range.end })
-        : undefined;
+      const bodyObj = {};
+      if (range) { bodyObj.start_page = range.start; bodyObj.end_page = range.end; }
+      if (pdfx) bodyObj.pdfx = true;
+      const body = Object.keys(bodyObj).length ? JSON.stringify(bodyObj) : undefined;
       const startResp = await fetch(`${BASE}/api/books/${book.id}/pdf-jobs`, {
         method: 'POST',
         headers: body ? { 'Content-Type': 'application/json' } : undefined,

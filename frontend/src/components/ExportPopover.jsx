@@ -32,6 +32,17 @@ export default function ExportPopover({ bookId, totalPages, exporting, onExport,
   useEffect(() => {
     try { localStorage.setItem('bindery_preview_in_tab', previewInTab ? '1' : '0'); } catch {}
   }, [previewInTab]);
+  // Print-ready (PDF/X-1a:2001) toggle — when on, the backend post-processes
+  // the exported PDF through Ghostscript: converts every color to CMYK,
+  // embeds all fonts, flattens transparency, and bakes a SWOP v2 ICC
+  // OutputIntent into the file. Required by most offset / commercial
+  // printers. Adds 10–30s to export time, so kept opt-in.
+  const [pdfx, setPdfx] = useState(() => {
+    try { return localStorage.getItem('bindery_pdfx') === '1'; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('bindery_pdfx', pdfx ? '1' : '0'); } catch {}
+  }, [pdfx]);
   const [history, setHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
 
@@ -90,12 +101,12 @@ export default function ExportPopover({ bookId, totalPages, exporting, onExport,
     if (!Number.isFinite(s) || !Number.isFinite(en)) return;
     if (s < 1 || en < 1 || s > en || s > totalPages) return;
     setOpen(false);
-    onExport({ start: s, end: Math.min(en, totalPages) }, { previewInTab });
+    onExport({ start: s, end: Math.min(en, totalPages) }, { previewInTab, pdfx });
   };
 
   const submitFull = () => {
     setOpen(false);
-    onExport(null, { previewInTab });
+    onExport(null, { previewInTab, pdfx });
   };
 
   return (
@@ -132,6 +143,24 @@ export default function ExportPopover({ bookId, totalPages, exporting, onExport,
               className="w-4 h-4 accent-terracotta cursor-pointer"
             />
             <span>Open in new tab instead of downloading</span>
+          </label>
+          <label
+            className="flex items-start gap-2 mb-3 text-xs text-ink-soft cursor-pointer select-none"
+            data-testid="pdfx-label"
+          >
+            <input
+              type="checkbox"
+              checked={pdfx}
+              onChange={(e) => setPdfx(e.target.checked)}
+              data-testid="pdfx-toggle"
+              className="w-4 h-4 mt-px accent-terracotta cursor-pointer"
+            />
+            <span className="leading-snug">
+              <span className="text-ink">Print-ready (PDF/X-1a:2001)</span>
+              <span className="block text-[10px] text-ink-mute mt-0.5">
+                CMYK, embedded fonts, SWOP v2 OutputIntent. Required by most commercial printers. Adds ~15–30s.
+              </span>
+            </span>
           </label>
           <Button
             onClick={submitFull}
