@@ -110,6 +110,17 @@ body {
                 0 0 0 7px #9E4532 !important;
 }
 
+/* Indeterminate progress sweep for the PDF export toast — slides a
+   30%-wide segment across the track. Used when stage progress doesn't
+   yet have a numeric fraction (e.g. "preparing chromium"). */
+@keyframes pdf-export-indeterminate-sweep {
+    0%   { transform: translateX(-100%); }
+    100% { transform: translateX(300%); }
+}
+.pdf-export-indeterminate {
+    animation: pdf-export-indeterminate-sweep 1.4s linear infinite;
+}
+
 /* Hide outline rings on rnd children we manage manually */
 .react-draggable-dragging .block-wrapper {
     transform: scale(1.02);

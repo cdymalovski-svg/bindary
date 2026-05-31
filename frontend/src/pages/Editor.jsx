@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
+import PdfExportToast from '@/components/PdfExportToast';
 import {
   ArrowLeft,
   Plus,
@@ -1037,9 +1038,50 @@ export default function Editor() {
       kindLabel = '';
     }
     const modeLabel = pdfx ? ' · Print-ready' : '';
-    toast.loading(`Building PDF${kindLabel}${modeLabel}…`, { id: toastId });
+    // Local cancel state — shared between the cancel button (rendered
+    // inside the toast) and the poll loop below. We use a plain object
+    // rather than a ref so the function-scoped closure can flip the
+    // flag without re-rendering Editor.
+    const cancelState = { cancelled: false, jobId: null };
     const t0 = performance.now();
     const BASE = process.env.REACT_APP_BACKEND_URL;
+    // All `/api/*` calls require the JWT — pull it from the same store
+    // axios uses so we don't bypass auth when using raw fetch.
+    const token = (() => {
+      try { return localStorage.getItem('bindery_token'); } catch { return null; }
+    })();
+    const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
+
+    const onCancel = async () => {
+      if (cancelState.cancelled) return;
+      cancelState.cancelled = true;
+      toast.dismiss(toastId);
+      toast.message('Cancelling export…', { id: toastId, duration: 4000 });
+      // Best-effort — if the backend hasn't created the job doc yet,
+      // the poll loop will see the local flag and stop anyway.
+      if (cancelState.jobId) {
+        try {
+          await fetch(
+            `${BASE}/api/books/${book.id}/pdf-jobs/${cancelState.jobId}/cancel`,
+            { method: 'POST', headers: authHeaders },
+          );
+        } catch { /* swallow — frontend has already stopped polling */ }
+      }
+    };
+
+    const renderToast = ({ stage, done, total, elapsedSec }) => (
+      <PdfExportToast
+        title={`Building PDF${kindLabel}${modeLabel}`}
+        stage={stage}
+        done={done}
+        total={total}
+        elapsedSec={elapsedSec}
+        onCancel={onCancel}
+      />
+    );
+    toast.custom(() => renderToast({ stage: 'Starting…', done: 0, total: 0, elapsedSec: 0 }), {
+      id: toastId, duration: Infinity,
+    });
     try {
       // Persist any in-flight edits before the server renders.
       await saveBook(false);
@@ -1053,12 +1095,6 @@ export default function Editor() {
       if (coverSpread) bodyObj.cover_spread = true;
       if (spineWidthIn != null) bodyObj.spine_width_in = spineWidthIn;
       const body = Object.keys(bodyObj).length ? JSON.stringify(bodyObj) : undefined;
-      // All `/api/*` calls require the JWT — pull it from the same store
-      // axios uses so we don't bypass auth when using raw fetch.
-      const token = (() => {
-        try { return localStorage.getItem('bindery_token'); } catch { return null; }
-      })();
-      const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
       const startResp = await fetch(`${BASE}/api/books/${book.id}/pdf-jobs`, {
         method: 'POST',
         headers: {
@@ -1073,6 +1109,17 @@ export default function Editor() {
         throw new Error(detail);
       }
       const { job_id } = await startResp.json();
+      cancelState.jobId = job_id;
+      // If the user clicked Cancel in the brief window between starting
+      // the job and getting its id back, fire the cancel request now.
+      if (cancelState.cancelled) {
+        try {
+          await fetch(`${BASE}/api/books/${book.id}/pdf-jobs/${job_id}/cancel`, {
+            method: 'POST', headers: authHeaders,
+          });
+        } catch {}
+        throw new Error('Cancelled by user');
+      }
       // Poll status. Cap at ~10 min so a cold start (Chromium install) or a
       // very large book still has time to finish. Each individual request
       // is sub-second; only the wall-clock can grow.
@@ -1081,7 +1128,15 @@ export default function Editor() {
       let lastStatus = 'pending';
       let lastStage = '';
       let serverFilename = null;
+      // Parse the streaming Ghostscript / chunk-render fraction out of the
+      // stage string so the toast renders a real progress bar.
+      // Matches "converting to PDF/X-1a (12/100)" and "rendering chunk 2/5".
+      const STAGE_FRACTION = /\((\d+)\s*\/\s*(\d+)\)|(\d+)\s*\/\s*(\d+)\s*$/;
       while (Date.now() - start < 600_000) {
+        if (cancelState.cancelled) {
+          // Local cancel already fired the backend cancel request. Bail.
+          throw new Error('Cancelled by user');
+        }
         await new Promise((r) => setTimeout(r, 1200));
         const s = await fetch(STATUS_URL, { headers: authHeaders });
         if (!s.ok) {
@@ -1094,13 +1149,26 @@ export default function Editor() {
         if (sb.status === 'ready') { serverFilename = sb.filename || null; break; }
         if (sb.status === 'failed') {
           const detail = sb.error || 'PDF build failed';
+          // "Cancelled by user" is not an error — surface a calm message.
+          if (detail.toLowerCase().includes('cancelled')) {
+            throw new Error('Cancelled by user');
+          }
           const tail = sb.trace ? ` (${String(sb.trace).slice(0, 120)})` : '';
           throw new Error(`${detail}${tail}`);
         }
-        // Otherwise (pending) — show stage + elapsed on the toast.
-        const elapsed = Math.round((Date.now() - start) / 1000);
-        const label = lastStage ? `${lastStage} · ${elapsed}s` : `${elapsed}s`;
-        toast.loading(`Building PDF${kindLabel}… ${label}`, { id: toastId });
+        // Otherwise (pending) — update the custom toast with stage + fraction.
+        const elapsedSec = Math.round((Date.now() - start) / 1000);
+        let done = 0;
+        let total = 0;
+        const match = STAGE_FRACTION.exec(lastStage || '');
+        if (match) {
+          done = parseInt(match[1] || match[3], 10);
+          total = parseInt(match[2] || match[4], 10);
+        }
+        toast.custom(
+          () => renderToast({ stage: lastStage || 'Working…', done, total, elapsedSec }),
+          { id: toastId, duration: Infinity },
+        );
       }
       if (lastStatus !== 'ready') {
         const stageHint = lastStage ? ` (stuck at: ${lastStage})` : '';
@@ -1162,6 +1230,11 @@ export default function Editor() {
     } catch (e) {
       console.error(e);
       const raw = e?.message || 'Export failed';
+      // A cancellation isn't an error — show a calm neutral toast.
+      if (cancelState.cancelled || raw.toLowerCase().includes('cancelled by user')) {
+        toast.message('Export cancelled', { id: toastId, duration: 3500 });
+        return;
+      }
       const isNetwork =
         e?.name === 'AbortError' ||
         /failed to fetch|networkerror|load failed/i.test(raw);

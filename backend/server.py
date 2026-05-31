@@ -637,6 +637,25 @@ async def _run_pdf_job(
     # We coalesce updates so a callback storm doesn't hammer Mongo.
     last_stage: dict = {"v": None}
 
+    class _Cancelled(Exception):
+        """Raised by `_check_cancelled` when the user has clicked Cancel on
+        the export toast. The except clause in the main worker catches it
+        and flips the job to failed with a clean 'Cancelled by user'
+        message — and crucially stops further Playwright/Ghostscript work
+        so the pod's resources are freed immediately."""
+
+    async def _check_cancelled() -> None:
+        """Called at every coarse checkpoint in the main flow (between
+        chunks, between major stages). Mongo round-trip is sub-ms locally
+        so this is cheap. We avoid calling it from `_on_stage` because
+        that's a sync callback executed from inside synchronous render
+        code — we can't await there."""
+        doc = await db.pdf_jobs.find_one(
+            {"job_id": job_id}, {"_id": 0, "cancel_requested": 1}
+        )
+        if doc and doc.get("cancel_requested"):
+            raise _Cancelled()
+
     def _on_stage(stage: str) -> None:
         if stage == last_stage["v"]:
             return
@@ -673,6 +692,7 @@ async def _run_pdf_job(
         is_range = start_page is not None or end_page is not None
 
         _on_stage("starting")
+        await _check_cancelled()
         if cover_spread:
             # Cover spread overrides any range — by definition it builds
             # the cover ONLY, using pages[0] and pages[-1].
@@ -702,6 +722,7 @@ async def _run_pdf_job(
                 total_pages_pdfx = len(PdfReader(BytesIO(pdf_bytes)).pages)
             except Exception:
                 total_pages_pdfx = None
+            await _check_cancelled()
             _on_stage("converting to PDF/X-1a")
             pdf_bytes = await convert_to_pdfx(
                 pdf_bytes,
@@ -709,6 +730,7 @@ async def _run_pdf_job(
                 total_pages=total_pages_pdfx,
                 progress_cb=_on_stage,
             )
+        await _check_cancelled()
         safe = re.sub(r"[^A-Za-z0-9._-]+", "_", book.get("title") or "book").strip("_") or "book"
         # Filename includes the range when partial so users get distinct
         # downloads on disk: "MyBook_pp_1-50.pdf" / "MyBook_pp_51-112.pdf".
@@ -739,6 +761,18 @@ async def _run_pdf_job(
                 "object_path": object_path,
                 "finished_at": _now_iso(),
             }},
+        )
+    except _Cancelled:
+        # User clicked the X on the export toast. Flip the job to a clean
+        # 'failed' state with a friendly reason — the frontend special-
+        # cases this string to show "Export cancelled" instead of the
+        # alarming red error toast.
+        logging.info("PDF job %s cancelled by user", job_id)
+        await db.pdf_jobs.update_one(
+            {"job_id": job_id},
+            {"$set": {"status": "failed",
+                      "error": "Cancelled by user",
+                      "finished_at": _now_iso()}},
         )
     except Exception as e:
         # Capture a snippet of the traceback so the client toast can show
@@ -864,7 +898,33 @@ async def export_pdf_status(book_id: str, job_id: str):
         resp["error"] = job.get("error") or "PDF build failed"
         if job.get("trace"):
             resp["trace"] = job["trace"]
+    if job.get("cancel_requested"):
+        # Surface the user's cancel intent even if the worker hasn't
+        # noticed yet — the frontend uses this to stop polling at the
+        # next tick rather than waiting for the worker to flip to failed.
+        resp["cancel_requested"] = True
     return resp
+
+
+@api_router.post("/books/{book_id}/pdf-jobs/{job_id}/cancel")
+async def cancel_pdf_job(book_id: str, job_id: str):
+    """Mark a still-pending PDF job as cancelled. The worker checks this
+    flag at every stage tick and bails out (raising a cancellation
+    error that flips the job to `failed` with a clean message). Already
+    finished jobs are a no-op — the response still returns 200 so the
+    caller doesn't need to distinguish."""
+    job = await db.pdf_jobs.find_one(
+        {"job_id": job_id, "book_id": book_id}, {"_id": 0, "status": 1}
+    )
+    if not job:
+        raise HTTPException(404, "Job not found")
+    if job["status"] != "pending":
+        return {"cancel_requested": False, "status": job["status"]}
+    await db.pdf_jobs.update_one(
+        {"job_id": job_id, "book_id": book_id},
+        {"$set": {"cancel_requested": True}},
+    )
+    return {"cancel_requested": True, "status": "pending"}
 
 
 @api_router.get("/books/{book_id}/pdf-jobs/{job_id}/download")
