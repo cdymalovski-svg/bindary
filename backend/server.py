@@ -746,9 +746,22 @@ async def _run_pdf_job(
                 if is_range else f"{safe}{pdfx_suffix}.pdf"
             )
         # Upload PDF bytes to shared object storage so any pod can serve them.
+        # We wrap the upload in a wall-clock timeout so a misbehaving
+        # storage backend (network blip, slow upstream) can never leave
+        # the job in `pending` forever — the user sees a clean failure
+        # toast and can retry instead of waiting indefinitely.
         _on_stage("uploading")
         object_path = f"{_PDF_OBJECT_PREFIX}/{job_id}.pdf"
-        await asyncio.to_thread(put_object, object_path, pdf_bytes, "application/pdf")
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(put_object, object_path, pdf_bytes, "application/pdf"),
+                timeout=120,
+            )
+        except asyncio.TimeoutError:
+            raise RuntimeError(
+                "PDF upload to object storage timed out after 2 min — "
+                "storage backend may be unavailable. Please try again."
+            ) from None
         await db.pdf_jobs.update_one(
             {"job_id": job_id},
             {"$set": {

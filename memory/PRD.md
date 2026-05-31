@@ -228,6 +228,17 @@ Build me a book template app to be able to add texts and illustrations, page num
 - Multi-user accounts + library sharing.
 - Pan-while-zoomed gesture on iPad (drag canvas while pinch >100%).
 
+## What's been implemented (2026-05-31 / iteration 32 — Defensive fixes for silent PDF/X-1a hangs)
+- **Bug (production)**: User reported a 22-page Print-ready export visibly reached "chunk 4/5" then the progress bar disappeared and only the duration counter ticked for 5–6 minutes — no final "uploading" stage, no error toast, no completion. Job sat in `pending` indefinitely with no obvious diagnostic.
+- **Root cause #1 — Ghostscript stdout block-buffering**: When `gs` writes to a pipe (not a TTY), libc default-buffers stdout in 4–64KB blocks. Our `_drain_stdout` `readline()` loop saw nothing until the buffer flushed — which on small books can be the entire conversion. The toast went silent for the full Ghostscript run.
+- **Root cause #2 — no heartbeat during long phases**: If Ghostscript hit a slow PDF-parse / ICC-profile-load phase before its first `Page N` line, no progress callback fired for many seconds. Toast looked frozen even when the worker was healthy.
+- **Root cause #3 — no upload timeout**: `put_object` (Emergent object-storage SDK) had no wall-clock guard. A network blip or stalled upstream connection could leave the worker hanging forever — job would never flip to `failed`, never resolve. This is the most likely explanation for the user's "never saw uploading" report.
+- **Fixes in `pdfx_converter.py`**:
+  - Wrap the `gs` command with `stdbuf -oL` (coreutils, available in every Debian/Ubuntu image) — forces Ghostscript stdout to line-buffer mode so `Page N` ticks arrive in real time instead of in an end-of-process burst.
+  - Added a `_heartbeat` task running alongside the drainers. Every 2 seconds, if nothing else has emitted a tick in the last 2.5s, it fires `progress_cb` with either `converting to PDF/X-1a (P/N) · Xs` (preserving the last known fraction) or `converting to PDF/X-1a · working Xs`. Toast can never go silent while the subprocess is alive.
+- **Fix in `server.py`**: Wrapped the `put_object` upload in `asyncio.wait_for(..., timeout=120)`. A stalled storage upload now flips the job to `failed` after 2 minutes with the message "PDF upload to object storage timed out after 2 min" instead of hanging forever in `pending`.
+- **Verified** on preview with a full Print-ready export — `stdbuf` is present at `/usr/bin/stdbuf`, first `(1/4)` tick arrived within 4s of submit, bar visibly held at `4/4` through the upload phase. All 17 PDF-job + cancel tests pass.
+
 ## What's been implemented (2026-05-31 / iteration 31 — Progress bar stays visible between phases)
 - **Bug (production)**: The progress bar would visibly "disappear" between phases — e.g. after "rendering chunk 4/5" the next stage ("merging chunks", "uploading", or Ghostscript warming up before its first page tick) emits a stage string with no numeric fraction, which collapsed the bar to a 30%-wide indeterminate sweep that users couldn't see well. The duration counter ticked alone for several seconds before the next phase's fraction kicked in.
 - **Fix in `Editor.onExportPdf`**: persist the last seen `{done, total}` across poll iterations. When the current stage has no fraction (e.g. "merging chunks", "uploading", "converting to PDF/X-1a" pre-tick), the toast now keeps the bar pinned at the previous phase's 100% so progress looks continuous. As soon as the next phase emits its first numeric tick, the bar resets to that phase's denominator.

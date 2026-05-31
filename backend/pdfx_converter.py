@@ -200,6 +200,16 @@ async def convert_to_pdfx(
             str(defs_ps),
             str(in_pdf),
         ]
+        # Wrap with `stdbuf -oL` when available so Ghostscript's stdout
+        # flushes line-by-line instead of being block-buffered by libc
+        # (default when stdout is a pipe rather than a TTY). Without
+        # this, the `Page N` ticks can accumulate in a 4-64 KB pipe
+        # buffer and arrive in a single burst at the end — making the
+        # progress bar look frozen for the entire conversion on small
+        # books. `stdbuf` is part of coreutils; available on every
+        # Debian/Ubuntu container we ship to.
+        if shutil.which("stdbuf") is not None:
+            cmd = ["stdbuf", "-oL", *cmd]
 
         log.info(
             "PDFX conversion starting (in=%d bytes, total_pages=%s)",
@@ -232,6 +242,14 @@ async def convert_to_pdfx(
             raise RuntimeError(f"Ghostscript could not be launched: {e}") from None
 
         stderr_chunks: list[bytes] = []
+        # Tracks the last time we emitted any progress for the heartbeat
+        # below. Updated by `_report` (page tick) and by the heartbeat
+        # itself. Using a mutable list so the inner closures share state.
+        last_emit: list[float] = [asyncio.get_event_loop().time()]
+        gs_start = last_emit[0]
+        # Holds the last seen page number so heartbeats can keep the bar
+        # at the correct fraction instead of dropping back to "no number".
+        last_page: list[int] = [0]
 
         async def _drain_stderr() -> None:
             assert proc.stderr is not None
@@ -259,14 +277,54 @@ async def convert_to_pdfx(
                         n = int(line[5:].strip())
                     except ValueError:
                         continue
+                    last_page[0] = n
+                    last_emit[0] = asyncio.get_event_loop().time()
                     _report(n)
 
-        # Run both drainers and the process wait concurrently with a single
-        # overall timeout. If the timeout fires we kill the process so it
-        # doesn't linger as a zombie.
+        async def _heartbeat() -> None:
+            """Defensive: even on Linux with `stdbuf -oL` we occasionally
+            see Ghostscript hold stdout for several seconds during its
+            initial PDF parse + ICC profile load — the progress bar would
+            look frozen and the user would assume the worker died. This
+            task fires every 2s; if nothing else has emitted a tick in
+            the last 2.5s, we push a heartbeat string that includes the
+            elapsed time so the frontend toast and the underlying Mongo
+            stage record both visibly advance. The polling client uses
+            this to confirm the worker is alive even when gs is silent.
+            Exits cleanly when the subprocess exits."""
+            while proc.returncode is None:
+                await asyncio.sleep(2.0)
+                if proc.returncode is not None:
+                    return
+                now = asyncio.get_event_loop().time()
+                if now - last_emit[0] < 2.5:
+                    continue
+                if progress_cb is None:
+                    last_emit[0] = now
+                    continue
+                elapsed = int(now - gs_start)
+                try:
+                    if total_pages and last_page[0] > 0:
+                        # Keep the fraction stable so the progress bar
+                        # stays visibly filled at the last known page.
+                        progress_cb(
+                            f"converting to PDF/X-1a ({last_page[0]}/{total_pages}) "
+                            f"· {elapsed}s"
+                        )
+                    else:
+                        progress_cb(f"converting to PDF/X-1a · working {elapsed}s")
+                except Exception:
+                    pass
+                last_emit[0] = now
+
+        # Run both drainers, the heartbeat and the process wait
+        # concurrently with a single overall timeout. If the timeout
+        # fires we kill the process so it doesn't linger as a zombie.
         try:
             await asyncio.wait_for(
-                asyncio.gather(_drain_stdout(), _drain_stderr(), proc.wait()),
+                asyncio.gather(
+                    _drain_stdout(), _drain_stderr(), _heartbeat(), proc.wait()
+                ),
                 timeout=600,
             )
         except asyncio.TimeoutError:
