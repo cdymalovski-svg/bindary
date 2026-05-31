@@ -1043,9 +1043,18 @@ export default function Editor() {
       if (coverSpread) bodyObj.cover_spread = true;
       if (spineWidthIn != null) bodyObj.spine_width_in = spineWidthIn;
       const body = Object.keys(bodyObj).length ? JSON.stringify(bodyObj) : undefined;
+      // All `/api/*` calls require the JWT — pull it from the same store
+      // axios uses so we don't bypass auth when using raw fetch.
+      const token = (() => {
+        try { return localStorage.getItem('bindery_token'); } catch { return null; }
+      })();
+      const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
       const startResp = await fetch(`${BASE}/api/books/${book.id}/pdf-jobs`, {
         method: 'POST',
-        headers: body ? { 'Content-Type': 'application/json' } : undefined,
+        headers: {
+          ...(body ? { 'Content-Type': 'application/json' } : {}),
+          ...authHeaders,
+        },
         body,
       });
       if (!startResp.ok) {
@@ -1064,7 +1073,7 @@ export default function Editor() {
       let serverFilename = null;
       while (Date.now() - start < 600_000) {
         await new Promise((r) => setTimeout(r, 1200));
-        const s = await fetch(STATUS_URL);
+        const s = await fetch(STATUS_URL, { headers: authHeaders });
         if (!s.ok) {
           if (s.status === 404) throw new Error('PDF job expired — please try again');
           continue; // transient — keep polling
@@ -1081,7 +1090,7 @@ export default function Editor() {
         // Otherwise (pending) — show stage + elapsed on the toast.
         const elapsed = Math.round((Date.now() - start) / 1000);
         const label = lastStage ? `${lastStage} · ${elapsed}s` : `${elapsed}s`;
-        toast.loading(`Building PDF${rangeLabel}… ${label}`, { id: toastId });
+        toast.loading(`Building PDF${kindLabel}… ${label}`, { id: toastId });
       }
       if (lastStatus !== 'ready') {
         const stageHint = lastStage ? ` (stuck at: ${lastStage})` : '';
@@ -1090,7 +1099,9 @@ export default function Editor() {
 
       // Stream the bytes — this is a fast, fully-buffered response, so no
       // proxy timeout risk.
-      const dl = await fetch(`${BASE}/api/books/${book.id}/pdf-jobs/${job_id}/download`);
+      const dl = await fetch(`${BASE}/api/books/${book.id}/pdf-jobs/${job_id}/download`, {
+        headers: authHeaders,
+      });
       if (!dl.ok) throw new Error(`Download failed (HTTP ${dl.status})`);
       const blob = await dl.blob();
       // Prefer the server's filename (carries the page-range suffix for

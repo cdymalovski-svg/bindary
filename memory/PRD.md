@@ -89,6 +89,12 @@ Build me a book template app to be able to add texts and illustrations, page num
 - **Canvas cache-busting**: Editor maintains an `assetCacheBuster` integer bumped after any replace. Canvas `<img>` URLs append `?v=<n>` so previously-cached failures are refetched and existing book pages light up the moment the user re-uploads, with no save/reload required.
 - New tests in `tests/test_assets_api.py::TestAssetReplace`: verifies id+path preservation, byte overwrite, 404 on missing asset, and 400 on non-image uploads. All 56 backend tests now pass.
 
+## What's been implemented (2026-05-31 / iteration 25 — Fix: PDF export 401)
+- **Bug**: PDF export from the Editor failed with `"Not authenticated"`. Cause: the three PDF-job calls (start, poll, download) used raw `fetch()` which bypasses the axios interceptor that injects the JWT Bearer token. The global `/api/*` AuthGuard then rejected the requests.
+- **Fix**: read `localStorage('bindery_token')` once at the top of `onExportPdf` and merge an `Authorization: Bearer <token>` header into all three fetch calls.
+- **Also fixed**: undefined-variable bug (`rangeLabel` left over from the cover-spread refactor) that would have thrown a `ReferenceError` inside the poll loop when reporting progress.
+- Verified end-to-end via screenshot — toast reads "PDF exported in 10.8s".
+
 ## What's been implemented (2026-05-31 / iteration 24 — Print-ready cover spread)
 - **Cover spread export**: new "Print-ready cover" section in the Export popover. One click produces a single wide PDF in IngramSpark layout — `BACK | SPINE | FRONT` with 0.125" bleed on every outside edge. Filename suffix `_cov.pdf` (or `_cov_pdfx.pdf` with PDF/X-1a). Spine width auto-computes from `(page_count − 2) × 0.002252` inches (IngramSpark white-paper caliper) or accepts a manual override per printer.
 - **New `build_cover_spread_pdf` in `pdf_builder.py`** — reuses `_render_page` so the cover artwork is byte-identical to the editor. Spine background harmonises with the front cover's `background_color`. Bleed bands tint outside-edge area in spine colour for clean trim.
