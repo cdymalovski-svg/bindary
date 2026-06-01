@@ -1228,9 +1228,10 @@ export default function Editor() {
           document.body.appendChild(a);
           a.click();
           a.remove();
+          toast.dismiss(toastId);
           toast.warning(
             'Popup blocked — downloaded instead. Allow popups for this site to use Preview-in-tab.',
-            { id: toastId, duration: 8000 },
+            { duration: 8000 },
           );
           // Old toast was replaced; create a new "exported" one below.
         }
@@ -1246,27 +1247,44 @@ export default function Editor() {
         URL.revokeObjectURL(url);
       }
       const secs = ((performance.now() - t0) / 1000).toFixed(1);
+      // Explicitly dismiss the custom progress toast before showing the
+      // success message. Sonner's `toast.success({ id })` does not
+      // reliably replace a `toast.custom` render — the progress bar
+      // lingers visually. Dismiss + fresh toast gives a clean swap.
+      toast.dismiss(toastId);
       toast.success(
-        previewInTab ? `PDF ready in ${secs}s — opened in new tab` : `PDF exported in ${secs}s`,
-        { id: toastId },
+        previewInTab
+          ? `PDF export complete in ${secs}s — opened in new tab`
+          : `PDF export complete in ${secs}s`,
+        // Persist until the user dismisses it so a completed job is
+        // never missed (they might have switched tabs while it ran).
+        { duration: Infinity, closeButton: true },
       );
       // Refresh the export-history list so the popover updates immediately.
       setExportsBump((n) => n + 1);
     } catch (e) {
       console.error(e);
       const raw = e?.message || 'Export failed';
+      // Dismiss the custom progress toast so the new message replaces it
+      // cleanly — `toast.error({ id })` against a `toast.custom` does not
+      // reliably swap the render in Sonner.
+      toast.dismiss(toastId);
       // A cancellation isn't an error — show a calm neutral toast.
       if (cancelState.cancelled || raw.toLowerCase().includes('cancelled by user')) {
-        toast.message('Export cancelled', { id: toastId, duration: 3500 });
+        toast.message('PDF export cancelled', {
+          duration: Infinity, closeButton: true,
+        });
         return;
       }
       const isNetwork =
         e?.name === 'AbortError' ||
         /failed to fetch|networkerror|load failed/i.test(raw);
       const friendly = isNetwork
-        ? 'Couldn\'t reach the PDF service. Check your connection and try again.'
-        : `Export failed: ${raw.slice(0, 200)}`;
-      toast.error(friendly, { id: toastId, duration: 10000 });
+        ? 'PDF export failed: couldn\'t reach the PDF service. Check your connection and try again.'
+        : `PDF export failed: ${raw.slice(0, 200)}`;
+      // Errors and cancellations stay until dismissed so the user sees
+      // them even after switching tabs / scrolling away.
+      toast.error(friendly, { duration: Infinity, closeButton: true });
     } finally {
       setExporting(false);
     }
