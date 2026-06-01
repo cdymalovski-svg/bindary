@@ -197,7 +197,7 @@ PAGE_SIZES_PX = {
     "square": (800, 800),
     "book6x9": (576, 864),
 }
-PAGE_MARGIN_PX = 38  # 1cm @ 96dpi — matches frontend PAGE_MARGIN_PX (37.8 rounded).
+PAGE_MARGIN_PX = 48  # 0.5" @ 96dpi — matches frontend PAGE_MARGIN_PX.
 
 # IngramSpark / commercial-print interior bleed. Applied only when
 # `pdfx_bleed=True` is passed into build_book_pdf — adds 0.125" on top,

@@ -24,14 +24,14 @@ from typing import Iterable, List, Optional
 log = logging.getLogger("import")
 
 
-# Tuned per page size; mirrors the editor's PAGE_MARGIN_PX (1cm ≈ 38px).
+# Tuned per page size; mirrors the editor's PAGE_MARGIN_PX (0.5" = 48px).
 _PAGE_SIZES_PX = {
     "a4": (794, 1123),
     "letter": (816, 1056),
     "square": (800, 800),
     "book6x9": (576, 864),
 }
-_PAGE_MARGIN_PX = 38
+_PAGE_MARGIN_PX = 48
 
 
 # Hard cap so a runaway upload can't create thousands of pages.

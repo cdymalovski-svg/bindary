@@ -1427,7 +1427,7 @@ export default function Editor() {
           <span>
             {(pageSize.width / 96).toFixed(2)}″ × {(pageSize.height / 96).toFixed(2)}″
           </span>
-          <span className="opacity-70">1 cm margin</span>
+          <span className="opacity-70">0.5″ margin</span>
         </div>
 
         <div className="w-px h-6 bg-rule shrink-0 hidden lg:block" />
@@ -2106,6 +2106,33 @@ function PageCanvas({
             pointerEvents: 'none',
           }}
         />
+        {/* Safe-zone overlay — dashed terracotta outline tracing the inner
+            0.5" margin so designers can see at a glance where the trim
+            safety area lives. Hidden when this canvas is being used to
+            render the PDF (`forExport`) so the dashed line never bakes
+            into the export, and hidden on full-bleed pages (the margin
+            collapses to 0). pointerEvents:none keeps the overlay from
+            intercepting block clicks/drags. */}
+        {!forExport && !fullBleed && (
+          <div
+            aria-hidden
+            data-testid={`safe-zone-overlay-${pageIndex}`}
+            style={{
+              position: 'absolute',
+              top: margin,
+              left: margin,
+              width: innerW,
+              height: innerH,
+              border: '1px dashed rgba(158, 69, 50, 0.55)',
+              boxSizing: 'border-box',
+              pointerEvents: 'none',
+              // Below blocks (CanvasBlock uses higher z-index) but above
+              // the colour fill so the dashed line is always visible
+              // against any background colour.
+              zIndex: 1,
+            }}
+          />
+        )}
         {page.blocks.map((b) => (
           <CanvasBlock
             key={b.id}
