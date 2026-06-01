@@ -1414,6 +1414,21 @@ export default function Editor() {
             ))}
           </SelectContent>
         </Select>
+        {/* Live dimensions readout — shows the actual trim size of the
+            current page (the size the exported PDF will be) plus the 1 cm
+            inner margin so designers know exactly how much of the trim
+            their content can occupy. Hidden on the narrowest layouts to
+            keep the toolbar from wrapping. */}
+        <div
+          className="hidden md:flex flex-col items-start leading-tight text-[10px] text-ink-mute shrink-0 tabular-nums pl-1"
+          data-testid="page-dimensions-readout"
+          title="Trim size of the page (the PDF export dimensions) and the inner safety margin"
+        >
+          <span>
+            {(pageSize.width / 96).toFixed(2)}″ × {(pageSize.height / 96).toFixed(2)}″
+          </span>
+          <span className="opacity-70">1 cm margin</span>
+        </div>
 
         <div className="w-px h-6 bg-rule shrink-0 hidden lg:block" />
         <div className="hidden lg:flex items-center bg-white border border-rule rounded-sm h-8 p-0.5 shrink-0" data-testid="view-mode-toggle">
