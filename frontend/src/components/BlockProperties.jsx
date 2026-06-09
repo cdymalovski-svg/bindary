@@ -13,6 +13,7 @@ import {
   ChevronsDown,
   Maximize2,
   Save as SaveIcon,
+  Wand2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -53,6 +54,7 @@ export default function BlockProperties({
   onLayer,
   onFit,
   onSaveAsPreset,
+  onApplyPreset,
   onResetPreset,
   textPresets,
 }) {
@@ -213,6 +215,54 @@ export default function BlockProperties({
                 })}
               </>
             )}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+
+      {/* Apply-default — the inverse of Save-as-default. Snaps the
+          selected block back to one of the book's saved presets so a
+          manually-tweaked block can be restored to the canonical style.
+          Hidden when there's nothing to apply (no role would match) —
+          but we always render the menu since the built-in presets are
+          always available as a fallback. */}
+      {isText && onApplyPreset && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              data-testid="apply-preset-trigger"
+              className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-white border border-rule hover:bg-desk text-ink rounded-sm text-sm font-medium transition-colors"
+              title="Snap this block back to one of the book's default text styles"
+            >
+              <Wand2 className="w-4 h-4" />
+              Apply default style…
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="bg-paper border-rule rounded-sm w-48 p-1">
+            <DropdownMenuLabel className="text-[10px] tracking-[0.18em] uppercase text-ink-mute">
+              Apply preset
+            </DropdownMenuLabel>
+            <DropdownMenuItem
+              data-testid="apply-preset-title"
+              onClick={() => onApplyPreset('title')}
+              className="rounded-sm cursor-pointer"
+            >
+              Title preset
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              data-testid="apply-preset-subtitle"
+              onClick={() => onApplyPreset('subtitle')}
+              className="rounded-sm cursor-pointer"
+            >
+              Subtitle preset
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              data-testid="apply-preset-body"
+              onClick={() => onApplyPreset('body')}
+              className="rounded-sm cursor-pointer"
+            >
+              Page text preset
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       )}

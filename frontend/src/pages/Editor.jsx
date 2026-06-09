@@ -758,6 +758,39 @@ export default function Editor() {
       .catch(() => toast.error('Could not reset preset'));
   };
 
+  // Snap the selected text block to one of the saved (or built-in) presets.
+  // Inverse of `saveBlockAsPreset` — useful when a block has drifted from
+  // the canonical style and the user wants to restore it. Also tags the
+  // block with the role so future preset edits cascade onto it. The
+  // colour falls back to #000000 (mirroring `addTextBlock`'s behaviour
+  // for freshly-created blocks) so the apply-preset action is a full
+  // reset rather than a partial one.
+  const applyBlockPreset = (presetKey) => {
+    if (!selectedBlock || selectedBlock.type !== 'text') return;
+    const builtin = TEXT_PRESETS[presetKey] || {};
+    const userPreset = book?.text_presets?.[presetKey] || {};
+    const cfg = { ...builtin, ...userPreset };
+    updatePages((pages) =>
+      pages.map((p) => ({
+        ...p,
+        blocks: (p.blocks || []).map((b) =>
+          b.id === selectedBlock.id
+            ? {
+                ...b,
+                text_role: presetKey,
+                font_family: cfg.font_family,
+                font_size: cfg.font_size,
+                text_align: cfg.text_align,
+                color: cfg.color || '#000000',
+              }
+            : b
+        ),
+      }))
+    );
+    const label = TEXT_PRESETS[presetKey]?.label || presetKey;
+    toast.success(`Applied "${label}" style to this block`);
+  };
+
   // Quick context-menu actions invoked from the Assets panel.
   const replaceSelectedImageWithAsset = async (asset) => {
     if (!selectedBlock || selectedBlock.type !== 'image') {
@@ -1902,6 +1935,7 @@ export default function Editor() {
                   onLayer={changeLayer}
                   onFit={fitSelectedBlock}
                   onSaveAsPreset={saveBlockAsPreset}
+                  onApplyPreset={applyBlockPreset}
                   onResetPreset={resetPresetToDefault}
                   textPresets={book.text_presets}
                 />
