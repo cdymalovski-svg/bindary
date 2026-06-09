@@ -99,7 +99,7 @@ export default function Editor() {
     try { return localStorage.getItem('bindery_ink_warnings') === '1'; } catch { return false; }
   });
   useEffect(() => {
-    try { localStorage.setItem('bindery_ink_warnings', showInkWarnings ? '1' : '0'); } catch {}
+    try { localStorage.setItem('bindery_ink_warnings', showInkWarnings ? '1' : '0'); } catch { /* localStorage may be unavailable in some browser modes — ignore. */ }
   }, [showInkWarnings]);
   // Sidebar drawer state — below the `lg` breakpoint both sidebars become
   // overlay drawers triggered from toolbar icons (Pages on the left, Panels
@@ -162,10 +162,12 @@ export default function Editor() {
   const pageSize = book ? getPageSize(book.page_size) : PAGE_SIZES.a4;
 
   // Auto-switch right tab when selection changes.
+  // Intentionally depends only on `selectedBlockId` — including `setRightTab`
+  // would cause an unnecessary re-run on every render.
   useEffect(() => {
     if (selectedBlock) setRightTab('block');
     else setRightTab((cur) => (cur === 'block' ? 'page' : cur));
-  }, [selectedBlockId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedBlockId]);
 
   // --- Save ---
   const saveBook = useCallback(async (showToast = true) => {
@@ -341,6 +343,10 @@ export default function Editor() {
       font_size: cfg.font_size,
       text_align: cfg.text_align,
       color: cfg.color || '#000000',
+      // Tag the block with its origin preset so that future "Save as
+      // default…" changes can cascade to all blocks of the same type
+      // (Title / Subtitle / Page text) throughout the book.
+      text_role: preset,
     };
     updatePages((pages) =>
       pages.map((p, i) => (i === activePageIndex ? { ...p, blocks: [...p.blocks, block] } : p))
@@ -354,6 +360,13 @@ export default function Editor() {
   // the three presets (title/subtitle/body). Lives on the book document so
   // each book can keep its own typographic voice. Saved immediately (skipping
   // the 1.2s debounce) so reloading the editor picks up the new default.
+  //
+  // **Cascade**: every text block in the book whose `text_role` matches the
+  // saved preset is updated in lockstep — font_family, font_size,
+  // text_align and color all snap to the new default. The selected block
+  // is also tagged with `text_role: presetKey` (idempotent) so the next
+  // save can keep finding it. Position/size/html/role-less blocks
+  // (chapter headings, legacy untagged blocks) are NOT touched.
   const saveBlockAsPreset = (presetKey) => {
     if (!selectedBlock || selectedBlock.type !== 'text') return;
     const presetPatch = {
@@ -363,7 +376,36 @@ export default function Editor() {
       color: selectedBlock.color,
     };
     const newPresets = { ...(book.text_presets || {}), [presetKey]: presetPatch };
-    setBook((b) => ({ ...b, text_presets: newPresets }));
+
+    // Cascade the new style to every block with matching role across the
+    // book. Tag the selected block so it's caught next time too.
+    const cascadedPages = (book.pages || []).map((p) => ({
+      ...p,
+      blocks: (p.blocks || []).map((b) => {
+        if (b.id === selectedBlock.id) {
+          return { ...b, text_role: presetKey };
+        }
+        if (b.type !== 'text' || b.text_role !== presetKey) return b;
+        return {
+          ...b,
+          font_family: presetPatch.font_family,
+          font_size: presetPatch.font_size,
+          text_align: presetPatch.text_align,
+          color: presetPatch.color,
+        };
+      }),
+    }));
+    // Count how many sibling blocks the cascade touched so the toast can
+    // surface the impact ("Applied to 7 Title blocks").
+    let cascadeCount = 0;
+    (book.pages || []).forEach((p) => {
+      (p.blocks || []).forEach((b) => {
+        if (b.id === selectedBlock.id) return;
+        if (b.type === 'text' && b.text_role === presetKey) cascadeCount += 1;
+      });
+    });
+
+    setBook((b) => ({ ...b, text_presets: newPresets, pages: cascadedPages }));
     const label = TEXT_PRESETS[presetKey]?.label || presetKey;
     // Persist right away — don't wait for the autosave debounce.
     updateBook(book.id, {
@@ -373,11 +415,14 @@ export default function Editor() {
       page_number_start: book.page_number_start || 1,
       is_chapter_book: !!book.is_chapter_book,
       text_presets: newPresets,
-      pages: book.pages,
+      pages: cascadedPages,
     })
       .then(() => {
         setLastSavedAt(new Date());
-        toast.success(`Saved as default "${label}" for this book`);
+        const tail = cascadeCount > 0
+          ? ` · applied to ${cascadeCount} other ${label} block${cascadeCount === 1 ? '' : 's'}`
+          : '';
+        toast.success(`Saved as default "${label}" for this book${tail}`);
       })
       .catch(() => toast.error('Could not save preset'));
   };
@@ -463,6 +508,7 @@ export default function Editor() {
       font_size: titleFontSize,
       text_align: 'center',
       color: titleColor,
+      text_role: 'title',
     };
 
     const authorText = book.author ? `by ${book.author}` : '';
@@ -482,6 +528,7 @@ export default function Editor() {
           font_size: authorFontSize,
           text_align: 'center',
           color: authorColor,
+          text_role: 'subtitle',
         }
       : null;
 
@@ -1012,7 +1059,6 @@ export default function Editor() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedBlockId, saveBook, goPrevPage, goNextPage]);
 
   // --- PDF export (server-side, job-based to survive proxy timeouts) ---
@@ -1105,7 +1151,7 @@ export default function Editor() {
       });
       if (!startResp.ok) {
         let detail = `HTTP ${startResp.status}`;
-        try { const b = await startResp.json(); if (b?.detail) detail = b.detail; } catch {}
+        try { const b = await startResp.json(); if (b?.detail) detail = b.detail; } catch { /* response had no JSON body — keep generic HTTP detail. */ }
         throw new Error(detail);
       }
       const { job_id } = await startResp.json();
@@ -1117,7 +1163,7 @@ export default function Editor() {
           await fetch(`${BASE}/api/books/${book.id}/pdf-jobs/${job_id}/cancel`, {
             method: 'POST', headers: authHeaders,
           });
-        } catch {}
+        } catch { /* best-effort — frontend has already stopped polling. */ }
         throw new Error('Cancelled by user');
       }
       // Poll status. Cap at ~10 min so a cold start (Chromium install) or a

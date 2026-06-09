@@ -228,6 +228,14 @@ Build me a book template app to be able to add texts and illustrations, page num
 - Multi-user accounts + library sharing.
 - Pan-while-zoomed gesture on iPad (drag canvas while pinch >100%).
 
+## What's been implemented (2026-06-09 / iteration 34 — Text preset cascade)
+- **Feature**: When the user clicks **Save as default → Title / Subtitle / Page text** on a selected text block, the new style now cascades to every other text block of the same type across the book. Previously the preset was saved but existing blocks kept their old style.
+- **Data model**: added `text_role: Optional[str]` to `Block` in `backend/server.py`. New text blocks created via the toolbar's Text presets, and the Design Cover action (title + author italic), are tagged with their role at insertion time. Chapter headings remain untagged so they're never caught by the cascade.
+- **Frontend cascade**: `saveBlockAsPreset(role)` now (a) tags the selected block with `text_role: role` idempotently, (b) walks every page and updates `font_family / font_size / text_align / color` on every block whose `text_role` matches, then (c) persists the book immediately. Toast shows the cascade count, e.g. *"Saved as default 'Title' for this book · applied to 3 other Title blocks"*.
+- **Backwards-compat**: blocks pre-dating this feature have no `text_role` so they're invisible to the cascade — they can be opted in by clicking on them and re-running Save as default (which tags them going forward).
+- Verified end-to-end via Playwright: a book with three pages each containing a title block had its preset updated; backend roundtrip confirmed all three matching titles updated in lockstep while body blocks remained untouched.
+- **Lint cleanup** done as part of this work — fixed three empty-`catch` blocks in `Editor.jsx` so the platform linter only reports four pre-existing React Compiler warnings on legitimate setState-in-effect patterns (full refactor of this 2400-line file remains queued).
+
 ## What's been implemented (2026-05-31 / iteration 33 — Chromium prep lock deadlock fix)
 - **Bug (production)**: User's `/api/pdf-health` revealed a job stuck at `stage: "preparing chromium"` with `stage_at` only 22 ms after `created_at` — i.e. the worker emitted the stage, hit `ensure_chromium_installed()`, and **never returned**. `chromium_launchable: true` on the answering pod confirmed multi-pod roulette: one pod healthy, another silently hung.
 - **Root cause**: `ensure_chromium_installed()` acquired `_chromium_lock` (process-wide async lock) and ran `_try_launch_chromium()` + `_run_playwright_install()` with **no timeouts**. A hung launch probe (dev/shm exhaustion, missing libs) or a stalled Playwright CDN download would hold the lock **forever**. The startup background task that holds the lock also has no timeout, so it can freeze every PDF job that lands on that pod for the lifetime of the container.
