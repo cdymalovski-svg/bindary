@@ -363,10 +363,16 @@ export default function Editor() {
   //
   // **Cascade**: every text block in the book whose `text_role` matches the
   // saved preset is updated in lockstep — font_family, font_size,
-  // text_align and color all snap to the new default. The selected block
-  // is also tagged with `text_role: presetKey` (idempotent) so the next
-  // save can keep finding it. Position/size/html/role-less blocks
-  // (chapter headings, legacy untagged blocks) are NOT touched.
+  // text_align and color all snap to the new default. To make the feature
+  // work on legacy books where blocks weren't tagged at insertion time,
+  // we also detect untagged text blocks whose CURRENT style exactly
+  // matches the role's previous canonical style (the book override if
+  // set, otherwise the built-in default) — those are clearly the same
+  // role and get tagged + updated as part of the cascade. The selected
+  // block is also tagged with `text_role: presetKey` (idempotent) so the
+  // next save can keep finding it. One-off styled blocks (e.g. a
+  // deliberately italicised paragraph) won't match the canonical style
+  // and are left untouched.
   const saveBlockAsPreset = (presetKey) => {
     if (!selectedBlock || selectedBlock.type !== 'text') return;
     const presetPatch = {
@@ -377,17 +383,42 @@ export default function Editor() {
     };
     const newPresets = { ...(book.text_presets || {}), [presetKey]: presetPatch };
 
-    // Cascade the new style to every block with matching role across the
-    // book. Tag the selected block so it's caught next time too.
+    // Compute the previous canonical style for this role so we can detect
+    // legacy untagged body/title/subtitle blocks. Falls back to the
+    // built-in default (TEXT_PRESETS) when the user hasn't customised
+    // this preset yet. Body defaults from the importer use #1C1B19; the
+    // built-in palette uses #000000 — so we deliberately match on a
+    // narrowed set of fields (font family + size + align) plus accept
+    // either of the two known canonical colours. This catches blocks
+    // imported from .docx/.txt as well as blocks created via the
+    // toolbar's Text presets across the app's lifetime.
+    const builtin = TEXT_PRESETS[presetKey] || {};
+    const prev = { ...builtin, ...(book.text_presets?.[presetKey] || {}) };
+    const matchesPrevStyle = (b) =>
+      b.font_family === prev.font_family &&
+      Number(b.font_size) === Number(prev.font_size) &&
+      b.text_align === prev.text_align;
+
+    let cascadeCount = 0;
+    let retroTaggedCount = 0;
     const cascadedPages = (book.pages || []).map((p) => ({
       ...p,
       blocks: (p.blocks || []).map((b) => {
         if (b.id === selectedBlock.id) {
           return { ...b, text_role: presetKey };
         }
-        if (b.type !== 'text' || b.text_role !== presetKey) return b;
+        if (b.type !== 'text') return b;
+        const sameRole = b.text_role === presetKey;
+        // Only auto-tag truly-untagged blocks. A block already tagged as
+        // a DIFFERENT role (e.g. a Subtitle when we're saving Title)
+        // must never be hijacked into the new role by accident.
+        const isUntaggedMatch = !b.text_role && matchesPrevStyle(b);
+        if (!sameRole && !isUntaggedMatch) return b;
+        if (isUntaggedMatch) retroTaggedCount += 1;
+        cascadeCount += 1;
         return {
           ...b,
+          text_role: presetKey,
           font_family: presetPatch.font_family,
           font_size: presetPatch.font_size,
           text_align: presetPatch.text_align,
@@ -395,15 +426,6 @@ export default function Editor() {
         };
       }),
     }));
-    // Count how many sibling blocks the cascade touched so the toast can
-    // surface the impact ("Applied to 7 Title blocks").
-    let cascadeCount = 0;
-    (book.pages || []).forEach((p) => {
-      (p.blocks || []).forEach((b) => {
-        if (b.id === selectedBlock.id) return;
-        if (b.type === 'text' && b.text_role === presetKey) cascadeCount += 1;
-      });
-    });
 
     setBook((b) => ({ ...b, text_presets: newPresets, pages: cascadedPages }));
     const label = TEXT_PRESETS[presetKey]?.label || presetKey;
@@ -422,7 +444,10 @@ export default function Editor() {
         const tail = cascadeCount > 0
           ? ` · applied to ${cascadeCount} other ${label} block${cascadeCount === 1 ? '' : 's'}`
           : '';
-        toast.success(`Saved as default "${label}" for this book${tail}`);
+        const retro = retroTaggedCount > 0
+          ? ` (${retroTaggedCount} auto-detected)`
+          : '';
+        toast.success(`Saved as default "${label}" for this book${tail}${retro}`);
       })
       .catch(() => toast.error('Could not save preset'));
   };

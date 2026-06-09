@@ -228,6 +228,12 @@ Build me a book template app to be able to add texts and illustrations, page num
 - Multi-user accounts + library sharing.
 - Pan-while-zoomed gesture on iPad (drag canvas while pinch >100%).
 
+## What's been implemented (2026-06-09 / iteration 35 — Retroactive cascade for legacy/imported text)
+- **Bug**: First implementation of the text-preset cascade only updated blocks that already had a `text_role` field. Books created before the feature shipped — and books built via the `.docx/.txt` manuscript importer — had blank `text_role` on every text block, so the "Save as default Page text" action saved the preset but didn't visibly change anything. User's exact report: editing page 20 of a 50-page book should sync the other 49 pages, but didn't.
+- **Fix (frontend)**: `saveBlockAsPreset` now detects legacy untagged blocks by EXACT style-match against the role's previous canonical style (book preset if set, otherwise built-in `TEXT_PRESETS` default for that role). Matching blocks are tagged with the role AND updated in lockstep. One-off blocks styled deliberately differently (italic quote, footnote, etc.) don't match the canonical style and stay untouched. The toast surfaces the auto-detected count, e.g. *"applied to 49 other Page text blocks (49 auto-detected)"*.
+- **Fix (backend importer)**: `book_importer.py` now tags the three block kinds it emits with appropriate text roles — `title` for cover titles, `title` for chapter headings (so the heading cascade works), `body` for body text. Imported books cascade from day one without needing the retroactive matcher.
+- **Verified** end-to-end on a synthetic 5-page legacy book (no `text_role` on any block) — after clicking Save as default Page text, the backend confirms all 5 body blocks now have `text_role: 'body'` and the preset is stored. Toast correctly reports the auto-detected count.
+
 ## What's been implemented (2026-06-09 / iteration 34 — Text preset cascade)
 - **Feature**: When the user clicks **Save as default → Title / Subtitle / Page text** on a selected text block, the new style now cascades to every other text block of the same type across the book. Previously the preset was saved but existing blocks kept their old style.
 - **Data model**: added `text_role: Optional[str]` to `Block` in `backend/server.py`. New text blocks created via the toolbar's Text presets, and the Design Cover action (title + author italic), are tagged with their role at insertion time. Chapter headings remain untagged so they're never caught by the cascade.

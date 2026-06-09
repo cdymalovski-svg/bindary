@@ -299,6 +299,10 @@ def _body_block(text: str, page_w: int, page_h: int) -> dict:
         "text_align": "left",
         "color": "#1C1B19",
         "is_chapter": False,
+        # Tag imported body text so it participates in the "Save as default
+        # Page text" cascade — editing a single block updates every other
+        # body block across the whole imported book.
+        "text_role": "body",
     }
 
 
@@ -343,6 +347,7 @@ def _heading_blocks(heading: str, body: str, page_w: int, page_h: int) -> List[d
         "text_align": "left",
         "color": "#1C1B19",
         "is_chapter": False,
+        "text_role": "body",
     }
     return [heading_block, body_block]
 
@@ -375,6 +380,7 @@ def _title_block(text: str, page_w: int, page_h: int) -> dict:
         "text_align": "center",
         "color": "#1C1B19",
         "is_chapter": False,
+        "text_role": "title",
     }
 
 
