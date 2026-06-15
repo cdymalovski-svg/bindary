@@ -488,7 +488,7 @@ def _build_html(
     book: dict,
     image_data_urls: dict,
     page_range: Optional[tuple[int, int]] = None,
-    pdfx_bleed: bool = False,
+    pdfx_bleed: bool = True,
 ) -> tuple[str, int, int]:
     """Render a (slice of a) book to a self-contained HTML document.
 
@@ -800,7 +800,14 @@ async def build_book_pdf(
     progress_cb: Optional[Callable[[str], None]] = None,
     start_page: Optional[int] = None,
     end_page: Optional[int] = None,
-    pdfx_bleed: bool = False,
+    # Defaulted ON so every export embeds the 0.125" print bleed required
+    # for IngramSpark / commercial perfect-bound printing. Interior pages
+    # come out at trim+bleed (e.g. an 8.5×8.5 Square book exports as
+    # 8.625×8.75) so the printer can crop to the trim without leaving a
+    # white sliver at the edges. PDF/X-1a exports still flip this on
+    # because the PDF/X spec mandates a TrimBox/BleedBox annotation
+    # alongside the bleed pixels.
+    pdfx_bleed: bool = True,
 ) -> bytes:
     """Render the book to a PDF that exactly mirrors the editor view.
 
