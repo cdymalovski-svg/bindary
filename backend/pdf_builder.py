@@ -194,7 +194,7 @@ async def _ensure_chromium_installed_inner() -> None:
 PAGE_SIZES_PX = {
     "a4": (794, 1123),
     "letter": (816, 1056),
-    "square": (800, 800),
+    "square": (816, 816),
     "book6x9": (576, 864),
 }
 PAGE_MARGIN_PX = 48  # 0.5" @ 96dpi — matches frontend PAGE_MARGIN_PX.

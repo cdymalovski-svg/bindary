@@ -28,7 +28,7 @@ log = logging.getLogger("import")
 _PAGE_SIZES_PX = {
     "a4": (794, 1123),
     "letter": (816, 1056),
-    "square": (800, 800),
+    "square": (816, 816),
     "book6x9": (576, 864),
 }
 _PAGE_MARGIN_PX = 48
