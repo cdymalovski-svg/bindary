@@ -301,6 +301,19 @@ Build me a book template app to be able to add texts and illustrations, page num
 - **Tests** (`/app/backend/tests/test_ingramspark_phase3.py`): 10 cases — 5 unit (pixel-exact geometry) + 3 API (binding persisted, default stays perfect, invalid binding normalised) + 2 parametric. All 22 IngramSpark tests pass (Phase 1+2+3).
 - **Smoke-tested** end-to-end in preview: popover toggles cleanly between perfect/casebound, help text updates, casebound renders a wider PDF.
 
+## What's been implemented (2026-06-16 / iteration 40 — On-canvas Cover Spread Preview)
+- **Feature**: New **Cover** view-mode in the editor (`data-testid="view-mode-cover"`, `LayoutTemplate` icon) — sits next to Single/Spread. Renders a read-only BACK · SPINE · FRONT layout at the exact backend pixel dimensions, scaled to fit the viewport.
+- Overlay markers (SVG):
+  - Trim rectangle (solid terracotta) — doubles as the wrap-fold line on casebound
+  - 0.5" safe-margin rectangle (dashed green)
+  - Spine fold lines (dotted ink) flanking the spine band
+  - Casebound-only: board outline (dashed terracotta, inset 0.083" — helps spot text the wrap will hide)
+- Inline binding toolbar inside the preview lets the user flip Perfect-bound ↔ Casebound and override the spine width without leaving the canvas. Changes write to the same `localStorage` keys the ExportPopover uses.
+- `ExportPopover` now re-syncs its binding + spine width from `localStorage` every time the popover opens, so changes made in the preview are reflected immediately.
+- Spec chip (top) shows live geometry: `Trim 17.16″ × 8.50″ · Spine 0.157″ · Wrap 0.625″`. Legend (bottom) explains each overlay.
+- New file: `/app/frontend/src/components/CoverSpreadPreview.jsx`. Geometry constants mirror `pdf_builder.py` exactly (`COVER_BLEED_IN`, `CASEBOUND_WRAP_IN = 0.625`, `CASEBOUND_SPINE_ALLOWANCE_IN = 0.125`).
+- Smoke-tested end-to-end in preview: toggling binding in the Cover view immediately updates trim/wrap/spine geometry, board outline appears for casebound, and the ExportPopover picks up the same selection on next open.
+
 ## Next Tasks
 - Phase 3.3 — PDF document metadata (Title, Author, ISBN, Publisher into PDF properties).
 - Phase 3.2 — ICC profile picker (SWOP v2 vs Fogra39) in export popover.

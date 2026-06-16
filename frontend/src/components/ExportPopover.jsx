@@ -93,6 +93,19 @@ export default function ExportPopover({ bookId, totalPages, exporting, onExport,
     if (open) loadHistory();
   }, [open, refreshKey, loadHistory]);
 
+  // Re-sync binding + spine width from localStorage whenever the popover
+  // opens — the Editor's Cover Preview can mutate them too, and we want
+  // both surfaces to stay in sync without a full page reload.
+  useEffect(() => {
+    if (!open) return;
+    try {
+      const b = localStorage.getItem('bindery_binding');
+      setBinding(b === 'casebound' ? 'casebound' : 'perfect');
+      const s = localStorage.getItem('bindery_spine_width_in');
+      if (s !== null) setSpineWidthIn(s);
+    } catch { /* localStorage unavailable */ }
+  }, [open]);
+
   const handleDelete = async (id) => {
     try {
       await api.delete(`/books/${bookId}/exports/${id}`);

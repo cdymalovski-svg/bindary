@@ -25,6 +25,7 @@ import {
   ChevronUp,
   ChevronDown,
   Layers,
+  LayoutTemplate,
   PanelLeft,
   ChevronLeft,
   ChevronRight,
@@ -53,6 +54,7 @@ import SaveTemplateDialog from '@/components/SaveTemplateDialog';
 import HistoryDialog from '@/components/HistoryDialog';
 import ExportPopover from '@/components/ExportPopover';
 import CompliancePanel from '@/components/CompliancePanel';
+import CoverSpreadPreview from '@/components/CoverSpreadPreview';
 
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 
@@ -92,7 +94,31 @@ export default function Editor() {
   const [selectedBlockId, setSelectedBlockId] = useState(null);
   const [editingTextId, setEditingTextId] = useState(null);
   const [rightTab, setRightTab] = useState('assets'); // 'assets' | 'page' | 'block'
-  const [viewMode, setViewMode] = useState('single'); // 'single' | 'spread'
+  const [viewMode, setViewMode] = useState('single'); // 'single' | 'spread' | 'cover'
+  // Binding type for the cover-spread preview (and exports). Synced with
+  // the same localStorage key the ExportPopover uses so both surfaces
+  // agree on the user's chosen binding.
+  const [coverBinding, setCoverBinding] = useState(() => {
+    try {
+      const v = localStorage.getItem('bindery_binding');
+      return v === 'casebound' ? 'casebound' : 'perfect';
+    } catch { return 'perfect'; }
+  });
+  // Explicit spine width override (inches). Empty string = auto-compute
+  // from page count. Mirrors ExportPopover's persistence key.
+  const [coverSpineWidthIn, setCoverSpineWidthIn] = useState(() => {
+    try { return localStorage.getItem('bindery_spine_width_in') || ''; } catch { return ''; }
+  });
+  // Re-read both keys whenever the cover preview is opened, so a change
+  // made in the export popover is reflected without a full reload.
+  useEffect(() => {
+    if (viewMode !== 'cover') return;
+    try {
+      const b = localStorage.getItem('bindery_binding');
+      setCoverBinding(b === 'casebound' ? 'casebound' : 'perfect');
+      setCoverSpineWidthIn(localStorage.getItem('bindery_spine_width_in') || '');
+    } catch { /* localStorage unavailable — keep current state */ }
+  }, [viewMode]);
   // Print-time CMYK total ink warning. When on, blocks whose estimated
   // total ink exceeds 240% get a red ring overlay so designers can fix
   // them before sending the file to a commercial printer.
@@ -1570,6 +1596,15 @@ export default function Editor() {
           >
             <BookOpen className="w-3.5 h-3.5" /> <span className="hidden xl:inline">Spread</span>
           </button>
+          <button
+            type="button"
+            onClick={() => setViewMode('cover')}
+            data-testid="view-mode-cover"
+            className={`h-7 px-2.5 flex items-center gap-1 rounded-sm text-xs tracking-wide transition-colors ${viewMode === 'cover' ? 'bg-ink text-paper' : 'text-ink-soft hover:bg-desk'}`}
+            title="Cover spread (back · spine · front) with binding markers"
+          >
+            <LayoutTemplate className="w-3.5 h-3.5" /> <span className="hidden xl:inline">Cover</span>
+          </button>
         </div>
 
         <button
@@ -1865,6 +1900,25 @@ export default function Editor() {
           >
             {viewMode === 'spread' ? (
               renderSpread()
+            ) : viewMode === 'cover' ? (
+              <CoverSpreadPreview
+                book={book}
+                pageSize={pageSize}
+                binding={coverBinding}
+                spineWidthIn={(() => {
+                  const v = parseFloat(coverSpineWidthIn);
+                  return Number.isFinite(v) && v > 0 ? v : null;
+                })()}
+                onBindingChange={(b) => {
+                  setCoverBinding(b);
+                  try { localStorage.setItem('bindery_binding', b); } catch { /* storage unavailable */ }
+                }}
+                onSpineWidthChange={(v) => {
+                  const s = v != null ? String(v) : '';
+                  setCoverSpineWidthIn(s);
+                  try { localStorage.setItem('bindery_spine_width_in', s); } catch { /* storage unavailable */ }
+                }}
+              />
             ) : (
               <PageCanvas
                 page={activePage}
