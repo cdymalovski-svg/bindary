@@ -52,6 +52,20 @@ export default function ExportPopover({ bookId, totalPages, exporting, onExport,
   useEffect(() => {
     try { localStorage.setItem('bindery_spine_width_in', spineWidthIn); } catch {}
   }, [spineWidthIn]);
+  // Binding type for cover-spread export. `perfect` = perfect-bound POD
+  // (0.125" bleed all around, default IngramSpark spec). `casebound` =
+  // hardcover (0.625" wrap / turn-in on every outside edge + 0.125"
+  // spine-board allowance). Persists per-session so users who always
+  // print casebound don't re-toggle each export.
+  const [binding, setBinding] = useState(() => {
+    try {
+      const v = localStorage.getItem('bindery_binding');
+      return v === 'casebound' ? 'casebound' : 'perfect';
+    } catch { return 'perfect'; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('bindery_binding', binding); } catch {}
+  }, [binding]);
   const [history, setHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
 
@@ -119,13 +133,13 @@ export default function ExportPopover({ bookId, totalPages, exporting, onExport,
   };
 
   // Cover spread = a single wide PDF with BACK | SPINE | FRONT layout plus
-  // 0.125" bleed on every outside edge — the exact file IngramSpark and
-  // similar perfect-bound POD printers expect.
+  // outer-edge allowance (0.125" bleed for perfect-bound, 0.625" wrap for
+  // casebound). The exact file IngramSpark / KDP printers expect.
   const submitCoverSpread = () => {
     setOpen(false);
     const spineParsed = parseFloat(spineWidthIn);
     const spine = Number.isFinite(spineParsed) && spineParsed > 0 ? spineParsed : null;
-    onExport(null, { previewInTab, pdfx, coverSpread: true, spineWidthIn: spine });
+    onExport(null, { previewInTab, pdfx, coverSpread: true, spineWidthIn: spine, binding });
   };
 
   return (
@@ -262,13 +276,51 @@ export default function ExportPopover({ bookId, totalPages, exporting, onExport,
         </form>
 
         {/* Cover spread export — IngramSpark / commercial print layout:
-            BACK | SPINE | FRONT on one wide PDF page with 0.125" bleed. */}
+            BACK | SPINE | FRONT on one wide PDF page with the outer-edge
+            allowance appropriate to the chosen binding. */}
         <div className="px-4 py-3 border-b border-rule" data-testid="cover-spread-section">
           <p className="label-caps text-ink-mute mb-1">Print-ready cover</p>
           <p className="text-xs text-ink-mute mb-2 leading-snug">
-            Single wide PDF: back · spine · front, with 0.125&quot; bleed on every outside edge —
-            matches IngramSpark / KDP cover-file specs.
+            Single wide PDF: back · spine · front. Outer allowance matches the binding —
+            0.125&quot; bleed for perfect-bound, 0.625&quot; wrap for casebound hardcover.
           </p>
+
+          {/* Binding selector — radio-style row. Persisted in localStorage
+              so the user's last choice survives reloads. */}
+          <div
+            className="grid grid-cols-2 gap-1 mb-3 bg-rule/30 rounded-sm p-1"
+            role="radiogroup"
+            aria-label="Cover binding"
+            data-testid="cover-spread-binding"
+          >
+            <button
+              type="button"
+              onClick={() => setBinding('perfect')}
+              aria-pressed={binding === 'perfect'}
+              data-testid="binding-perfect"
+              className={`h-7 rounded-sm text-[11px] font-medium transition-colors ${
+                binding === 'perfect'
+                  ? 'bg-ink text-paper'
+                  : 'bg-transparent text-ink-soft hover:bg-white'
+              }`}
+            >
+              Perfect-bound
+            </button>
+            <button
+              type="button"
+              onClick={() => setBinding('casebound')}
+              aria-pressed={binding === 'casebound'}
+              data-testid="binding-casebound"
+              className={`h-7 rounded-sm text-[11px] font-medium transition-colors ${
+                binding === 'casebound'
+                  ? 'bg-ink text-paper'
+                  : 'bg-transparent text-ink-soft hover:bg-white'
+              }`}
+            >
+              Casebound hardcover
+            </button>
+          </div>
+
           <div className="flex items-end gap-2 mb-2">
             <div className="flex-1 space-y-1">
               <Label htmlFor="spine-width" className="text-[10px] text-ink-mute uppercase tracking-wider">
@@ -297,8 +349,9 @@ export default function ExportPopover({ bookId, totalPages, exporting, onExport,
             </Button>
           </div>
           <p className="text-[10px] text-ink-mute leading-snug">
-            Leave spine blank to auto-compute from page count (white paper, 0.002252&quot; per page).
-            For a 100-page book that&apos;s ~0.22&quot;.
+            {binding === 'casebound'
+              ? 'Casebound adds 0.625" wrap (turn-in) on every outside edge and +0.125" to the spine for the spine board. Leave spine blank to auto-compute.'
+              : 'Leave spine blank to auto-compute from page count (white paper, 0.002252" per page). For a 100-page book that\'s ~0.22".'}
           </p>
         </div>
 

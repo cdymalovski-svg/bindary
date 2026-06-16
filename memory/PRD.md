@@ -291,7 +291,20 @@ Build me a book template app to be able to add texts and illustrations, page num
 - **Race fix**: added a `cancelState.cancelled` guard right before the toast.custom redraw in the poll loop so a late status fetch can never overwrite the "Cancelling…" message.
 - **Tests**: new `tests/test_pdf_cancel.py` (3 cases) verifies 404 on unknown job, cancel flips a pending job to failed with the clean reason, and cancelling a finished job is a 200 no-op. 17/17 PDF tests pass.
 
+## What's been implemented (2026-06-16 / iteration 39 — Phase 3.1 Casebound hardcover spread)
+- **Feature**: The cover-spread exporter now supports two binding modes, surfaced as a Perfect-bound / Casebound hardcover toggle in the export popover.
+  - **Perfect-bound** (unchanged default): 0.125" bleed on every outside edge; spine = `interior_pages × paper_caliper`.
+  - **Casebound hardcover**: 0.625" wrap (turn-in) on every outside edge — replaces the bleed — and the spine widens by `CASEBOUND_SPINE_ALLOWANCE_IN = 0.125"` to account for the spine board + hinge gap. Matches the cover-file geometry IngramSpark casebound POD jobs expect.
+- **Backend** (`pdf_builder.py`): `_build_cover_spread_html` and `build_cover_spread_pdf` accept `binding: str`. Constants `CASEBOUND_WRAP_PX = 60` and `CASEBOUND_SPINE_ALLOWANCE_IN = 0.125` codify the spec.
+- **Backend** (`server.py`): `PdfJobStartRequest.binding` (defaults to `"perfect"`, normalised + validated; unknown values fall back). Stored on the `pdf_jobs` doc for traceability.
+- **Frontend** (`ExportPopover.jsx`): pill-style radio group (`data-testid="binding-perfect"` / `binding-casebound"`) with explanatory copy that flips between bleed/wrap context. Last choice persisted in `localStorage["bindery_binding"]`. Editor.jsx pipes `binding` into the request body only when casebound is selected.
+- **Tests** (`/app/backend/tests/test_ingramspark_phase3.py`): 10 cases — 5 unit (pixel-exact geometry) + 3 API (binding persisted, default stays perfect, invalid binding normalised) + 2 parametric. All 22 IngramSpark tests pass (Phase 1+2+3).
+- **Smoke-tested** end-to-end in preview: popover toggles cleanly between perfect/casebound, help text updates, casebound renders a wider PDF.
+
 ## Next Tasks
-- Refactor `Editor.jsx` for maintainability (now P1 — file size is regression-prone, >2200 lines).
-- Undo/Redo history.
+- Phase 3.3 — PDF document metadata (Title, Author, ISBN, Publisher into PDF properties).
+- Phase 3.2 — ICC profile picker (SWOP v2 vs Fogra39) in export popover.
+- Phase 3.4 — Starter-pack templates (8.5×8.5 Square / Casebound seeded on first launch).
+- Pure-K text strict override (PostScript `defs.ps` colour map — currently blocked).
+- Refactor `Editor.jsx` for maintainability (P1 — >2500 lines).
 - Drag-to-reorder pages in the sidebar.

@@ -706,6 +706,20 @@ COVER_BLEED_IN = 0.125
 PX_PER_INCH = 96
 COVER_BLEED_PX = round(COVER_BLEED_IN * PX_PER_INCH)  # = 12
 
+# IngramSpark casebound hardcover wrap / turn-in: 0.625" of extra material
+# on every OUTSIDE edge that folds over the board edges and adheres inside
+# the case. Replaces the perfect-bound 0.125" bleed (the wrap *is* the
+# bleed for casebound — anything inside the wrap can be trimmed off when
+# the book block is glued in).
+CASEBOUND_WRAP_IN = 0.625
+CASEBOUND_WRAP_PX = round(CASEBOUND_WRAP_IN * PX_PER_INCH)  # = 60
+
+# IngramSpark casebound spine allowance: extra material added to the spine
+# beyond the raw `page_count × paper_caliper` calculation, to account for
+# the board hinge & spine board thickness. Empirically derived from
+# IngramSpark's casebound cover-spec generator.
+CASEBOUND_SPINE_ALLOWANCE_IN = 0.125
+
 # IngramSpark white-paper interior caliper. Spine width (in) =
 # interior_page_count * 0.002252. We round generously for kids' books
 # (lots of art + heavy paper) but expose it to the caller so they can
@@ -718,18 +732,29 @@ def _build_cover_spread_html(
     image_data_urls: dict,
     spine_width_in: Optional[float] = None,
     paper_caliper_in: float = DEFAULT_PAPER_CALIPER_IN,
+    binding: str = "perfect",
 ) -> tuple[str, int, int]:
     """Build a single-page wide HTML for the cover spread:
 
         ┌──────────┬─────┬──────────┐
-        │   BACK   │SPINE│  FRONT   │   (+ 0.125" bleed all around)
+        │   BACK   │SPINE│  FRONT   │   (+ outer-edge allowance all around)
         └──────────┴─────┴──────────┘
 
-    Layout is IngramSpark perfect-bound: when you look at the printed cover
-    laid flat from the front, the back cover is on the left, the spine in
-    the middle, and the front cover on the right. The "front cover" is
-    `pages[0]` (the cover the editor designs); the "back cover" is the
-    final page (`pages[-1]`).
+    Two binding modes:
+      * `perfect` (default) — IngramSpark perfect-bound. 0.125" bleed on
+        every outside edge; spine width = interior_pages × paper_caliper.
+      * `casebound` — IngramSpark casebound hardcover. 0.625" of wrap
+        (turn-in) material on every outside edge (folds over the boards
+        and adheres inside the case), and the spine widens by
+        `CASEBOUND_SPINE_ALLOWANCE_IN` (0.125") to account for the spine
+        board thickness + hinge gap. The wrap replaces the bleed — there
+        is no separate 0.125" bleed for casebound files.
+
+    Layout convention: when you look at the printed cover laid flat from
+    the front, the back cover is on the left, the spine in the middle,
+    and the front cover on the right. The "front cover" is `pages[0]`
+    (the cover the editor designs); the "back cover" is the final page
+    (`pages[-1]`).
     """
     page_size_key = book.get("page_size") or "a4"
     page_w, page_h = PAGE_SIZES_PX.get(page_size_key, PAGE_SIZES_PX["a4"])
@@ -738,6 +763,15 @@ def _build_cover_spread_html(
     if total < 1:
         raise ValueError("Cover spread requires at least one page in the book")
 
+    binding = (binding or "perfect").lower()
+    if binding not in ("perfect", "casebound"):
+        binding = "perfect"
+    is_casebound = binding == "casebound"
+
+    # Outer allowance: how many extra pixels are added on each outer edge
+    # of the trim rectangle. Bleed for perfect-bound, wrap for casebound.
+    outer_allowance_px = CASEBOUND_WRAP_PX if is_casebound else COVER_BLEED_PX
+
     # Spine width: explicit user override beats the page-count formula.
     # When the book has fewer than 24 interior pages, the spine is too
     # thin for printing — clamp to a 1 mm minimum so we still render.
@@ -745,14 +779,18 @@ def _build_cover_spread_html(
         # interior pages = total - 2 (subtract front + back covers).
         interior_pages = max(0, total - 2)
         spine_width_in = interior_pages * paper_caliper_in
+        if is_casebound:
+            # Casebound spines need extra room for the spine board +
+            # hinge gap — add the standard IngramSpark allowance.
+            spine_width_in += CASEBOUND_SPINE_ALLOWANCE_IN
     spine_px = max(4, round(float(spine_width_in) * PX_PER_INCH))
 
-    # Trim dimensions = back + spine + front (no bleed yet).
+    # Trim dimensions = back + spine + front (no outer allowance yet).
     trim_w = page_w * 2 + spine_px
     trim_h = page_h
-    # Final canvas = trim + bleed all around.
-    total_w = trim_w + COVER_BLEED_PX * 2
-    total_h = trim_h + COVER_BLEED_PX * 2
+    # Final canvas = trim + outer allowance all around.
+    total_w = trim_w + outer_allowance_px * 2
+    total_h = trim_h + outer_allowance_px * 2
 
     back_idx = total - 1
     front_idx = 0
@@ -784,27 +822,28 @@ def _build_cover_spread_html(
         # Wrap each half so the existing absolute-positioned blocks inside
         # `book-page` stay anchored to their own page rectangle.
         f".cover-slot {{ position: absolute; width: {page_w}px; height: {page_h}px;"
-        f" top: {COVER_BLEED_PX}px; overflow: hidden; }}"
-        f".slot-back  {{ left: {COVER_BLEED_PX}px; }}"
-        f".slot-front {{ left: {COVER_BLEED_PX + page_w + spine_px}px; }}"
-        # Bleed-zone tint (printer side) — pure spine colour so the bled
-        # area visually continues the spine instead of producing a white
-        # halo on trim.
+        f" top: {outer_allowance_px}px; overflow: hidden; }}"
+        f".slot-back  {{ left: {outer_allowance_px}px; }}"
+        f".slot-front {{ left: {outer_allowance_px + page_w + spine_px}px; }}"
+        # Outer-band tint — pure spine colour so the bled/wrapped area
+        # visually continues the spine instead of producing a white halo
+        # on trim (perfect-bound) or a visible white strip wrapping
+        # inside the case (casebound).
         f".bleed-band {{ position: absolute; background: {spine_bg}; }}"
     )
 
-    bleed_bands = (
-        f'<div class="bleed-band" style="top:0;left:0;width:100%;height:{COVER_BLEED_PX}px"></div>'
-        f'<div class="bleed-band" style="bottom:0;left:0;width:100%;height:{COVER_BLEED_PX}px"></div>'
-        f'<div class="bleed-band" style="top:0;left:0;width:{COVER_BLEED_PX}px;height:100%"></div>'
-        f'<div class="bleed-band" style="top:0;right:0;width:{COVER_BLEED_PX}px;height:100%"></div>'
+    outer_bands = (
+        f'<div class="bleed-band" style="top:0;left:0;width:100%;height:{outer_allowance_px}px"></div>'
+        f'<div class="bleed-band" style="bottom:0;left:0;width:100%;height:{outer_allowance_px}px"></div>'
+        f'<div class="bleed-band" style="top:0;left:0;width:{outer_allowance_px}px;height:100%"></div>'
+        f'<div class="bleed-band" style="top:0;right:0;width:{outer_allowance_px}px;height:100%"></div>'
     )
 
     html = (
         "<!doctype html><html><head><meta charset='utf-8'>"
         f"<style>{css}</style></head>"
         f"<body><div class='spread'>"
-        f"{bleed_bands}"
+        f"{outer_bands}"
         f"<div class='cover-slot slot-back'>{back_html}</div>"
         f"<div class='cover-slot slot-front'>{front_html}</div>"
         f"</div></body></html>"
@@ -819,11 +858,19 @@ async def build_cover_spread_pdf(
     progress_cb: Optional[Callable[[str], None]] = None,
     spine_width_in: Optional[float] = None,
     paper_caliper_in: float = DEFAULT_PAPER_CALIPER_IN,
+    binding: str = "perfect",
 ) -> bytes:
     """Render the front-cover + spine + back-cover as a single wide PDF
-    page with 0.125" bleed on every outside edge. The result is the
-    print-ready cover file IngramSpark (and most other perfect-bound POD
-    printers) expect: one PDF, one page, BACK | SPINE | FRONT layout."""
+    page. Two binding modes (see `_build_cover_spread_html`):
+
+      * `perfect`   — 0.125" bleed all-around, no board allowance.
+                      Output is what IngramSpark / KDP perfect-bound POD
+                      printers expect.
+      * `casebound` — 0.625" wrap (turn-in) all-around + 0.125" board
+                      allowance on the spine. Output is what IngramSpark
+                      casebound hardcover printers expect (the printer
+                      glues the cover to greyboard panels and folds the
+                      wrap inside)."""
 
     def _emit(stage: str) -> None:
         if progress_cb is None:
@@ -864,14 +911,17 @@ async def build_cover_spread_pdf(
         await route.continue_()
 
     html, total_w, total_h = _build_cover_spread_html(
-        book, {}, spine_width_in=spine_width_in, paper_caliper_in=paper_caliper_in
+        book, {}, spine_width_in=spine_width_in, paper_caliper_in=paper_caliper_in,
+        binding=binding,
     )
+    outer_allowance = CASEBOUND_WRAP_PX if (binding or "perfect").lower() == "casebound" else COVER_BLEED_PX
     log.info(
-        "Cover spread: %dx%d px (trim %dx%d, bleed %dpx each side, spine %d px)",
+        "Cover spread (%s): %dx%d px (trim %dx%d, outer %dpx each side, spine %d px)",
+        binding,
         total_w, total_h,
-        total_w - 2 * COVER_BLEED_PX, total_h - 2 * COVER_BLEED_PX,
-        COVER_BLEED_PX,
-        total_w - 2 * COVER_BLEED_PX - 2 * PAGE_SIZES_PX.get(book.get("page_size") or "a4", PAGE_SIZES_PX["a4"])[0],
+        total_w - 2 * outer_allowance, total_h - 2 * outer_allowance,
+        outer_allowance,
+        total_w - 2 * outer_allowance - 2 * PAGE_SIZES_PX.get(book.get("page_size") or "a4", PAGE_SIZES_PX["a4"])[0],
     )
 
     async with async_playwright() as pw:

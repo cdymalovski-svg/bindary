@@ -1132,12 +1132,13 @@ export default function Editor() {
     const pdfx = options?.pdfx === true;
     const coverSpread = options?.coverSpread === true;
     const spineWidthIn = options?.spineWidthIn;
+    const binding = options?.binding === 'casebound' ? 'casebound' : 'perfect';
     if (!book) return;
     setExporting(true);
     const toastId = 'pdf-export';
     let kindLabel;
     if (coverSpread) {
-      kindLabel = ' cover spread';
+      kindLabel = binding === 'casebound' ? ' casebound cover' : ' cover spread';
     } else if (range) {
       kindLabel = ` (pages ${range.start}–${range.end})`;
     } else {
@@ -1200,6 +1201,7 @@ export default function Editor() {
       if (pdfx) bodyObj.pdfx = true;
       if (coverSpread) bodyObj.cover_spread = true;
       if (spineWidthIn != null) bodyObj.spine_width_in = spineWidthIn;
+      if (coverSpread && binding === 'casebound') bodyObj.binding = 'casebound';
       const body = Object.keys(bodyObj).length ? JSON.stringify(bodyObj) : undefined;
       const startResp = await fetch(`${BASE}/api/books/${book.id}/pdf-jobs`, {
         method: 'POST',
