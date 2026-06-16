@@ -148,6 +148,12 @@ class Book(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     title: str = "Untitled Book"
     author: Optional[str] = ""
+    # ISBN (13-digit) used to name exported PDFs per IngramSpark v5.11.26
+    # convention: `{isbn}_txt.pdf` for the interior, `{isbn}_cvr.pdf` for
+    # the cover spread. Stored as a string (no dashes) so we can validate
+    # the 13-digit form. Optional — if blank, exports fall back to the
+    # title-slug naming we've always used.
+    isbn: Optional[str] = ""
     page_size: str = "a4"  # a4 | letter | square | book6x9
     pages: List[Page] = []
     page_number_start: int = 1  # 1-based; pages before this show no number; back cover always hidden
@@ -167,6 +173,7 @@ class BookUpdate(BaseModel):
     model_config = ConfigDict(extra="ignore")
     title: Optional[str] = None
     author: Optional[str] = None
+    isbn: Optional[str] = None
     page_size: Optional[str] = None
     page_number_start: Optional[int] = None
     is_chapter_book: Optional[bool] = None
@@ -744,20 +751,31 @@ async def _run_pdf_job(
                 progress_cb=_on_stage,
             )
         await _check_cancelled()
-        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", book.get("title") or "book").strip("_") or "book"
-        # Filename includes the range when partial so users get distinct
-        # downloads on disk: "MyBook_pp_1-50.pdf" / "MyBook_pp_51-112.pdf".
+        # File naming: prefer IngramSpark convention when ISBN is set on
+        # the book (`{isbn}_txt.pdf` for interior, `{isbn}_cvr.pdf` for
+        # cover spread). Falls back to the title-slug naming we've always
+        # used so books without an ISBN still get a human-friendly name.
+        raw_isbn = (book.get("isbn") or "").strip()
+        # Validate as 10 or 13 digit ISBN (allow hyphens which we strip);
+        # invalid → fall back to title naming so we never emit a weird
+        # filename.
+        isbn_digits = re.sub(r"[^0-9X]", "", raw_isbn.upper())
+        use_isbn = len(isbn_digits) in (10, 13)
+        safe_title = re.sub(r"[^A-Za-z0-9._-]+", "_", book.get("title") or "book").strip("_") or "book"
+        base = isbn_digits if use_isbn else safe_title
         # "_pdfx" suffix makes print-ready exports unmistakable in Finder.
         pdfx_suffix = "_pdfx" if pdfx else ""
         if cover_spread:
-            # IngramSpark-style filename hint — "_cov" matches their
-            # cover-file naming convention (`isbn_cov.pdf`).
-            filename = f"{safe}_cov{pdfx_suffix}.pdf"
+            # IngramSpark cover-file naming convention.
+            suffix = "_cvr" if use_isbn else "_cov"
+            filename = f"{base}{suffix}{pdfx_suffix}.pdf"
         else:
-            filename = (
-                f"{safe}_pp_{applied_start}-{applied_end}{pdfx_suffix}.pdf"
-                if is_range else f"{safe}{pdfx_suffix}.pdf"
-            )
+            # IngramSpark interior-file naming convention.
+            interior_suffix = "_txt" if use_isbn and not is_range else ""
+            if is_range:
+                filename = f"{base}_pp_{applied_start}-{applied_end}{pdfx_suffix}.pdf"
+            else:
+                filename = f"{base}{interior_suffix}{pdfx_suffix}.pdf"
         # Upload PDF bytes to shared object storage so any pod can serve them.
         # We wrap the upload in a wall-clock timeout so a misbehaving
         # storage backend (network blip, slow upstream) can never leave

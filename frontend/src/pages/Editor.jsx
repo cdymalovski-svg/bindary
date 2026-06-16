@@ -52,6 +52,7 @@ import LayersList from '@/components/LayersList';
 import SaveTemplateDialog from '@/components/SaveTemplateDialog';
 import HistoryDialog from '@/components/HistoryDialog';
 import ExportPopover from '@/components/ExportPopover';
+import CompliancePanel from '@/components/CompliancePanel';
 
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 
@@ -176,6 +177,7 @@ export default function Editor() {
     const payload = {
       title: book.title,
       author: book.author,
+      isbn: book.isbn || '',
       page_size: book.page_size,
       page_number_start: book.page_number_start || 1,
       is_chapter_book: !!book.is_chapter_book,
@@ -1507,6 +1509,18 @@ export default function Editor() {
           className="bg-transparent border-0 text-ink-soft text-sm italic w-24 lg:w-32 xl:w-40 focus-visible:ring-1 focus-visible:ring-terracotta rounded-sm min-w-0 hidden lg:block shrink-0"
           data-testid="book-author-input"
         />
+        {/* ISBN — when set, drives IngramSpark file naming convention
+            (`{isbn}_txt.pdf` interior, `{isbn}_cvr.pdf` cover). Optional;
+            blank means we use the title-slug naming for downloads. */}
+        <Input
+          value={book.isbn || ''}
+          onChange={(e) => setBook({ ...book, isbn: e.target.value })}
+          placeholder="ISBN"
+          maxLength={17} /* 13 digits + 4 dashes */
+          className="bg-transparent border-0 text-ink-mute text-xs tabular-nums w-24 lg:w-28 xl:w-32 focus-visible:ring-1 focus-visible:ring-terracotta rounded-sm min-w-0 hidden xl:block shrink-0"
+          data-testid="book-isbn-input"
+          title="13-digit ISBN — drives the IngramSpark-style export filename"
+        />
         <div className="w-px h-6 bg-rule shrink-0 hidden lg:block" />
         <Select value={book.page_size} onValueChange={(v) => setBook({ ...book, page_size: v })}>
           <SelectTrigger className="bg-white border-rule rounded-sm h-8 w-24 lg:w-32 xl:w-36 text-sm shrink-0" data-testid="page-size-trigger">
@@ -1689,6 +1703,14 @@ export default function Editor() {
           {saving ? <Loader2 className="w-4 h-4 lg:mr-1 animate-spin" /> : <Save className="w-4 h-4 lg:mr-1" />}
           <span className="hidden lg:inline">Save</span>
         </Button>
+        <CompliancePanel
+          apiBase={process.env.REACT_APP_BACKEND_URL}
+          bookId={book.id}
+          token={(() => {
+            try { return localStorage.getItem('bindery_token'); } catch { return null; }
+          })()}
+          revision={lastSavedAt}
+        />
         <ExportPopover
           bookId={book.id}
           totalPages={book.pages.length}

@@ -185,6 +185,17 @@ async def convert_to_pdfx(
             "-sDEVICE=pdfwrite",
             "-sColorConversionStrategy=CMYK",
             "-dProcessColorModel=/DeviceCMYK",
+            # IngramSpark v5.11.26 requires body text rendered as 100% K
+            # (DeviceCMYK 0/0/0/100), not composite "rich" black. By
+            # default Ghostscript's CMYK conversion via the SWOP ICC
+            # profile turns RGB(0,0,0) into a 4-channel build with values
+            # in C/M/Y as well — visually identical on screen but causes
+            # mis-registration on print and breaks the spec. These two
+            # switches force the conversion machinery to map RGB-grey
+            # (R==G==B) and CMYK-K-only inputs straight to DeviceK,
+            # leaving images going through the full ICC pipeline.
+            "-dBlackText=true",
+            "-dBlackVector=true",
             # /prepress favours quality (slow); /printer is the middle ground
             # and is still PDF/X-conformant when paired with the explicit
             # -dPDFX flag above. Drops conversion time roughly 40-60% on a

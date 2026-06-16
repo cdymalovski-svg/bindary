@@ -228,6 +228,15 @@ Build me a book template app to be able to add texts and illustrations, page num
 - Multi-user accounts + library sharing.
 - Pan-while-zoomed gesture on iPad (drag canvas while pinch >100%).
 
+## What's been implemented (2026-06-16 / iteration 37 — IngramSpark v5.11.26 Phase 2)
+- **Phase 2** (quality / spec adherence) — all four planned items shipped:
+- **2.1 Pure-K text override** (`pdfx_converter.py`): added `-dBlackText=true -dBlackVector=true` to the Ghostscript invocation so RGB(0,0,0) text and vector black render as DeviceCMYK 0/0/0/100 instead of "rich" composite black via the SWOP profile. Images still go through the full ICC pipeline.
+- **2.2 240% TAC ceiling** (`preflight.py`): walk every text-block colour and page-background and surface any element whose CMYK total ink exceeds 240% as an `ink_coverage` warning row. Image ink coverage stays on the client-side overlay (canvas-sampling on the server would require rendering each image — too expensive for a preflight check).
+- **2.3 ISBN-based file naming**: added `isbn` field to the `Book` model. Valid 10/13-digit ISBNs (hyphens stripped) drive IngramSpark naming convention — `{isbn}_txt.pdf` for interior, `{isbn}_cvr.pdf` for cover, `_txt_pdfx.pdf` for Print-ready. Blank/invalid ISBNs fall back to title-slug naming (e.g. `My_Book_pdfx.pdf`). New ISBN input lives in the toolbar (visible on xl+ screens).
+- **2.4 Editor-side compliance panel** (`CompliancePanel.jsx`): new shield-icon pill in the toolbar that polls `/api/books/{id}/preflight` on every book save. Colour reflects worst-case severity (green Print-ready / amber N warnings / red N errors). Popover panel lists each row with actionable detail per page + block + DPI + TAC%. Manual refresh button included. Visible on lg+ screens.
+- **6 new test cases** in `tests/test_ingramspark_phase2.py`. 37/37 PDF + preflight tests pass (Phase 1 + Phase 2 combined).
+- **Not yet shipped** (Phase 3): casebound cover spread, ICC profile picker, PDF document metadata, starter-pack templates.
+
 ## What's been implemented (2026-06-09 / iteration 36 — IngramSpark v5.11.26 Phase 1)
 - **Spec-compliance Phase 1 (3 critical items)** addressing items that would cause IngramSpark to *reject* a submission today. Evaluated against the user-supplied Learning Smart agent prompt (IngramSpark v5.11.26).
 - **1.1 Canonical box scheme** (`pdf_builder.py:apply_print_boxes`): every interior page now has the IngramSpark-required boxes — MediaBox `[0,0,630,630]`, BleedBox = MediaBox, TrimBox alternates per parity (`[0,9,621,621]` recto / spine-left, `[9,9,630,621]` verso / spine-right). Implemented as a pypdf post-process so it's independent of Chromium's rendering. Chromium's @page now emits a SYMMETRIC 630×630 MediaBox (previously asymmetric 621×630). The 9-pt strip on the spine side is binding gutter, filled with the page background so the bind cuts through colour.
