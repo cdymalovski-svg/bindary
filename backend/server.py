@@ -7,6 +7,7 @@ import re
 import logging
 import uuid
 import asyncio
+import io
 import requests
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
@@ -832,6 +833,19 @@ class PdfJobStartRequest(BaseModel):
     spine_width_in: Optional[float] = None
 
 
+@api_router.get("/books/{book_id}/preflight")
+async def book_preflight(book_id: str):
+    """IngramSpark v5.11.26 compliance check. Walks the book document and
+    returns a structured report (`errors` / `warnings` / `passed`) without
+    rendering any PDF. Cheap enough to call on selection changes from the
+    editor for a live compliance panel."""
+    from preflight import preflight_book
+    doc = await db.books.find_one({"id": book_id})
+    if not doc:
+        raise HTTPException(404, "Book not found")
+    return await preflight_book(doc, db)
+
+
 @api_router.post("/books/{book_id}/pdf-jobs")
 async def export_pdf_start(
     book_id: str,
@@ -1214,12 +1228,26 @@ async def upload_image(file: UploadFile = File(...), book_id: Optional[str] = Fo
         raise HTTPException(413, "File too large (max 10MB)")
     result = put_object(path, data, content_type)
     canonical_path = result["path"]
+    # Probe the image's pixel dimensions so the preflight DPI check
+    # (Phase 1.3) can warn about low-resolution uploads at render time
+    # without having to re-fetch the bytes from object storage.
+    img_w = img_h = None
+    try:
+        from PIL import Image
+        with Image.open(io.BytesIO(data)) as im:
+            img_w, img_h = im.size
+    except Exception as e:
+        logging.getLogger(__name__).warning(
+            "upload_image: could not probe dims for %s: %s", path, e,
+        )
     await db.files.insert_one({
         "id": str(uuid.uuid4()),
         "storage_path": canonical_path,
         "original_filename": file.filename,
         "content_type": content_type,
         "size": result.get("size", len(data)),
+        "width_px": img_w,
+        "height_px": img_h,
         "is_deleted": False,
         "created_at": _now_iso(),
         "book_id": book_id,
@@ -1229,6 +1257,8 @@ async def upload_image(file: UploadFile = File(...), book_id: Optional[str] = Fo
         "url": f"/api/files/{canonical_path}",
         "content_type": content_type,
         "size": result.get("size", len(data)),
+        "width_px": img_w,
+        "height_px": img_h,
     }
 
 

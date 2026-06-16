@@ -207,21 +207,158 @@ INTERIOR_BLEED_PX = round(INTERIOR_BLEED_IN * 96)  # = 12
 
 
 def _page_bleed_sides(page_index: int) -> dict:
-    """Returns the per-page bleed in pixels by side. Convention: page index
-    0 is treated as a recto (right-hand page) — the first thing the reader
-    sees after opening the book — so even indices are right pages and odd
-    indices are left pages. The OUTSIDE edge of each page gets bleed; the
-    bind side stays flush against the spine."""
+    """Positioning offsets for placing the 612×612 trim rectangle within
+    the symmetric 630×630 MediaBox (IngramSpark v5.11.26).
+
+    Convention: index 0 is the cover (recto = right-hand). Even indices
+    are right-hand (recto, spine on LEFT); odd indices are left-hand
+    (verso, spine on RIGHT). The trim sits flush against the spine edge
+    of the MediaBox; the bleed strip extends past the trim on the OUTER
+    side. The extra 9-pt strip between the bleed and the MediaBox edge
+    on the spine side is binding gutter — filled with the page's
+    background colour so the bind cuts through colour, not white.
+
+    The four values are pixels @ 96 DPI added BEYOND the trim rectangle:
+    `top`/`bottom` are always equal (9 pt bleed = 12 px). `left`/`right`
+    are asymmetric: outer side gets bleed; spine side gets the binding
+    gutter (same width but conceptually different — both filled with bg).
+    """
     is_right_page = (page_index % 2 == 0)
     return {
         "top": INTERIOR_BLEED_PX,
         "bottom": INTERIOR_BLEED_PX,
-        "right": INTERIOR_BLEED_PX if is_right_page else 0,
-        "left": INTERIOR_BLEED_PX if not is_right_page else 0,
+        # OUTER side: this is where the bleed art shows (and where the
+        # cutter trims). SPINE side: binding gutter, gets bound away.
+        "right": INTERIOR_BLEED_PX * 2 if is_right_page else 0,
+        "left": INTERIOR_BLEED_PX * 2 if not is_right_page else 0,
     }
 
 
 _ZERO_BLEED = {"top": 0, "right": 0, "bottom": 0, "left": 0}
+
+
+def apply_print_boxes(pdf_bytes: bytes, page_w_px: int, page_h_px: int) -> bytes:
+    """Stamp IngramSpark-canonical TrimBox + BleedBox on every page of an
+    interior-body PDF that was rendered with `pdfx_bleed=True`.
+
+    Pre-condition: every page's MediaBox is the symmetric trim + 2× bleed
+    rectangle (= `page_w + 24px` × `page_h + 24px` @ 96 DPI). Each page's
+    rendered content sits flush against the SPINE edge of that rectangle
+    with the outer bleed extension on the far side.
+
+    Per IngramSpark v5.11.26 (Learning Smart adaptation):
+      * MediaBox: 630 × 630 pt (= page+2bleed) — left untouched.
+      * BleedBox: full MediaBox.
+      * TrimBox:
+          - Odd PDF pages  (1, 3, 5… → right-hand, spine LEFT):
+            `[0, 9, page_w_pt + 9, page_h_pt + 9]`
+          - Even PDF pages (2, 4, 6… → left-hand,  spine RIGHT):
+            `[9, 9, page_w_pt + 18, page_h_pt + 9]`
+        The `9` is the bleed amount (0.125" × 72 pt/in) and TrimBox
+        explicitly extends INTO the bleed on the outer side so the cutter
+        receives the cut line at the bleed boundary.
+
+    The function rewrites the boxes in-place (via pypdf) and re-emits the
+    PDF. No content is moved. Returns the new PDF bytes."""
+    from io import BytesIO
+    from pypdf import PdfReader, PdfWriter
+    from pypdf.generic import RectangleObject
+
+    # 1 px @ 96 DPI = 0.75 pt. Convert all geometry once.
+    px_to_pt = 0.75
+    trim_w_pt = round(page_w_px * px_to_pt, 4)
+    trim_h_pt = round(page_h_px * px_to_pt, 4)
+    bleed_pt = round(INTERIOR_BLEED_PX * px_to_pt, 4)  # 9.0 pt
+
+    reader = PdfReader(BytesIO(pdf_bytes))
+    writer = PdfWriter()
+    for i, page in enumerate(reader.pages):
+        is_right_page = (i % 2 == 0)  # cover (idx 0) = right-hand
+        # MediaBox and BleedBox always = symmetric outer rectangle.
+        media = page.mediabox
+        media_w = float(media.width)
+        media_h = float(media.height)
+        # Set TrimBox per parity. The cutter cuts at this rectangle.
+        if is_right_page:
+            # Right-hand page (recto): spine on LEFT (x=0..bleed is binding
+            # gutter, untouched here), bleed extends past trim on RIGHT.
+            tx0 = 0.0
+            ty0 = bleed_pt
+            tx1 = trim_w_pt + bleed_pt
+            ty1 = trim_h_pt + bleed_pt
+        else:
+            # Left-hand page (verso): spine on RIGHT (binding gutter on
+            # the far-right of MediaBox), bleed extends LEFT of trim.
+            tx0 = bleed_pt
+            ty0 = bleed_pt
+            tx1 = bleed_pt + trim_w_pt + bleed_pt
+            ty1 = trim_h_pt + bleed_pt
+        page.trimbox = RectangleObject([tx0, ty0, tx1, ty1])
+        page.bleedbox = RectangleObject([0.0, 0.0, media_w, media_h])
+        # Cropbox = MediaBox so on-screen viewers show the full bleed
+        # rectangle (some PDF viewers crop to TrimBox by default which
+        # would hide the bleed strip in preview).
+        page.cropbox = RectangleObject([0.0, 0.0, media_w, media_h])
+        writer.add_page(page)
+    out = BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
+def ensure_even_page_count(pdf_bytes: bytes) -> tuple[bytes, bool]:
+    """IngramSpark rejects odd page counts. If the PDF has an odd number
+    of pages, append a single blank page sized to match the last page's
+    MediaBox so the file is submission-ready.
+
+    The appended blank inherits the correct parity TrimBox/BleedBox for
+    its new position (it becomes an even / verso page since the previous
+    page was odd / recto). Without this, the appended page would be the
+    wrong parity and IngramSpark preflight would flag it.
+
+    Returns the (possibly modified) PDF bytes and a bool indicating
+    whether a page was appended (so callers can surface a UX warning)."""
+    from io import BytesIO
+    from pypdf import PdfReader, PdfWriter
+    from pypdf.generic import RectangleObject
+
+    reader = PdfReader(BytesIO(pdf_bytes))
+    page_count = len(reader.pages)
+    if page_count % 2 == 0:
+        return pdf_bytes, False
+    writer = PdfWriter()
+    for p in reader.pages:
+        writer.add_page(p)
+    last = reader.pages[-1]
+    media = last.mediabox
+    media_w = float(media.width)
+    media_h = float(media.height)
+    writer.add_blank_page(width=media_w, height=media_h)
+    # New blank page is at index `page_count` (0-based) — flip parity from
+    # the previous page. Odd new index → verso (spine on RIGHT). Trim
+    # follows the IngramSpark v5.11.26 box scheme so the appended page
+    # passes preflight identically to its neighbours.
+    new_idx = page_count  # 0-based index after append
+    is_right_page = (new_idx % 2 == 0)
+    # Reuse the same geometry the body renderer used. Bleed amount is
+    # encoded in the existing pages' TrimBox — extract it once.
+    bleed_pt = float(last.trimbox.bottom)  # = INTERIOR_BLEED_PX * 0.75 = 9.0
+    # Trim dimensions: width = media_w - 2*bleed_pt; height same.
+    trim_w_pt = media_w - 2 * bleed_pt
+    trim_h_pt = media_h - 2 * bleed_pt
+    new_page = writer.pages[-1]
+    if is_right_page:
+        tx0, ty0 = 0.0, bleed_pt
+        tx1, ty1 = trim_w_pt + bleed_pt, trim_h_pt + bleed_pt
+    else:
+        tx0, ty0 = bleed_pt, bleed_pt
+        tx1, ty1 = bleed_pt + trim_w_pt + bleed_pt, trim_h_pt + bleed_pt
+    new_page.trimbox = RectangleObject([tx0, ty0, tx1, ty1])
+    new_page.bleedbox = RectangleObject([0.0, 0.0, media_w, media_h])
+    new_page.cropbox = RectangleObject([0.0, 0.0, media_w, media_h])
+    out = BytesIO()
+    writer.write(out)
+    return out.getvalue(), True
+
 
 GOOGLE_FONTS_IMPORT = (
     "@import url('https://fonts.googleapis.com/css2?"
@@ -505,12 +642,15 @@ def _build_html(
     total_pages = len(pages)
     start, end = (0, total_pages) if page_range is None else page_range
 
-    # All pages share the same outer (@page) dimensions when bleed is on —
-    # bleed adds INTERIOR_BLEED_PX on one of left/right (the outside edge)
-    # for every page, regardless of parity, so the total width grows by the
-    # same amount on either side. Top/bottom always grow.
+    # IngramSpark v5.11.26 — symmetric MediaBox for every page. Each page's
+    # outer canvas is `trim + 0.125" bleed on top/bottom + 0.125" bleed on
+    # the outer side + 0.125" binding gutter on the spine side`. Total
+    # added on each axis is therefore 2 × INTERIOR_BLEED_PX, regardless of
+    # parity, giving identically-sized MediaBoxes throughout the book.
+    # The asymmetry (which side is bleed vs which is binding-gutter) is
+    # encoded in the TrimBox stamped by `apply_print_boxes` after render.
     if pdfx_bleed:
-        outer_w = page_w + INTERIOR_BLEED_PX
+        outer_w = page_w + INTERIOR_BLEED_PX * 2
         outer_h = page_h + INTERIOR_BLEED_PX * 2
     else:
         outer_w, outer_h = page_w, page_h
@@ -1064,9 +1204,8 @@ async def build_book_pdf(
         finally:
             await browser.close()
 
-    # Single chunk? Skip the merge — saves time and avoids pypdf re-encoding.
-    # But if PDF/X bleed was requested we STILL need to set TrimBox per page,
-    # so single-chunk goes through pypdf too in that case.
+    # Single chunk? Skip pypdf re-encoding unless we still need to stamp
+    # print boxes / enforce even page count.
     if len(chunk_pdfs) == 1 and not pdfx_bleed:
         _emit("done")
         return chunk_pdfs[0]
@@ -1075,37 +1214,36 @@ async def build_book_pdf(
     _emit("merging chunks")
     import io
     from pypdf import PdfReader, PdfWriter
-    from pypdf.generic import RectangleObject
 
     writer = PdfWriter()
-    # Per-page TrimBox = the trim rectangle inside the bleed-padded MediaBox.
-    # Convention: even page-index = right page (outside on right) → trim
-    # starts at MediaBox left edge; odd index = left page → trim ends at
-    # MediaBox right edge.
-    bleed_pt = INTERIOR_BLEED_PX * (72.0 / 96.0)  # 12 px @ 96dpi = 9 pt
-    global_page_idx = 0
     for blob in chunk_pdfs:
         reader = PdfReader(io.BytesIO(blob))
         for page in reader.pages:
-            if pdfx_bleed:
-                mb = page.mediabox
-                left, bottom = float(mb.left), float(mb.bottom)
-                right, top = float(mb.right), float(mb.top)
-                is_right_page = (global_page_idx % 2 == 0)
-                # Trim rect = MediaBox shrunk by bleed on the appropriate sides.
-                trim_left = left if is_right_page else left + bleed_pt
-                trim_right = right - bleed_pt if is_right_page else right
-                trim_bottom = bottom + bleed_pt
-                trim_top = top - bleed_pt
-                # PDF/X-1a requires BOTH TrimBox and BleedBox.
-                trim_rect = RectangleObject(
-                    (trim_left, trim_bottom, trim_right, trim_top)
-                )
-                page.trimbox = trim_rect
-                page.bleedbox = RectangleObject((left, bottom, right, top))
             writer.add_page(page)
-            global_page_idx += 1
     out = io.BytesIO()
     writer.write(out)
+    merged = out.getvalue()
+
+    if pdfx_bleed:
+        # Stamp IngramSpark-canonical TrimBox + BleedBox on every page.
+        # Look up the trim dimensions from the book's page_size.
+        size_key = book.get("page_size", "a4")
+        if size_key not in PAGE_SIZES_PX:
+            size_key = "a4"
+        page_w_trim, page_h_trim = PAGE_SIZES_PX[size_key]
+        merged = apply_print_boxes(merged, page_w_trim, page_h_trim)
+        # Auto-pad to an even page count ONLY for full-book exports.
+        # Partial-range exports (proofing a single chapter, exporting one
+        # cover, etc.) keep their exact page count — the user can pad
+        # explicitly if they're submitting that partial to IngramSpark.
+        is_full_book = (start_page is None and end_page is None)
+        if is_full_book:
+            merged, appended_blank = ensure_even_page_count(merged)
+            if appended_blank and progress_cb is not None:
+                try:
+                    progress_cb("padded to even page count")
+                except Exception:
+                    pass
+
     _emit("done")
-    return out.getvalue()
+    return merged
