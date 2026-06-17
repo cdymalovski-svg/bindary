@@ -635,6 +635,7 @@ async def _run_pdf_job(
     cover_spread: bool = False,
     spine_width_in: Optional[float] = None,
     binding: str = "perfect",
+    dpi: int = 300,
 ) -> None:
     """Background worker — builds the PDF, uploads bytes to object storage,
     flips the Mongo record to `ready` (or `failed`).
@@ -719,12 +720,14 @@ async def _run_pdf_job(
                 book, get_object, public_base_url=base_url, progress_cb=_on_stage,
                 spine_width_in=spine_width_in,
                 binding=binding,
+                dpi=dpi,
             )
         else:
             pdf_bytes = await build_book_pdf(
                 book, get_object, public_base_url=base_url, progress_cb=_on_stage,
                 start_page=applied_start if is_range else None,
                 end_page=applied_end if is_range else None,
+                dpi=dpi,
                 # Always include 0.125" interior bleed so every export is
                 # print-ready. PDF/X conversion still happens on top when
                 # the user toggles Print-ready.
@@ -855,6 +858,11 @@ class PdfJobStartRequest(BaseModel):
     # `cover_spread=True`. Casebound adds 0.625" wrap (turn-in) instead
     # of 0.125" bleed and widens the spine by 0.125" for the spine board.
     binding: Optional[str] = "perfect"
+    # Image-downscale ceiling expressed in DPI: 300 (default, prod-safe),
+    # 450 (high), or 600 (maximum). Higher values keep more pixel detail
+    # in the embedded artwork at the cost of render time + PDF size.
+    # Anything else snaps to 300.
+    dpi: Optional[int] = 300
 
 
 @api_router.get("/books/{book_id}/preflight")
@@ -903,6 +911,14 @@ async def export_pdf_start(
     binding = binding_raw.lower() if isinstance(binding_raw, str) else "perfect"
     if binding not in ("perfect", "casebound"):
         binding = "perfect"
+    # DPI — snap to one of the allowed values (300/450/600). Everything
+    # else (None, malformed JSON, accidental floats) falls back to the
+    # safe production default of 300.
+    try:
+        dpi_raw = int(payload.dpi) if payload and payload.dpi is not None else 300
+    except (TypeError, ValueError):
+        dpi_raw = 300
+    dpi = dpi_raw if dpi_raw in (300, 450, 600) else 300
     # Cover spread always overrides any explicit page range — the cover
     # is, by definition, only pages[0] + pages[-1].
     if cover_spread:
@@ -933,6 +949,7 @@ async def export_pdf_start(
         "cover_spread": cover_spread,
         "spine_width_in": spine_width_in,
         "binding": binding,
+        "dpi": dpi,
         "created_at": now.isoformat(),
         # Mongo TTL index uses a real Date — not an ISO string.
         "expires_at": now + timedelta(seconds=_PDF_JOB_TTL_SECONDS),
@@ -942,6 +959,7 @@ async def export_pdf_start(
         start_page=start_page, end_page=end_page, pdfx=pdfx,
         cover_spread=cover_spread, spine_width_in=spine_width_in,
         binding=binding,
+        dpi=dpi,
     ))
     return {"job_id": job_id, "status": "pending"}
 
@@ -957,6 +975,10 @@ async def export_pdf_status(book_id: str, job_id: str):
         "status": job["status"],
         "created_at": job["created_at"],
         "stage": job.get("stage"),
+        # Surface the image-resolution choice the job was started with so
+        # the client (and tests) can confirm what was actually rendered
+        # — particularly useful when comparing past exports in history.
+        "dpi": job.get("dpi", 300),
     }
     if job["status"] == "ready":
         resp["size"] = job.get("size", 0)

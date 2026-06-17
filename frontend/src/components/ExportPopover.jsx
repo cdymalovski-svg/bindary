@@ -43,6 +43,22 @@ export default function ExportPopover({ bookId, totalPages, exporting, onExport,
   useEffect(() => {
     try { localStorage.setItem('bindery_pdfx', pdfx ? '1' : '0'); } catch {}
   }, [pdfx]);
+  // Image-resolution ceiling for the exported PDF. 300 = IngramSpark
+  // minimum (default, prod-safe, fastest); 450 = High (≈1.6× render
+  // time, larger files); 600 = Maximum (≈2.5× render time, big files
+  // — only recommended for print masters with detail-heavy art). Higher
+  // DPIs also raise the JPEG re-encode quality so the extra pixels
+  // actually carry detail. Persisted so designers don't re-pick every
+  // export.
+  const [dpi, setDpi] = useState(() => {
+    try {
+      const v = parseInt(localStorage.getItem('bindery_dpi') || '300', 10);
+      return v === 450 || v === 600 ? v : 300;
+    } catch { return 300; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('bindery_dpi', String(dpi)); } catch {}
+  }, [dpi]);
   // Optional explicit spine width (inches) — used when exporting the cover
   // spread. Empty string = auto-compute from interior page count + paper
   // caliper (IngramSpark white-paper default 0.002252 in/page).
@@ -103,6 +119,8 @@ export default function ExportPopover({ bookId, totalPages, exporting, onExport,
       setBinding(b === 'casebound' ? 'casebound' : 'perfect');
       const s = localStorage.getItem('bindery_spine_width_in');
       if (s !== null) setSpineWidthIn(s);
+      const d = parseInt(localStorage.getItem('bindery_dpi') || '300', 10);
+      setDpi(d === 450 || d === 600 ? d : 300);
     } catch { /* localStorage unavailable */ }
   }, [open]);
 
@@ -137,12 +155,12 @@ export default function ExportPopover({ bookId, totalPages, exporting, onExport,
     if (!Number.isFinite(s) || !Number.isFinite(en)) return;
     if (s < 1 || en < 1 || s > en || s > totalPages) return;
     setOpen(false);
-    onExport({ start: s, end: Math.min(en, totalPages) }, { previewInTab, pdfx });
+    onExport({ start: s, end: Math.min(en, totalPages) }, { previewInTab, pdfx, dpi });
   };
 
   const submitFull = () => {
     setOpen(false);
-    onExport(null, { previewInTab, pdfx });
+    onExport(null, { previewInTab, pdfx, dpi });
   };
 
   // Cover spread = a single wide PDF with BACK | SPINE | FRONT layout plus
@@ -152,7 +170,7 @@ export default function ExportPopover({ bookId, totalPages, exporting, onExport,
     setOpen(false);
     const spineParsed = parseFloat(spineWidthIn);
     const spine = Number.isFinite(spineParsed) && spineParsed > 0 ? spineParsed : null;
-    onExport(null, { previewInTab, pdfx, coverSpread: true, spineWidthIn: spine, binding });
+    onExport(null, { previewInTab, pdfx, coverSpread: true, spineWidthIn: spine, binding, dpi });
   };
 
   return (
@@ -208,6 +226,50 @@ export default function ExportPopover({ bookId, totalPages, exporting, onExport,
               </span>
             </span>
           </label>
+
+          {/* Image-resolution picker. Affects how aggressively very large
+              uploaded artwork is downscaled before being embedded in the
+              PDF. Higher DPI keeps more detail at the cost of render
+              time + file size. Persisted via localStorage so designers
+              who always print at 600 DPI never have to re-pick. */}
+          <div className="mb-3" data-testid="dpi-section">
+            <p className="text-[10px] text-ink-mute uppercase tracking-wider mb-1">Image quality</p>
+            <div
+              className="grid grid-cols-3 gap-1 bg-rule/30 rounded-sm p-1"
+              role="radiogroup"
+              aria-label="Export image DPI"
+            >
+              {[
+                { v: 300, label: 'Standard', sub: '300 DPI' },
+                { v: 450, label: 'High',     sub: '450 DPI' },
+                { v: 600, label: 'Maximum',  sub: '600 DPI' },
+              ].map((opt) => (
+                <button
+                  key={opt.v}
+                  type="button"
+                  onClick={() => setDpi(opt.v)}
+                  aria-pressed={dpi === opt.v}
+                  data-testid={`dpi-${opt.v}`}
+                  className={`h-9 flex flex-col items-center justify-center rounded-sm text-[10px] leading-tight transition-colors ${
+                    dpi === opt.v
+                      ? 'bg-ink text-paper'
+                      : 'bg-transparent text-ink-soft hover:bg-white'
+                  }`}
+                >
+                  <span className="font-medium">{opt.label}</span>
+                  <span className={dpi === opt.v ? 'opacity-70' : 'text-ink-mute'}>{opt.sub}</span>
+                </button>
+              ))}
+            </div>
+            <p className="text-[10px] text-ink-mute mt-1 leading-snug">
+              {dpi === 300
+                ? 'Standard print resolution. Fastest render and smallest file.'
+                : dpi === 450
+                  ? 'Sharper for detail-heavy art. ~1.6× render time, larger file.'
+                  : 'Maximum print fidelity (print masters). ~2.5× render time; may take several minutes on large books.'}
+            </p>
+          </div>
+
           <Button
             onClick={submitFull}
             disabled={exporting || totalPages === 0}

@@ -314,6 +314,15 @@ Build me a book template app to be able to add texts and illustrations, page num
 - New file: `/app/frontend/src/components/CoverSpreadPreview.jsx`. Geometry constants mirror `pdf_builder.py` exactly (`COVER_BLEED_IN`, `CASEBOUND_WRAP_IN = 0.625`, `CASEBOUND_SPINE_ALLOWANCE_IN = 0.125`).
 - Smoke-tested end-to-end in preview: toggling binding in the Cover view immediately updates trim/wrap/spine geometry, board outline appears for casebound, and the ExportPopover picks up the same selection on next open.
 
+## What's been implemented (2026-06-17 / iteration 41 — High-DPI image export ceiling)
+- **Feature**: New **Image quality** picker in the export popover (`data-testid="dpi-section"`): Standard 300 DPI · High 450 DPI · Maximum 600 DPI. Persisted in `localStorage["bindery_dpi"]` and re-synced on every popover open.
+- **Default stays 300 DPI** — production-safe for everyday exports. 450/600 are opt-in for print masters.
+- **Backend** (`pdf_builder.py`): `build_book_pdf` and `build_cover_spread_pdf` accept `dpi: int`. New `DPI_LONG_EDGE_CAPS = {300: 3300, 450: 4950, 600: 6600}` table + `_resolve_dpi()` helper that snaps unknown values to 300. JPEG re-encode quality also bumps from 85 → 92 for High/Maximum so the extra pixels actually carry detail.
+- **Backend** (`server.py`): `PdfJobStartRequest.dpi` (validated → 300 default). Stored on the `pdf_jobs` document and surfaced on the status endpoint so the client + history view can confirm what was rendered.
+- **Frontend** (`Editor.jsx`): pipes `dpi` through the API body only when non-default (300 stays implicit so existing clients keep working).
+- **Tests**: 18 fast tests in `/app/backend/tests/test_export_dpi.py` (resolver + persistence) + 1 end-to-end High-DPI render. All 23 PDF tests (IngramSpark + DPI) pass.
+- **On-screen**: already full-resolution — uploaded artwork is stored at original pixel dimensions and displayed as-is in the canvas. No change needed.
+
 ## Next Tasks
 - Phase 3.3 — PDF document metadata (Title, Author, ISBN, Publisher into PDF properties).
 - Phase 3.2 — ICC profile picker (SWOP v2 vs Fogra39) in export popover.

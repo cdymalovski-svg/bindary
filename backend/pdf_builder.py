@@ -726,6 +726,32 @@ CASEBOUND_SPINE_ALLOWANCE_IN = 0.125
 # match a specific printer.
 DEFAULT_PAPER_CALIPER_IN = 0.002252
 
+# Allowed image-downscale DPI ceilings for PDF export. Each value picks
+# the long-edge pixel cap when `_maybe_downscale` resizes uploaded images
+# before handing them to Chromium. 300 is IngramSpark's minimum print
+# spec (also default — keeps a 60-page book under the production pod
+# memory limit). 450 and 600 escalate quality for print masters at the
+# cost of render time + PDF size.
+#   • 300 DPI on an 11" letter long-edge ⇒ 3300 px cap
+#   • 450 DPI ⇒ 4950 px
+#   • 600 DPI ⇒ 6600 px
+# Mapping is computed from `dpi × 11` so 600 DPI on an A4 page still
+# resolves to ≥ 600 PPI when rendered.
+DPI_LONG_EDGE_CAPS: dict[int, int] = {300: 3300, 450: 4950, 600: 6600}
+DEFAULT_EXPORT_DPI = 300
+
+
+def _resolve_dpi(dpi: Optional[int]) -> int:
+    """Normalise the requested DPI to one of the allowed values. Anything
+    else (None, garbage, unsupported numbers) snaps to the safe default."""
+    if dpi is None:
+        return DEFAULT_EXPORT_DPI
+    try:
+        d = int(dpi)
+    except (TypeError, ValueError):
+        return DEFAULT_EXPORT_DPI
+    return d if d in DPI_LONG_EDGE_CAPS else DEFAULT_EXPORT_DPI
+
 
 def _build_cover_spread_html(
     book: dict,
@@ -859,6 +885,7 @@ async def build_cover_spread_pdf(
     spine_width_in: Optional[float] = None,
     paper_caliper_in: float = DEFAULT_PAPER_CALIPER_IN,
     binding: str = "perfect",
+    dpi: int = DEFAULT_EXPORT_DPI,
 ) -> bytes:
     """Render the front-cover + spine + back-cover as a single wide PDF
     page. Two binding modes (see `_build_cover_spread_html`):
@@ -998,6 +1025,13 @@ async def build_book_pdf(
     # because the PDF/X spec mandates a TrimBox/BleedBox annotation
     # alongside the bleed pixels.
     pdfx_bleed: bool = True,
+    # Image-downscale ceiling, expressed in DPI relative to the page's
+    # trim+bleed long edge. 300 is IngramSpark's minimum print spec and
+    # keeps the per-image decoded memory low enough to survive the
+    # production pod memory limit. 450/600 raise the ceiling for
+    # designers who want every last detail in their print master at the
+    # cost of render time and PDF size. Clamped to the allowed set.
+    dpi: int = 300,
 ) -> bytes:
     """Render the book to a PDF that exactly mirrors the editor view.
 
@@ -1052,11 +1086,22 @@ async def build_book_pdf(
     # Small process-local cache so the SAME image isn't re-fetched if it
     # appears on multiple pages. Cap memory at a few images worth.
     image_cache: dict[str, tuple[bytes, str]] = {}
-    # 300 DPI cap (standard offset-print resolution). For an 8-inch-wide
-    # content block this yields 2400 px; an 11-inch letter full-bleed image
-    # caps at the 3300 px long-edge ceiling below. Indistinguishable from
-    # 600 DPI to the eye and halves Chromium's per-image decoded memory.
-    MAX_DIM = 3300
+    # Image downscale ceiling — selected by the requested `dpi` parameter.
+    # 300 DPI → 3300 px (default, prod-safe); 450 → 4950; 600 → 6600.
+    # Indistinguishable from the source at the chosen DPI to the eye, but
+    # halves Chromium's per-image decoded memory vs serving full-res
+    # 8000+ px source files.
+    resolved_dpi = _resolve_dpi(dpi)
+    MAX_DIM = DPI_LONG_EDGE_CAPS[resolved_dpi]
+    # JPEG re-encode quality. Higher DPI exports usually run alongside
+    # PDF/X for a print master — bump the JPEG quality so the extra
+    # pixels actually retain detail instead of being eaten by chroma
+    # compression artifacts.
+    JPEG_QUALITY = 92 if resolved_dpi >= 450 else 85
+    log.info(
+        "PDF export: image quality = %d DPI (long-edge cap %d px, JPEG q=%d)",
+        resolved_dpi, MAX_DIM, JPEG_QUALITY,
+    )
     MAX_BYTES_BEFORE_RESIZE = 1_500_000  # ~1.5 MB
 
     def _maybe_downscale(data: bytes, ctype: str) -> tuple[bytes, str]:
@@ -1086,7 +1131,7 @@ async def build_book_pdf(
                 resized.save(buf, format="PNG", optimize=True)
                 out_type = "image/png"
             else:
-                resized.convert("RGB").save(buf, format="JPEG", quality=85, optimize=True)
+                resized.convert("RGB").save(buf, format="JPEG", quality=JPEG_QUALITY, optimize=True)
                 out_type = "image/jpeg"
             new_bytes = buf.getvalue()
             log.info(
