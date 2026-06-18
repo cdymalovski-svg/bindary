@@ -355,6 +355,21 @@ Build me a book template app to be able to add texts and illustrations, page num
 - **Fix 4 — Background stuck-job sweeper** (`server.py` startup): every 60s, marks `pdf_jobs` with `stage_at` older than 10 min as `failed` with a friendly error. Users see "Export timed out — no progress for 10 minutes." instead of an infinite spinner, even if the worker pod itself dies.
 - **Tests**: 4 new tests in `/app/backend/tests/test_pdf_export_timeouts.py` (image-fetch timeout race, sweeper query math, retry subdivision). All 67 PDF tests across the suite pass.
 
+## What's been implemented (2026-06-18 / iteration 45 — Chromium-relaunch-per-attempt + stage diagnostics)
+**Recurrence**: even after iteration 44's `wait_for` guards, an 11-page export hung on `rendering chunk 1/3` in production. Sweeper correctly marked it failed at 10 min — but the user still didn't get a PDF.
+
+**Real root cause**: the browser was launched ONCE for all chunks. When Chromium wedges at the **process** level (not page or context level), every chunk retry runs against the dead browser. Closing the context and opening a new one on the same dead process doesn't help.
+
+**Fixes shipped**:
+- **Fresh Chromium browser per attempt** — `_render_chunk_safe` now launches a brand-new browser for each of its 2 attempts. ~3s relaunch overhead per attempt; total worst-case per chunk: ~160s.
+- **30s timeout on `pw.chromium.launch()`** — catches binary hangs during sandbox setup.
+- **5s timeout on `browser.close()`** — wedged browsers can't block teardown.
+- **Per-stage timings** captured during render (set_content / fonts / images / page.pdf) and surfaced in the error message: e.g. `"chunk 1/3 failed at stage 'page.pdf' (timings: {set_content: 1.2, fonts: 0.3, images: 4.1}): TimeoutError"`. Designers + agents can now see exactly which step is stalling.
+- **15s heartbeat** during chunk renders — pings `_emit(stage)` every 15s so `stage_at` stays fresh; the 10-min sweeper no longer false-fires on legitimately-progressing chunks.
+- **Tighter per-attempt timeout**: 80s (down from 150s). With 3 chunks × 2 attempts × 80s = 480s = 8 min — well under the sweeper's 10 min and gives users fast failure feedback.
+- **Same guards applied to `build_cover_spread_pdf`** — launch timeout, page.pdf timeout, context.close timeout. Cover-spread exports get the same defence.
+- **No more per-page fallback** — the 11×150s = 27 min worst case it added always exceeded the sweeper threshold, so users never benefited. Removed to keep total bounded.
+
 ## Next Tasks
 - Phase 3.3 — PDF document metadata (Title, Author, ISBN, Publisher into PDF properties).
 - Phase 3.2 — ICC profile picker (SWOP v2 vs Fogra39) in export popover.

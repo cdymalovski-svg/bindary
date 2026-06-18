@@ -965,18 +965,22 @@ async def build_cover_spread_pdf(
 
     async with async_playwright() as pw:
         _emit("launching chromium")
-        browser = await pw.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
-                "--disable-background-networking", "--no-zygote",
-            ],
+        browser = await asyncio.wait_for(
+            pw.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
+                    "--disable-background-networking", "--no-zygote",
+                ],
+            ),
+            timeout=30.0,
         )
         try:
             _emit("rendering cover spread")
             context = await browser.new_context(viewport={"width": total_w, "height": total_h})
             try:
                 page = await context.new_page()
+                page.set_default_timeout(45_000)
                 await page.route("**/api/files/**", _handle_route)
                 await page.set_content(html, wait_until="domcontentloaded", timeout=30_000)
                 try:
@@ -1000,23 +1004,32 @@ async def build_cover_spread_pdf(
                                   img.addEventListener('error', r, { once: true });
                                 })
                           )),
-                          new Promise(r => setTimeout(r, 20000))
+                          new Promise(r => setTimeout(r, 15000))
                         ])
                         """
                     )
                 except Exception:
                     pass
-                pdf_bytes = await page.pdf(
-                    width=f"{total_w}px",
-                    height=f"{total_h}px",
-                    print_background=True,
-                    prefer_css_page_size=True,
-                    margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
+                pdf_bytes = await asyncio.wait_for(
+                    page.pdf(
+                        width=f"{total_w}px",
+                        height=f"{total_h}px",
+                        print_background=True,
+                        prefer_css_page_size=True,
+                        margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
+                    ),
+                    timeout=60.0,
                 )
             finally:
-                await context.close()
+                try:
+                    await asyncio.wait_for(context.close(), timeout=5.0)
+                except Exception:
+                    pass
         finally:
-            await browser.close()
+            try:
+                await asyncio.wait_for(browser.close(), timeout=5.0)
+            except Exception:
+                pass
 
     _emit("done")
     return pdf_bytes
@@ -1249,26 +1262,51 @@ async def build_book_pdf(
         except Exception:
             pass
 
-    async def _render_chunk(browser, idx: int, total: int, start: int, end: int) -> bytes:
+    async def _render_chunk(browser, idx: int, total: int, start: int, end: int,
+                            heartbeat_label: str) -> bytes:
         html, outer_w, outer_h = _build_html(
             book, image_data_urls, page_range=(start, end), pdfx_bleed=pdfx_bleed,
         )
+        # Heartbeat task — pushes a fresh `stage_at` to Mongo every 15s
+        # while the chunk renders. Without it, a chunk that takes 60s+
+        # would let the 10-minute stuck-job sweeper falsely mark the
+        # job as failed (the sweeper looks at stage_at, not internal
+        # progress). Heartbeat survives the per-attempt cancel via
+        # `finally`.
+        stop_hb = asyncio.Event()
+
+        async def _heartbeat():
+            while not stop_hb.is_set():
+                try:
+                    await asyncio.wait_for(stop_hb.wait(), timeout=15.0)
+                    return  # event fired — exit cleanly
+                except asyncio.TimeoutError:
+                    pass
+                try:
+                    _emit(heartbeat_label)
+                except Exception:
+                    pass
+
+        hb_task = asyncio.create_task(_heartbeat())
         context = await browser.new_context(viewport={"width": outer_w, "height": outer_h})
+        # Track per-stage timings for diagnostics. Surfaced on the error
+        # message if anything fails so we can tell whether the slow
+        # stage was set_content (HTML parse), font load, image load, or
+        # the actual page.pdf rasterisation.
+        timings: dict[str, float] = {}
+        last_stage = "init"
         try:
             page = await context.new_page()
-            # Belt-and-braces: even when our own `_handle_route` has bounded
-            # timeouts, Playwright's per-action default is 30s. Lower it so
-            # nothing inside the chunk can stall longer than we intend.
-            page.set_default_timeout(60_000)
+            page.set_default_timeout(45_000)
             await page.route("**/api/files/**", _handle_route)
-            # Use `domcontentloaded` not `load`. `load` blocks until every
-            # external resource (Google Fonts CSS + WOFF2 files) finishes,
-            # and a single slow font request in production was hanging the
-            # render for ~60s per chunk → 5+ minute total exports.
+
+            last_stage = "set_content"
+            t = asyncio.get_event_loop().time()
             await page.set_content(html, wait_until="domcontentloaded", timeout=30_000)
-            # Give fonts a short, BOUNDED window to load. Falls back to the
-            # browser's default serif if the network is too slow — visually
-            # acceptable and infinitely better than timing out the export.
+            timings[last_stage] = asyncio.get_event_loop().time() - t
+
+            last_stage = "fonts"
+            t = asyncio.get_event_loop().time()
             try:
                 await page.evaluate(
                     "Promise.race(["
@@ -1278,12 +1316,10 @@ async def build_book_pdf(
                 )
             except Exception:
                 pass
-            # CRITICAL: `domcontentloaded` does not wait for images. If we
-            # called `page.pdf()` now, Chromium would render before any
-            # <img> finished fetching, producing a PDF with zero artwork.
-            # Wait for every image to settle (load OR error — we don't care
-            # which, broken images just become blanks), capped so a single
-            # stuck request can't hang the chunk.
+            timings[last_stage] = asyncio.get_event_loop().time() - t
+
+            last_stage = "images"
+            t = asyncio.get_event_loop().time()
             try:
                 await page.evaluate(
                     """
@@ -1296,18 +1332,17 @@ async def build_book_pdf(
                               img.addEventListener('error', r, { once: true });
                             })
                       )),
-                      new Promise(r => setTimeout(r, 20000))
+                      new Promise(r => setTimeout(r, 15000))
                     ])
                     """
                 )
             except Exception:
                 pass
+            timings[last_stage] = asyncio.get_event_loop().time() - t
 
-            # Explicit wall-clock bound on the actual rasterisation. Without
-            # this Chromium has occasionally hung indefinitely in
-            # production — exactly the "stuck on rendering chunk 1/N"
-            # symptom we saw on the pdf-health snapshot.
-            return await asyncio.wait_for(
+            last_stage = "page.pdf"
+            t = asyncio.get_event_loop().time()
+            result = await asyncio.wait_for(
                 page.pdf(
                     width=f"{outer_w}px",
                     height=f"{outer_h}px",
@@ -1315,120 +1350,126 @@ async def build_book_pdf(
                     prefer_css_page_size=True,
                     margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
                 ),
-                timeout=90.0,
+                timeout=60.0,
             )
+            timings[last_stage] = asyncio.get_event_loop().time() - t
+            log.info(
+                "PDF chunk %d/%d timings (s): %s",
+                idx + 1, total,
+                " ".join(f"{k}={v:.1f}" for k, v in timings.items()),
+            )
+            return result
+        except Exception as e:
+            # Annotate the exception so the outer retry / failure path
+            # can record exactly WHICH stage stalled. Massively reduces
+            # debug time on production hangs.
+            raise RuntimeError(
+                f"chunk {idx + 1}/{total} failed at stage '{last_stage}' "
+                f"(timings: {timings}): {type(e).__name__}: {e}"
+            ) from e
         finally:
-            # Closing the context can also hang in a wedged Chromium. Cap
-            # it so the outer retry can move on even if cleanup stalls.
+            stop_hb.set()
             try:
-                await asyncio.wait_for(context.close(), timeout=10.0)
+                await asyncio.wait_for(hb_task, timeout=2.0)
+            except Exception:
+                hb_task.cancel()
+            try:
+                await asyncio.wait_for(context.close(), timeout=5.0)
             except (asyncio.TimeoutError, Exception) as e:
                 log.warning("PDF export: context.close() did not return cleanly: %s", e)
 
-    async def _render_chunk_safe(browser, idx: int, total: int, start: int, end: int) -> bytes:
-        """Wrap `_render_chunk` with a wall-clock timeout + one retry.
-
-        On first failure (timeout, Chromium crash, anything), retry the
-        same page range ONE more time — many Chromium freezes are
-        transient (GC hiccup, contended renderer thread, slow CDN burst).
-        If the retry also fails AND the range is more than one page, do
-        a final attempt one page at a time and concatenate. The single-
-        page fallback rarely fails because each page has at most a
-        handful of images and an isolated browser context."""
-        # Generous wall-clock bound per attempt — text-heavy chunks
-        # finish in ~5s, art-heavy chunks in 30-60s. 150s allows a slow
-        # CDN burst without false-positive failing.
-        per_attempt_timeout = 150.0
-        try:
-            return await asyncio.wait_for(
-                _render_chunk(browser, idx, total, start, end),
-                timeout=per_attempt_timeout,
-            )
-        except (asyncio.TimeoutError, Exception) as e:
-            log.warning(
-                "PDF export: chunk %d/%d (pages %d-%d) failed: %s — retrying",
-                idx + 1, total, start + 1, end, e,
-            )
-        # Retry attempt #2 — full range, fresh context.
-        try:
-            return await asyncio.wait_for(
-                _render_chunk(browser, idx, total, start, end),
-                timeout=per_attempt_timeout,
-            )
-        except (asyncio.TimeoutError, Exception) as e:
-            log.warning(
-                "PDF export: chunk %d/%d retry also failed: %s",
-                idx + 1, total, e,
-            )
-            if end - start <= 1:
-                # Single page already — nothing left to subdivide.
-                raise
-        # Final fallback — render one page at a time and merge. Slower
-        # but isolates a single bad page so the rest of the book still
-        # exports successfully.
-        from pypdf import PdfReader, PdfWriter
-        log.warning(
-            "PDF export: chunk %d/%d falling back to per-page rendering",
-            idx + 1, total,
+    async def _launch_browser(pw):
+        # Capped Chromium launch — sometimes the binary itself hangs
+        # during sandbox setup on tight pods. 30s gives plenty of room
+        # for the worst legitimate cold start while still surfacing a
+        # hang as a real error.
+        return await asyncio.wait_for(
+            pw.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--disable-background-networking",
+                    "--disable-default-apps",
+                    "--disable-extensions",
+                    "--disable-sync",
+                    "--disable-translate",
+                    "--metrics-recording-only",
+                    "--no-first-run",
+                    "--no-zygote",
+                ],
+            ),
+            timeout=30.0,
         )
-        writer = PdfWriter()
-        had_any_success = False
-        for p in range(start, end):
+
+    async def _render_chunk_safe(pw, idx: int, total: int, start: int, end: int,
+                                  heartbeat_label: str) -> bytes:
+        """Render a chunk with up to 2 attempts. Each attempt gets a
+        **fresh Chromium browser** (not just a fresh context) — when
+        Chromium hangs in production it's almost always the browser
+        process itself that wedges, not the page/context. Spending
+        ~3s relaunching is a much better trade than retrying on a
+        zombie browser.
+
+        Per-attempt timeout: 80s (covers cold-launch + slow set_content
+        + max font/image waits + 60s page.pdf). Total worst case per
+        chunk: ~160s. With 3 chunks that's under 9 minutes — comfortably
+        below the 10-minute sweeper threshold."""
+        per_attempt_timeout = 80.0
+        last_err: Optional[Exception] = None
+        for attempt in (1, 2):
+            browser = None
             try:
-                blob = await asyncio.wait_for(
-                    _render_chunk(browser, idx, total, p, p + 1),
+                browser = await _launch_browser(pw)
+            except Exception as e:
+                last_err = e
+                log.warning("PDF export: browser launch attempt %d failed: %s", attempt, e)
+                continue
+            try:
+                return await asyncio.wait_for(
+                    _render_chunk(browser, idx, total, start, end, heartbeat_label),
                     timeout=per_attempt_timeout,
                 )
-                for pg in PdfReader(io.BytesIO(blob)).pages:
-                    writer.add_page(pg)
-                had_any_success = True
-            except Exception as inner:
-                log.error(
-                    "PDF export: single-page %d failed permanently: %s",
-                    p + 1, inner,
+            except (asyncio.TimeoutError, Exception) as e:
+                last_err = e
+                log.warning(
+                    "PDF export: chunk %d/%d attempt %d failed: %s",
+                    idx + 1, total, attempt, e,
                 )
-                # Skip the bad page. A book with one missing page is far
-                # more recoverable than a job that never completes.
-        if not had_any_success:
-            raise RuntimeError(
-                f"PDF export: every page in chunk {idx + 1}/{total} "
-                f"(pages {start + 1}-{end}) failed to render"
-            )
-        out = io.BytesIO()
-        writer.write(out)
-        return out.getvalue()
+            finally:
+                if browser is not None:
+                    try:
+                        await asyncio.wait_for(browser.close(), timeout=5.0)
+                    except Exception:
+                        pass
+        raise RuntimeError(
+            f"chunk {idx + 1}/{total} (pages {start + 1}-{end}) failed after 2 attempts. "
+            f"Last error: {last_err}"
+        )
 
     chunk_pdfs: list[bytes] = []
     async with async_playwright() as pw:
         _emit("launching chromium")
-        browser = await pw.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                # Memory hygiene — production containers are tight.
-                "--disable-gpu",
-                "--disable-background-networking",
-                "--disable-default-apps",
-                "--disable-extensions",
-                "--disable-sync",
-                "--disable-translate",
-                "--metrics-recording-only",
-                "--no-first-run",
-                "--no-zygote",
-            ],
-        )
-        try:
-            for idx, (start, end) in enumerate(chunks):
-                _emit(f"rendering chunk {idx + 1}/{len(chunks)}")
-                t0 = asyncio.get_event_loop().time()
-                chunk_bytes = await _render_chunk_safe(browser, idx, len(chunks), start, end)
-                t1 = asyncio.get_event_loop().time()
-                log.info("PDF export: chunk %d/%d (pages %d-%d) rendered in %.1fs, %d bytes",
-                         idx + 1, len(chunks), start + 1, end, t1 - t0, len(chunk_bytes))
-                chunk_pdfs.append(chunk_bytes)
-        finally:
-            await browser.close()
+        # Browser is now (re)launched INSIDE _render_chunk_safe per
+        # attempt, not once-for-all-chunks. The old shared-browser
+        # model meant a wedged browser process from chunk 1 could
+        # never recover; the fresh-per-attempt model is bulletproof
+        # against Chromium hangs at the cost of ~3s relaunch overhead
+        # per chunk attempt.
+        for idx, (start, end) in enumerate(chunks):
+            heartbeat_label = f"rendering chunk {idx + 1}/{len(chunks)}"
+            _emit(heartbeat_label)
+            t0 = asyncio.get_event_loop().time()
+            chunk_bytes = await _render_chunk_safe(
+                pw, idx, len(chunks), start, end, heartbeat_label
+            )
+            t1 = asyncio.get_event_loop().time()
+            log.info(
+                "PDF export: chunk %d/%d (pages %d-%d) rendered in %.1fs, %d bytes",
+                idx + 1, len(chunks), start + 1, end, t1 - t0, len(chunk_bytes),
+            )
+            chunk_pdfs.append(chunk_bytes)
 
     # Single chunk? Skip pypdf re-encoding unless we still need to stamp
     # print boxes / enforce even page count.
@@ -1438,7 +1479,6 @@ async def build_book_pdf(
 
     # Merge with pypdf. Use a writer rather than the deprecated PdfMerger.
     _emit("merging chunks")
-    import io
     from pypdf import PdfReader, PdfWriter
 
     writer = PdfWriter()
