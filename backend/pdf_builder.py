@@ -1004,7 +1004,7 @@ async def build_cover_spread_pdf(
                                   img.addEventListener('error', r, { once: true });
                                 })
                           )),
-                          new Promise(r => setTimeout(r, 15000))
+                          new Promise(r => setTimeout(r, 25000))
                         ])
                         """
                     )
@@ -1018,7 +1018,7 @@ async def build_cover_spread_pdf(
                         prefer_css_page_size=True,
                         margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
                     ),
-                    timeout=60.0,
+                    timeout=90.0,
                 )
             finally:
                 try:
@@ -1332,7 +1332,7 @@ async def build_book_pdf(
                               img.addEventListener('error', r, { once: true });
                             })
                       )),
-                      new Promise(r => setTimeout(r, 15000))
+                      new Promise(r => setTimeout(r, 25000))
                     ])
                     """
                 )
@@ -1350,7 +1350,7 @@ async def build_book_pdf(
                     prefer_css_page_size=True,
                     margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
                 ),
-                timeout=60.0,
+                timeout=90.0,
             )
             timings[last_stage] = asyncio.get_event_loop().time() - t
             log.info(
@@ -1412,11 +1412,15 @@ async def build_book_pdf(
         ~3s relaunching is a much better trade than retrying on a
         zombie browser.
 
-        Per-attempt timeout: 80s (covers cold-launch + slow set_content
-        + max font/image waits + 60s page.pdf). Total worst case per
-        chunk: ~160s. With 3 chunks that's under 9 minutes — comfortably
-        below the 10-minute sweeper threshold."""
-        per_attempt_timeout = 80.0
+        We do NOT wrap `_render_chunk` in an outer `asyncio.wait_for`:
+        every stage inside `_render_chunk` already has its own explicit
+        timeout (set_content 30s, fonts 3s, images 15s, page.pdf 60s),
+        and `_render_chunk` annotates whichever stage actually stalled.
+        Wrapping with a shorter outer timeout would mask that annotation
+        with a bare `asyncio.TimeoutError` (empty `str()`), which is
+        exactly the symptom we just hit — the toast showed
+        "Last error: " with no detail. The 10-min sweeper remains the
+        last-resort safety net."""
         last_err: Optional[Exception] = None
         for attempt in (1, 2):
             browser = None
@@ -1427,11 +1431,8 @@ async def build_book_pdf(
                 log.warning("PDF export: browser launch attempt %d failed: %s", attempt, e)
                 continue
             try:
-                return await asyncio.wait_for(
-                    _render_chunk(browser, idx, total, start, end, heartbeat_label),
-                    timeout=per_attempt_timeout,
-                )
-            except (asyncio.TimeoutError, Exception) as e:
+                return await _render_chunk(browser, idx, total, start, end, heartbeat_label)
+            except Exception as e:
                 last_err = e
                 log.warning(
                     "PDF export: chunk %d/%d attempt %d failed: %s",
@@ -1443,9 +1444,14 @@ async def build_book_pdf(
                         await asyncio.wait_for(browser.close(), timeout=5.0)
                     except Exception:
                         pass
+        # Always include the exception TYPE name. Several Playwright /
+        # asyncio exceptions stringify to empty (TimeoutError especially)
+        # which used to show as "Last error: " with no detail in the UI.
+        err_type = type(last_err).__name__ if last_err else "Unknown"
+        err_msg = str(last_err) if last_err else ""
         raise RuntimeError(
             f"chunk {idx + 1}/{total} (pages {start + 1}-{end}) failed after 2 attempts. "
-            f"Last error: {last_err}"
+            f"Last error [{err_type}]: {err_msg}"
         )
 
     chunk_pdfs: list[bytes] = []

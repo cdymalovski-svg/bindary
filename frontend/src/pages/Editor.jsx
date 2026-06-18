@@ -1299,7 +1299,13 @@ export default function Editor() {
           if (detail.toLowerCase().includes('cancelled')) {
             throw new Error('Cancelled by user');
           }
-          const tail = sb.trace ? ` (${String(sb.trace).slice(0, 120)})` : '';
+          // Prefer the rich `error` (which now includes the failing stage
+          // + timings dict from pdf_builder._render_chunk_safe) over the
+          // raw traceback. Only fall through to the trace when `error`
+          // looks bare ("PDF build failed", empty, or shorter than 40
+          // chars) — the trace is line noise in every other case.
+          const useTrace = sb.trace && detail.trim().length < 40;
+          const tail = useTrace ? ` (${String(sb.trace).slice(0, 240)})` : '';
           throw new Error(`${detail}${tail}`);
         }
         // Otherwise (pending) — update the custom toast with stage + fraction.
