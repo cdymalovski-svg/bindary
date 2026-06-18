@@ -198,13 +198,43 @@ async def build_book_pdf(
         doc.write_pdf(target=out, presentational_hints=False)
         return out.getvalue()
 
-    # Bound the render with `asyncio.wait_for` so a pathological book
-    # can't stall the worker forever. WeasyPrint itself never hangs —
-    # this is purely defensive against e.g. an infinite-loop CSS bug.
-    pdf_bytes = await asyncio.wait_for(
-        asyncio.to_thread(_render_sync),
-        timeout=WEASY_TIMEOUT_S,
-    )
+    # Async heartbeat — pushes a fresh `stage_at` to Mongo every 10s
+    # while WeasyPrint's blocking `write_pdf()` runs in the worker
+    # thread. Without it, big books look frozen at "rendering with
+    # weasyprint" for the entire ~60s render, and users can't tell
+    # whether it's still working or has hung.
+    stop_hb = asyncio.Event()
+
+    async def _heartbeat():
+        elapsed = 0
+        while not stop_hb.is_set():
+            try:
+                await asyncio.wait_for(stop_hb.wait(), timeout=10.0)
+                return  # event fired, render finished
+            except asyncio.TimeoutError:
+                pass
+            elapsed += 10
+            try:
+                _emit(f"rendering with weasyprint ({elapsed}s)")
+            except Exception:
+                pass
+
+    hb_task = asyncio.create_task(_heartbeat())
+    try:
+        # Bound the render with `asyncio.wait_for` so a pathological
+        # book can't stall the worker forever. WeasyPrint itself never
+        # hangs — this is purely defensive against e.g. an infinite-
+        # loop CSS bug.
+        pdf_bytes = await asyncio.wait_for(
+            asyncio.to_thread(_render_sync),
+            timeout=WEASY_TIMEOUT_S,
+        )
+    finally:
+        stop_hb.set()
+        try:
+            await asyncio.wait_for(hb_task, timeout=2.0)
+        except Exception:
+            hb_task.cancel()
 
     # Stamp IngramSpark print boxes (MediaBox / TrimBox / BleedBox) the
     # same way the Chromium pipeline does. Then auto-pad to even page
@@ -271,9 +301,34 @@ async def build_cover_spread_pdf(
         doc.write_pdf(target=out, presentational_hints=False)
         return out.getvalue()
 
-    pdf_bytes = await asyncio.wait_for(
-        asyncio.to_thread(_render_sync),
-        timeout=WEASY_TIMEOUT_S,
-    )
+    # Heartbeat (see comment in build_book_pdf above).
+    stop_hb = asyncio.Event()
+
+    async def _heartbeat():
+        elapsed = 0
+        while not stop_hb.is_set():
+            try:
+                await asyncio.wait_for(stop_hb.wait(), timeout=10.0)
+                return
+            except asyncio.TimeoutError:
+                pass
+            elapsed += 10
+            try:
+                _emit(f"rendering cover with weasyprint ({elapsed}s)")
+            except Exception:
+                pass
+
+    hb_task = asyncio.create_task(_heartbeat())
+    try:
+        pdf_bytes = await asyncio.wait_for(
+            asyncio.to_thread(_render_sync),
+            timeout=WEASY_TIMEOUT_S,
+        )
+    finally:
+        stop_hb.set()
+        try:
+            await asyncio.wait_for(hb_task, timeout=2.0)
+        except Exception:
+            hb_task.cancel()
     _emit("done")
     return pdf_bytes
