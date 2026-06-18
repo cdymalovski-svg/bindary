@@ -1383,25 +1383,35 @@ async def build_book_pdf(
         # during sandbox setup on tight pods. 30s gives plenty of room
         # for the worst legitimate cold start while still surfacing a
         # hang as a real error.
-        return await asyncio.wait_for(
-            pw.chromium.launch(
-                headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                    "--disable-background-networking",
-                    "--disable-default-apps",
-                    "--disable-extensions",
-                    "--disable-sync",
-                    "--disable-translate",
-                    "--metrics-recording-only",
-                    "--no-first-run",
-                    "--no-zygote",
-                ],
-            ),
-            timeout=30.0,
-        )
+        try:
+            return await asyncio.wait_for(
+                pw.chromium.launch(
+                    headless=True,
+                    args=[
+                        "--no-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-gpu",
+                        "--disable-background-networking",
+                        "--disable-default-apps",
+                        "--disable-extensions",
+                        "--disable-sync",
+                        "--disable-translate",
+                        "--metrics-recording-only",
+                        "--no-first-run",
+                        "--no-zygote",
+                    ],
+                ),
+                timeout=30.0,
+            )
+        except asyncio.TimeoutError as exc:
+            # The bare TimeoutError stringifies to "" which used to make
+            # the user-facing toast read "Last error: " with no detail.
+            # Re-raise as a RuntimeError with a self-describing message.
+            raise RuntimeError(
+                "Chromium failed to launch within 30s — the production "
+                "container's browser binary is likely missing or wedged. "
+                "Hit /api/pdf-health to confirm chromium_launchable status."
+            ) from exc
 
     async def _render_chunk_safe(pw, idx: int, total: int, start: int, end: int,
                                   heartbeat_label: str) -> bytes:
@@ -1425,18 +1435,27 @@ async def build_book_pdf(
         for attempt in (1, 2):
             browser = None
             try:
+                # Surface attempt number in the stage so a stuck launch
+                # never looks identical to a stuck render. Without this
+                # the UI shows "launching chromium" or "rendering chunk
+                # 1/N" indefinitely — users can't tell what's hanging.
+                _emit(f"{heartbeat_label} (launch attempt {attempt})")
                 browser = await _launch_browser(pw)
             except Exception as e:
                 last_err = e
-                log.warning("PDF export: browser launch attempt %d failed: %s", attempt, e)
+                log.warning(
+                    "PDF export: browser launch attempt %d failed (%s): %s",
+                    attempt, type(e).__name__, e,
+                )
                 continue
             try:
+                _emit(f"{heartbeat_label} (rendering, attempt {attempt})")
                 return await _render_chunk(browser, idx, total, start, end, heartbeat_label)
             except Exception as e:
                 last_err = e
                 log.warning(
-                    "PDF export: chunk %d/%d attempt %d failed: %s",
-                    idx + 1, total, attempt, e,
+                    "PDF export: chunk %d/%d attempt %d failed (%s): %s",
+                    idx + 1, total, attempt, type(e).__name__, e,
                 )
             finally:
                 if browser is not None:
