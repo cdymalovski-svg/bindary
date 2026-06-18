@@ -127,7 +127,17 @@ function StaticCoverPage({ page, pageSize, totalPages, label }) {
                 }
                 alt=""
                 draggable={false}
-                style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'contain',
+                  display: 'block',
+                  background: block.background_color || 'transparent',
+                }}
+              />
+            ) : block.type === 'image' && block.background_color ? (
+              <div
+                style={{ width: '100%', height: '100%', background: block.background_color }}
               />
             ) : null}
           </div>

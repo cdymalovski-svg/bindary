@@ -295,6 +295,34 @@ export default function BlockProperties({
           <p className="text-[10px] text-ink-mute leading-relaxed">
             Drag corners to resize. Aspect ratio is locked for illustrations.
           </p>
+
+          {/* Background fill — shows through transparent areas of the
+              image (handy for hand-drawn illustrations on a coloured
+              backdrop) AND turns an empty image block into a pure
+              colour tile (useful as an accent panel behind text). */}
+          <div className="pt-2 border-t border-rule space-y-2">
+            <div className="flex items-center justify-between">
+              <p className="label-caps">Background fill</p>
+              {block.background_color && (
+                <button
+                  type="button"
+                  onClick={() => onChange({ background_color: null })}
+                  className="text-[10px] text-ink-mute hover:text-terracotta"
+                  data-testid="image-bg-clear"
+                  title="Remove background fill"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+            <ImageBackgroundPicker
+              value={block.background_color}
+              onChange={(c) => onChange({ background_color: c })}
+            />
+            <p className="text-[10px] text-ink-mute leading-snug">
+              Shows through transparent PNGs and fills the block when no image is set.
+            </p>
+          </div>
         </div>
       )}
 
@@ -357,6 +385,113 @@ function ColorPicker({ value, onChange }) {
           className="mt-2 w-full h-8 border border-rule rounded-sm bg-white"
           data-testid="text-color-input"
         />
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+// Larger swatch palette tuned for backgrounds (kids' book pastels +
+// editorial darks). Pairs with the native colour input for fully
+// arbitrary hex values + a hex text field for paste-from-Figma flows.
+const IMAGE_BG_COLORS = [
+  '#FFF8DC', '#FAF3E7', '#F2E8D5', '#E8D9C0',
+  '#CFE3DC', '#B7D2C1', '#F8C9B7', '#EFB47E',
+  '#E6A56C', '#D88A6E', '#9E4532', '#5B1A1A',
+  '#7A5C00', '#3B4A6B', '#0E3B2E', '#1C1B19',
+];
+
+/**
+ * Background-fill picker for image blocks. Shows three input affordances:
+ *   • A 4×4 swatch palette of editorial-friendly colours
+ *   • A native browser colour wheel (`<input type="color">`) for any RGB
+ *   • A plain-text hex field for paste-from-design-tools workflows
+ * All three are wired to the same `onChange` so the user picks whatever
+ * affordance fits the moment.
+ */
+function ImageBackgroundPicker({ value, onChange }) {
+  const [open, setOpen] = useState(false);
+  const [hex, setHex] = useState(value || '');
+  // Sync local input state whenever the upstream block value changes
+  // (e.g. after a swatch click) so the field always reflects truth.
+  useEffect(() => { setHex(value || ''); }, [value]);
+
+  const commitHex = (raw) => {
+    const t = (raw || '').trim();
+    if (!t) { onChange(null); return; }
+    // Accept "FFE9C8" as well as "#FFE9C8" — designers commonly paste
+    // without the leading hash from Figma.
+    const normalised = t.startsWith('#') ? t : `#${t}`;
+    if (/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(normalised)) {
+      onChange(normalised);
+    }
+  };
+
+  const display = value || 'No fill';
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          data-testid="image-bg-trigger"
+          className="w-full h-9 border border-rule rounded-sm bg-white flex items-center gap-2 px-2"
+        >
+          <span
+            className="w-5 h-5 rounded-sm border border-rule"
+            style={
+              value
+                ? { background: value }
+                : {
+                    // Checkerboard signals "transparent / no fill".
+                    backgroundImage:
+                      'linear-gradient(45deg,#ccc 25%,transparent 25%),linear-gradient(-45deg,#ccc 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#ccc 75%),linear-gradient(-45deg,transparent 75%,#ccc 75%)',
+                    backgroundSize: '8px 8px',
+                    backgroundPosition: '0 0, 0 4px, 4px -4px, -4px 0',
+                  }
+            }
+          />
+          <span className="text-xs text-ink-soft flex-1 text-left truncate">{display}</span>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="w-52 bg-paper border-rule rounded-sm p-2 space-y-2" data-testid="image-bg-popover">
+        <div className="grid grid-cols-4 gap-1.5" data-testid="image-bg-swatches">
+          {IMAGE_BG_COLORS.map((c) => {
+            const active = (value || '').toLowerCase() === c.toLowerCase();
+            return (
+              <button
+                key={c}
+                type="button"
+                onClick={() => { onChange(c); setOpen(false); }}
+                data-testid={`image-bg-swatch-${c}`}
+                className={`w-full aspect-square rounded-sm border ${active ? 'ring-2 ring-terracotta ring-offset-1' : 'border-rule'}`}
+                style={{ background: c }}
+                title={c}
+              />
+            );
+          })}
+        </div>
+        <input
+          type="color"
+          value={value || '#FFFFFF'}
+          onChange={(e) => onChange(e.target.value)}
+          className="w-full h-9 border border-rule rounded-sm bg-white cursor-pointer"
+          data-testid="image-bg-color-input"
+        />
+        <div className="flex items-center gap-1.5">
+          <span className="text-[10px] text-ink-mute uppercase tracking-widest">Hex</span>
+          <input
+            type="text"
+            value={hex}
+            placeholder="#FFE9C8"
+            onChange={(e) => setHex(e.target.value)}
+            onBlur={() => commitHex(hex)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') { commitHex(hex); setOpen(false); }
+            }}
+            className="flex-1 h-7 border border-rule rounded-sm bg-white px-2 text-xs font-mono"
+            data-testid="image-bg-hex-input"
+            spellCheck={false}
+          />
+        </div>
       </PopoverContent>
     </Popover>
   );

@@ -483,6 +483,14 @@ def _render_block(block: dict, image_data_urls: dict) -> str:
         )
     if btype == "image":
         path = _resolve_image_path(block)
+        # Optional solid background fill — rendered as the wrapper div's
+        # background colour so it shows through transparent areas of the
+        # image. When the block has no image yet it functions as a pure
+        # colour-tile block (handy for accent panels behind text).
+        bg = block.get("background_color")
+        wrapper_style = style
+        if bg:
+            wrapper_style = style + f"background-color:{_css_color(bg, 'transparent')};"
         # Prefer the public URL (Chromium fetches in parallel, low memory).
         # Only inline the bytes when no public URL is available — the inline
         # path is heavy (HTML grows by ~33% of every image) and was the
@@ -502,7 +510,10 @@ def _render_block(block: dict, image_data_urls: dict) -> str:
                 "PDF export: image block %s has no resolvable src (path=%r, url=%r)",
                 block.get("id"), block.get("image_path"), block.get("image_url"),
             )
-            return f'<div style="{style}"></div>'
+            # No image — but if there's a background colour, the block
+            # still has visual meaning (colour-tile mode). Render the
+            # empty wrapper with the background applied.
+            return f'<div style="{wrapper_style}"></div>'
         img_style = (
             "width:100%;height:100%;"
             "object-fit:contain;"
@@ -510,7 +521,7 @@ def _render_block(block: dict, image_data_urls: dict) -> str:
             "user-select:none;-webkit-user-drag:none;"
         )
         return (
-            f'<div style="{style}">'
+            f'<div style="{wrapper_style}">'
             f'<img src="{_attr(src)}" style="{img_style}" />'
             f'</div>'
         )

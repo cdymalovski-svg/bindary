@@ -323,6 +323,19 @@ Build me a book template app to be able to add texts and illustrations, page num
 - **Tests**: 18 fast tests in `/app/backend/tests/test_export_dpi.py` (resolver + persistence) + 1 end-to-end High-DPI render. All 23 PDF tests (IngramSpark + DPI) pass.
 - **On-screen**: already full-resolution — uploaded artwork is stored at original pixel dimensions and displayed as-is in the canvas. No change needed.
 
+## What's been implemented (2026-06-18 / iteration 42 — Image-block background fill picker)
+- **Feature**: Image blocks now support a **Background fill** colour, exposed in the Block properties panel with three input affordances:
+  - 4×4 swatch grid (pastels + editorial darks tuned for kids' books)
+  - Native browser colour wheel (`<input type="color">`) for any RGB value
+  - Plain-text hex field for paste-from-Figma workflows (accepts both `#FFE9C8` and `FFE9C8`)
+- **Behaviour**: The fill is rendered behind the image so it shows through transparent PNG regions (e.g. a hand-drawn illustration over a coloured backdrop). When the block has no image yet, the colour fills the whole block — turning it into a pure colour-tile (handy as an accent panel behind text).
+- **Backend** (`Block` model): new optional `background_color: str | None`. Round-trips via the existing `PUT /books/{id}` save path; no schema migration needed.
+- **Backend** (`pdf_builder.py`): `_render_block` emits `background-color:` on the wrapper div for image blocks. Renders the wrapper even when no image source resolves so colour-tile mode works end-to-end.
+- **Frontend**: `CanvasBlock.jsx` paints the colour beneath the `<img>`; the "No image" placeholder is replaced by the solid colour when a background is set. `CoverSpreadPreview.jsx` mirrors the same rule.
+- **Trigger affordance**: a checkerboard swatch icon signals "no fill" (transparent). A small "Clear" link in the section header removes the fill.
+- **Tests**: 5 new tests in `/app/backend/tests/test_image_background_color.py` (render + persistence). All pass.
+- **Smoke-tested** in preview: applied terracotta to the cover image block → colour visibly bled through the transparent PNG bottom strip.
+
 ## Next Tasks
 - Phase 3.3 — PDF document metadata (Title, Author, ISBN, Publisher into PDF properties).
 - Phase 3.2 — ICC profile picker (SWOP v2 vs Fogra39) in export popover.

@@ -99,6 +99,13 @@ class Block(BaseModel):
     # Image block
     image_url: Optional[str] = None
     image_path: Optional[str] = None
+    # Optional solid background fill rendered behind the image. Works
+    # for both image blocks (visible through transparent PNG regions —
+    # e.g. a hand-drawn illustration over a coloured backdrop) and
+    # image-type blocks with no `image_url` yet (which then function as
+    # a pure colour-tile block). Hex string like "#FFE9C8"; null/missing
+    # = no fill.
+    background_color: Optional[str] = None
     # Chapter heading metadata (text blocks only)
     is_chapter: bool = False
     # Live-sync Table of Contents marker (text blocks only). Blocks with

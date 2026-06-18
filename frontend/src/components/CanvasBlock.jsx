@@ -222,6 +222,16 @@ export default function CanvasBlock({
               draggable={false}
               crossOrigin="anonymous"
               data-testid={`image-block-img-${block.id}`}
+              style={block.background_color ? { background: block.background_color } : undefined}
+            />
+          ) : block.background_color ? (
+            // No image yet, but the block has a background fill —
+            // becomes a pure colour-tile (e.g. a coloured accent panel
+            // behind text). No "No image" placeholder.
+            <div
+              className="w-full h-full"
+              style={{ background: block.background_color }}
+              data-testid={`image-block-color-${block.id}`}
             />
           ) : (
             <div className="w-full h-full bg-desk flex items-center justify-center text-ink-mute text-sm">
