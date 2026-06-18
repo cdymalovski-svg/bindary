@@ -392,6 +392,53 @@ async def startup():
 
     _asyncio.create_task(_bg_install())
 
+    # Background sweeper: fail any pdf_job that hasn't progressed in 10 min.
+    # Without this, a job whose worker died (pod restart, OOM kill, or a
+    # Chromium hang we missed) sits in `status="pending"` forever and the
+    # UI shows an infinite spinner. The sweeper turns those zombies into
+    # explicit failures the client can show + recover from.
+    async def _bg_sweep_stuck_jobs():
+        from datetime import datetime, timezone, timedelta
+        while True:
+            try:
+                cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
+                cutoff_iso = cutoff.isoformat()
+                # `stage_at` updates every time `_run_pdf_job` calls
+                # `_emit(...)`. If it's older than 10 min the worker is
+                # almost certainly dead — Chromium chunks rarely take
+                # longer than 90s each thanks to the new wall-clock guard.
+                result = await db.pdf_jobs.update_many(
+                    {
+                        "status": "pending",
+                        "$or": [
+                            {"stage_at": {"$lt": cutoff_iso}},
+                            # Older jobs never wrote stage_at — fall back
+                            # to created_at so we don't miss them.
+                            {"stage_at": {"$exists": False}, "created_at": {"$lt": cutoff_iso}},
+                        ],
+                    },
+                    {"$set": {
+                        "status": "failed",
+                        "error": (
+                            "Export timed out — no progress for 10 minutes. "
+                            "The render worker likely crashed. Try again, "
+                            "or pick a smaller page range / lower DPI."
+                        ),
+                    }},
+                )
+                if result.modified_count:
+                    logging.warning(
+                        "PDF sweep: marked %d stuck job(s) as failed",
+                        result.modified_count,
+                    )
+            except Exception as e:
+                logging.warning(f"PDF sweep iteration failed: {e}")
+            # 60s cadence — fast enough that users see a real error in
+            # under 11 min, slow enough not to hammer Mongo.
+            await _asyncio.sleep(60)
+
+    _asyncio.create_task(_bg_sweep_stuck_jobs())
+
 
 @app.on_event("shutdown")
 async def shutdown_db_client():

@@ -347,6 +347,14 @@ Build me a book template app to be able to add texts and illustrations, page num
 - **Files**: `/app/frontend/src/components/BlockProperties.jsx` (text ColorPicker + ImageBackgroundPicker upgrades).
 - **Smoke-tested** in preview: opened picker on the cover title → eyedropper button present → typed `AA3344` in the Hex field → text rendered burgundy.
 
+## What's been implemented (2026-06-18 / iteration 44 — PDF timeout-defence + auto-retry)
+- **Diagnosed**: production `/api/pdf-health` showed 2 jobs frozen on `rendering chunk 1/N` since 04:28 / 04:34 UTC with healthy infrastructure (24 GB free RAM, Chromium launchable, Ghostscript ready). Root cause: two unbounded waits in `pdf_builder.py` — `get_image` had no `asyncio.wait_for` and `page.pdf()` had no wall-clock timeout. A single slow CDN image fetch (or an internal Chromium hang) could strand the whole job indefinitely.
+- **Fix 1 — Per-image fetch timeout** (`_handle_route`): every `get_image` call wrapped in `asyncio.wait_for(..., timeout=20.0)`. On timeout the route is fulfilled with `408` so Chromium renders the page with a broken-image marker and the chunk moves on. Same defence applied to `route.continue_()` / `route.fulfill()` so a stale route at chunk-close time can't crash the worker.
+- **Fix 2 — Per-chunk wall-clock guard** (`_render_chunk`): `page.pdf()` now wrapped in `asyncio.wait_for(..., timeout=90.0)`; `page.set_default_timeout(60_000)` lowers Playwright's per-action default; `context.close()` capped at 10s so a wedged Chromium can't block retry.
+- **Fix 3 — Auto-retry with degradation** (`_render_chunk_safe`): if a chunk fails (timeout or exception), retry the full chunk once. If it fails again AND the range > 1 page, fall back to **single-page rendering and pypdf merge** — isolates a single bad page so the rest of the book still exports. A book with one missing page is far more recoverable than a job that never completes.
+- **Fix 4 — Background stuck-job sweeper** (`server.py` startup): every 60s, marks `pdf_jobs` with `stage_at` older than 10 min as `failed` with a friendly error. Users see "Export timed out — no progress for 10 minutes." instead of an infinite spinner, even if the worker pod itself dies.
+- **Tests**: 4 new tests in `/app/backend/tests/test_pdf_export_timeouts.py` (image-fetch timeout race, sweeper query math, retry subdivision). All 67 PDF tests across the suite pass.
+
 ## Next Tasks
 - Phase 3.3 — PDF document metadata (Title, Author, ISBN, Publisher into PDF properties).
 - Phase 3.2 — ICC profile picker (SWOP v2 vs Fogra39) in export popover.
