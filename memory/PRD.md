@@ -336,6 +336,17 @@ Build me a book template app to be able to add texts and illustrations, page num
 - **Tests**: 5 new tests in `/app/backend/tests/test_image_background_color.py` (render + persistence). All pass.
 - **Smoke-tested** in preview: applied terracotta to the cover image block → colour visibly bled through the transparent PNG bottom strip.
 
+## What's been implemented (2026-06-18 / iteration 43 — Rich text-colour picker with eyedropper)
+- **Feature**: Replaced the basic 8-swatch text colour picker with a rich four-affordance picker (matches the image-bg picker pattern):
+  - **Eyedropper** button at the top — opens the native `window.EyeDropper` so the user can sample any pixel on the page, **including pixels inside placed illustrations**. The sampled hex is applied to the current text block instantly.
+  - 4×4 swatch grid (editorial palette tuned for cream-paper backgrounds).
+  - Native `<input type="color">` colour wheel for any RGB.
+  - Plain-text **Hex** field (accepts `#FFE9C8` or `FFE9C8`, normalises to uppercase, Enter to apply, Esc/blur to revert if invalid).
+- **Graceful degradation**: Eyedropper button is **only rendered on browsers that support `window.EyeDropper`** (Chrome 95+, Edge 95+, Opera). Safari/Firefox users see a one-line tip recommending Chrome/Edge for the eyedropper.
+- **Eyedropper added to image-background picker too** for consistency — designers can sample a brand colour off a photograph and re-use it as an accent fill.
+- **Files**: `/app/frontend/src/components/BlockProperties.jsx` (text ColorPicker + ImageBackgroundPicker upgrades).
+- **Smoke-tested** in preview: opened picker on the cover title → eyedropper button present → typed `AA3344` in the Hex field → text rendered burgundy.
+
 ## Next Tasks
 - Phase 3.3 — PDF document metadata (Title, Author, ISBN, Publisher into PDF properties).
 - Phase 3.2 — ICC profile picker (SWOP v2 vs Fogra39) in export popover.

@@ -12,6 +12,7 @@ import {
   ChevronsUp,
   ChevronsDown,
   Maximize2,
+  Pipette,
   Save as SaveIcon,
   Wand2,
 } from 'lucide-react';
@@ -353,38 +354,137 @@ function FmtBtn({ children, onClick, active, testId, title }) {
   );
 }
 
+/**
+ * Rich text-colour picker. Four input affordances stacked top-to-bottom:
+ *   1. **Eyedropper** — sample any pixel on the page (covers and pages),
+ *      including pixels inside placed illustrations. Uses the native
+ *      `window.EyeDropper` API (Chrome 95+, Edge 95+). Falls back
+ *      silently when unavailable.
+ *   2. **Swatches** — the editorial palette curated to read well on
+ *      cream paper backgrounds.
+ *   3. **Native colour wheel** — `<input type="color">` for any RGB.
+ *   4. **Hex text field** — for paste-from-Figma workflows; accepts
+ *      both `#RRGGBB` and `RRGGBB`.
+ *
+ * All four are wired to the same `onChange` so the user picks whichever
+ * affordance suits the moment.
+ */
 function ColorPicker({ value, onChange }) {
   const [open, setOpen] = useState(false);
+  const [hex, setHex] = useState(value || '');
+  const [picking, setPicking] = useState(false);
+  const eyedropperSupported = typeof window !== 'undefined' && 'EyeDropper' in window;
+
+  useEffect(() => { setHex(value || ''); }, [value]);
+
+  const commitHex = (raw) => {
+    const t = (raw || '').trim();
+    if (!t) return;
+    const normalised = t.startsWith('#') ? t : `#${t}`;
+    if (/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(normalised)) {
+      onChange(normalised.toUpperCase());
+    } else {
+      // Re-display the previous valid value so the user knows the input
+      // was rejected without an alert.
+      setHex(value || '');
+    }
+  };
+
+  const sampleFromPage = async () => {
+    // EyeDropper.open() darkens the page outside the cursor and lets the
+    // user click any pixel — including pixels inside placed art. The
+    // popover stays open so the user can still tweak hex afterwards.
+    if (!eyedropperSupported || picking) return;
+    setPicking(true);
+    try {
+      const dropper = new window.EyeDropper();
+      const result = await dropper.open();
+      if (result?.sRGBHex) {
+        onChange(result.sRGBHex.toUpperCase());
+      }
+    } catch {
+      // User pressed Esc — silent no-op. The picker stays where it is.
+    } finally {
+      setPicking(false);
+    }
+  };
+
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button
           data-testid="text-color-trigger"
+          type="button"
           className="w-full h-8 border border-rule rounded-sm bg-white flex items-center gap-2 px-2"
         >
           <span className="w-4 h-4 rounded-sm border border-rule" style={{ background: value }} />
-          <span className="text-xs text-ink-soft">{value}</span>
+          <span className="text-xs text-ink-soft font-mono">{value}</span>
         </button>
       </PopoverTrigger>
-      <PopoverContent className="w-44 bg-paper border-rule rounded-sm p-2">
-        <div className="grid grid-cols-4 gap-2">
-          {COLORS.map((c) => (
-            <button
-              key={c}
-              onClick={() => { onChange(c); setOpen(false); }}
-              data-testid={`color-swatch-${c}`}
-              className="w-8 h-8 rounded-sm border border-rule"
-              style={{ background: c }}
-            />
-          ))}
+      <PopoverContent
+        className="w-52 bg-paper border-rule rounded-sm p-2 space-y-2"
+        data-testid="text-color-popover"
+      >
+        {/* Eyedropper — pinned at the top so it's discoverable. Hidden
+            on browsers that don't support window.EyeDropper rather than
+            shown disabled (the action is meaningless there). */}
+        {eyedropperSupported && (
+          <button
+            type="button"
+            onClick={sampleFromPage}
+            disabled={picking}
+            data-testid="text-color-eyedropper"
+            className="w-full h-8 bg-ink hover:bg-ink-soft text-paper rounded-sm flex items-center justify-center gap-1.5 text-xs font-medium disabled:opacity-60 transition-colors"
+            title="Sample a colour from anywhere on the page"
+          >
+            <Pipette className="w-3.5 h-3.5" />
+            {picking ? 'Picking…' : 'Eyedropper'}
+          </button>
+        )}
+        <div className="grid grid-cols-4 gap-1.5" data-testid="text-color-swatches">
+          {COLORS.map((c) => {
+            const active = (value || '').toLowerCase() === c.toLowerCase();
+            return (
+              <button
+                key={c}
+                type="button"
+                onClick={() => { onChange(c); setOpen(false); }}
+                data-testid={`color-swatch-${c}`}
+                className={`w-full aspect-square rounded-sm border ${active ? 'ring-2 ring-terracotta ring-offset-1' : 'border-rule'}`}
+                style={{ background: c }}
+                title={c}
+              />
+            );
+          })}
         </div>
         <input
           type="color"
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          className="mt-2 w-full h-8 border border-rule rounded-sm bg-white"
+          value={value || '#000000'}
+          onChange={(e) => onChange(e.target.value.toUpperCase())}
+          className="w-full h-9 border border-rule rounded-sm bg-white cursor-pointer"
           data-testid="text-color-input"
         />
+        <div className="flex items-center gap-1.5">
+          <span className="text-[10px] text-ink-mute uppercase tracking-widest">Hex</span>
+          <input
+            type="text"
+            value={hex}
+            placeholder="#000000"
+            onChange={(e) => setHex(e.target.value)}
+            onBlur={() => commitHex(hex)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') { commitHex(hex); setOpen(false); }
+            }}
+            className="flex-1 h-7 border border-rule rounded-sm bg-white px-2 text-xs font-mono"
+            data-testid="text-color-hex"
+            spellCheck={false}
+          />
+        </div>
+        {!eyedropperSupported && (
+          <p className="text-[9px] text-ink-mute leading-snug">
+            Tip: open this book in Chrome or Edge to enable the eyedropper.
+          </p>
+        )}
       </PopoverContent>
     </Popover>
   );
@@ -411,6 +511,8 @@ const IMAGE_BG_COLORS = [
 function ImageBackgroundPicker({ value, onChange }) {
   const [open, setOpen] = useState(false);
   const [hex, setHex] = useState(value || '');
+  const [picking, setPicking] = useState(false);
+  const eyedropperSupported = typeof window !== 'undefined' && 'EyeDropper' in window;
   // Sync local input state whenever the upstream block value changes
   // (e.g. after a swatch click) so the field always reflects truth.
   useEffect(() => { setHex(value || ''); }, [value]);
@@ -422,7 +524,21 @@ function ImageBackgroundPicker({ value, onChange }) {
     // without the leading hash from Figma.
     const normalised = t.startsWith('#') ? t : `#${t}`;
     if (/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(normalised)) {
-      onChange(normalised);
+      onChange(normalised.toUpperCase());
+    }
+  };
+
+  const sampleFromPage = async () => {
+    if (!eyedropperSupported || picking) return;
+    setPicking(true);
+    try {
+      const dropper = new window.EyeDropper();
+      const result = await dropper.open();
+      if (result?.sRGBHex) {
+        onChange(result.sRGBHex.toUpperCase());
+      }
+    } catch { /* user pressed Esc */ } finally {
+      setPicking(false);
     }
   };
 
@@ -453,6 +569,19 @@ function ImageBackgroundPicker({ value, onChange }) {
         </button>
       </PopoverTrigger>
       <PopoverContent className="w-52 bg-paper border-rule rounded-sm p-2 space-y-2" data-testid="image-bg-popover">
+        {eyedropperSupported && (
+          <button
+            type="button"
+            onClick={sampleFromPage}
+            disabled={picking}
+            data-testid="image-bg-eyedropper"
+            className="w-full h-8 bg-ink hover:bg-ink-soft text-paper rounded-sm flex items-center justify-center gap-1.5 text-xs font-medium disabled:opacity-60 transition-colors"
+            title="Sample a colour from anywhere on the page"
+          >
+            <Pipette className="w-3.5 h-3.5" />
+            {picking ? 'Picking…' : 'Eyedropper'}
+          </button>
+        )}
         <div className="grid grid-cols-4 gap-1.5" data-testid="image-bg-swatches">
           {IMAGE_BG_COLORS.map((c) => {
             const active = (value || '').toLowerCase() === c.toLowerCase();
