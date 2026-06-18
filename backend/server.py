@@ -703,7 +703,9 @@ async def _run_pdf_job(
     PDF/X-1a:2001 file (CMYK, embedded fonts, transparency flattened,
     OutputIntent ICC profile baked in). Adds ~10–30s to export time.
     """
-    from pdf_builder import build_book_pdf
+    # The actual engine import happens deeper in this function so it can
+    # honour the PDF_ENGINE env-var. Don't import build_book_pdf here —
+    # we route through `_build_book_pdf` after engine selection below.
 
     # Per-job stage tracker. Each call writes to Mongo so the polling client
     # can show "rendering chunk 3/8" instead of just an elapsed counter.
@@ -766,18 +768,33 @@ async def _run_pdf_job(
 
         _on_stage("starting")
         await _check_cancelled()
+        # PDF engine selection. WeasyPrint is the default — it's pure
+        # Python (Cairo + Pango), never spawns a subprocess, and never
+        # hangs the way Chromium has on production pods where
+        # `asyncio.wait_for` can't actually cancel Playwright's
+        # subprocess launch. Set PDF_ENGINE=chromium to force the
+        # original Playwright pipeline (e.g. for visual A/B testing).
+        engine = (os.environ.get("PDF_ENGINE") or "weasy").lower()
+        if engine == "chromium":
+            from pdf_builder import build_book_pdf as _build_book_pdf
+            from pdf_builder import build_cover_spread_pdf as _build_cover_pdf
+            _on_stage(f"engine: chromium")
+        else:
+            from pdf_builder_weasy import build_book_pdf as _build_book_pdf
+            from pdf_builder_weasy import build_cover_spread_pdf as _build_cover_pdf
+            _on_stage(f"engine: weasyprint")
+
         if cover_spread:
             # Cover spread overrides any range — by definition it builds
             # the cover ONLY, using pages[0] and pages[-1].
-            from pdf_builder import build_cover_spread_pdf
-            pdf_bytes = await build_cover_spread_pdf(
+            pdf_bytes = await _build_cover_pdf(
                 book, get_object, public_base_url=base_url, progress_cb=_on_stage,
                 spine_width_in=spine_width_in,
                 binding=binding,
                 dpi=dpi,
             )
         else:
-            pdf_bytes = await build_book_pdf(
+            pdf_bytes = await _build_book_pdf(
                 book, get_object, public_base_url=base_url, progress_cb=_on_stage,
                 start_page=applied_start if is_range else None,
                 end_page=applied_end if is_range else None,
@@ -1149,11 +1166,26 @@ async def pdf_health():
     )
 
     info: dict[str, Any] = {
+        # Which renderer the worker will use for the next export. Set
+        # via PDF_ENGINE env var; defaults to `weasy` (pure-Python,
+        # never hangs the way Chromium did on this pod).
+        "pdf_engine": (os.environ.get("PDF_ENGINE") or "weasy").lower(),
         "playwright_browsers_path_env": os.environ.get("PLAYWRIGHT_BROWSERS_PATH"),
         "detected_browsers_path": _autodetect_chromium_path(),
         "chromium_ready_cached": _chromium_ready,
         "python": f"{__import__('sys').version_info.major}.{__import__('sys').version_info.minor}",
     }
+    # WeasyPrint probe — confirm the engine module imports and reports
+    # its version. A failure here means the install is broken on the
+    # pod and exports will fall back to Chromium (or fail outright).
+    try:
+        import weasyprint as _wp
+        info["weasyprint_version"] = _wp.__version__
+        info["weasyprint_ready"] = True
+    except Exception as e:
+        info["weasyprint_version"] = None
+        info["weasyprint_ready"] = False
+        info["weasyprint_error"] = str(e)[:200]
     # Ghostscript probe — Print-ready (PDF/X-1a) exports fail silently
     # without `gs`. We detect via `gs --version` because some images
     # ship a non-executable `gs` stub from the apt index.

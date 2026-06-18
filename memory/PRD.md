@@ -370,6 +370,15 @@ Build me a book template app to be able to add texts and illustrations, page num
 - **Same guards applied to `build_cover_spread_pdf`** — launch timeout, page.pdf timeout, context.close timeout. Cover-spread exports get the same defence.
 - **No more per-page fallback** — the 11×150s = 27 min worst case it added always exceeded the sweeper threshold, so users never benefited. Removed to keep total bounded.
 
+## What's been implemented (2026-06-18 / iteration 46 — WeasyPrint PDF engine)
+**Confirmed by `/api/pdf-health`**: even after iteration-45 fixes, jobs hung on `"launching chromium"` for 5+ minutes — `chromium_launchable: true` in isolation but the actual job-launched Chromium never returned. **Root cause**: Playwright's `pw.chromium.launch()` spawns an internal Node subprocess; `asyncio.wait_for(timeout=30)` raises `TimeoutError` on the coroutine but cannot cancel the underlying subprocess. So launches never actually fail — they just leave Python pretending they timed out while the Playwright connection stays locked.
+- **Fix**: Shipped a pure-Python WeasyPrint renderer (`pdf_builder_weasy.py`) as the new default engine. No Chromium, no subprocess, no async-cancellation gotchas. Renders the SAME HTML the Chromium pipeline produces via Cairo + Pango.
+- **Engine selection**: `PDF_ENGINE=weasy` (default) or `PDF_ENGINE=chromium` env var. `/api/pdf-health` now reports `pdf_engine` + `weasyprint_version` + `weasyprint_ready`.
+- **Reuses** the existing HTML builders (`_build_html`, `_build_cover_spread_html`), the same `apply_print_boxes` IngramSpark stamping, the same `ensure_even_page_count` padding, and the same DPI image downscaling. Visual output ≈ identical to Chromium for our static absolutely-positioned block layout.
+- **Custom URL fetcher** wires WeasyPrint to the same `get_object` helper Chromium used — images served from in-pod Object Storage, downscaled to the chosen DPI, JPEG re-encoded at the same quality.
+- **5-min hard timeout** via `asyncio.wait_for(asyncio.to_thread(write_pdf), 300)` — WeasyPrint never hangs, but the cap is defensive.
+- **Tests**: 67/67 PDF tests pass including all IngramSpark Phase 1+2+3, page-range exports, even-page padding, PDF/X conversion, and cancel flows. Tests use the new default engine, proving the Chromium → WeasyPrint swap is invisible at the API level.
+
 ## Next Tasks
 - Phase 3.3 — PDF document metadata (Title, Author, ISBN, Publisher into PDF properties).
 - Phase 3.2 — ICC profile picker (SWOP v2 vs Fogra39) in export popover.
