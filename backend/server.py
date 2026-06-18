@@ -392,6 +392,17 @@ async def startup():
 
     _asyncio.create_task(_bg_install())
 
+    # Warm the Google Fonts cache in the background. First export
+    # request would otherwise pay ~10-30s downloading ~50+ WOFF2
+    # files synchronously — and Support pinpointed that fetch as
+    # the cause of full-book hangs. After warm-up every render
+    # uses inlined base64 data URIs (no network during PDF build).
+    try:
+        from fonts_cache import warm_cache_async
+        warm_cache_async()
+    except Exception as e:
+        logging.warning(f"fonts_cache warm-up could not start: {e}")
+
     # Background sweeper: fail any pdf_job that hasn't progressed in 10 min.
     # Without this, a job whose worker died (pod restart, OOM kill, or a
     # Chromium hang we missed) sits in `status="pending"` forever and the
@@ -1186,6 +1197,19 @@ async def pdf_health():
         info["weasyprint_version"] = None
         info["weasyprint_ready"] = False
         info["weasyprint_error"] = str(e)[:200]
+    # Google Fonts cache probe — Support pinpointed Google Fonts
+    # fetches as the cause of full-book hangs. We pre-warm a local
+    # WOFF2 cache at startup. This probe surfaces whether the cache
+    # populated successfully or whether renders are running in the
+    # degraded "system fonts only" fallback mode.
+    try:
+        from fonts_cache import _inlined_css, _inline_attempt_failed, _woff2_cache
+        info["fonts_cache_ready"] = _inlined_css is not None and bool(_inlined_css)
+        info["fonts_cache_failed"] = _inline_attempt_failed
+        info["fonts_cache_woff2_count"] = len(_woff2_cache)
+        info["fonts_cache_css_bytes"] = len(_inlined_css or "")
+    except Exception as e:
+        info["fonts_cache_error"] = str(e)[:200]
     # Ghostscript probe — Print-ready (PDF/X-1a) exports fail silently
     # without `gs`. We detect via `gs --version` because some images
     # ship a non-executable `gs` stub from the apt index.

@@ -361,37 +361,77 @@ def ensure_even_page_count(pdf_bytes: bytes) -> tuple[bytes, bool]:
     return out.getvalue(), True
 
 
-GOOGLE_FONTS_IMPORT = (
-    "@import url('https://fonts.googleapis.com/css2?"
-    "family=Abril+Fatface"
-    "&family=Bebas+Neue"
-    "&family=Bitter:ital,wght@0,400;0,600;0,700;1,400"
-    "&family=Caveat:wght@400;700"
-    "&family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500"
-    "&family=Crimson+Text:ital,wght@0,400;0,600;1,400"
-    "&family=Dancing+Script:wght@400;700"
-    "&family=DM+Sans:wght@400;500;700"
-    "&family=EB+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400"
-    "&family=Fira+Code:wght@400;500;700"
-    "&family=Inconsolata:wght@400;700"
-    "&family=Indie+Flower"
-    "&family=JetBrains+Mono:wght@400;500;700"
-    "&family=Kalam:wght@400;700"
-    "&family=Libre+Baskerville:ital,wght@0,400;0,700;1,400"
-    "&family=Lobster"
-    "&family=Lora:ital,wght@0,400;0,500;0,600;0,700;1,400"
-    "&family=Merriweather:ital,wght@0,400;0,700;0,900;1,400"
-    "&family=Montserrat:wght@300;400;500;600;700"
-    "&family=Nunito:wght@400;600;700"
-    "&family=Outfit:wght@300;400;500;600;700"
-    "&family=Pacifico"
-    "&family=Playfair+Display:ital,wght@0,400;0,500;0,600;0,700;1,400"
-    "&family=Poppins:wght@300;400;500;600;700"
-    "&family=Raleway:wght@300;400;500;600;700"
-    "&family=Sacramento"
-    "&family=Work+Sans:wght@300;400;500;600;700"
-    "&display=swap');"
-)
+def _google_fonts_css() -> str:
+    """Build the CSS that goes at the top of every render's <style>.
+
+    Originally this was a bare `@import url('https://fonts.googleapis.com/...')`
+    which forced both WeasyPrint and Chromium to perform a synchronous
+    network fetch on EVERY render — including subfetches for each
+    referenced WOFF2 file. On a slow pod-to-Google connection this
+    routinely hung the export.
+
+    The cached version (see `fonts_cache.get_local_fonts_css`) downloads
+    everything once at server startup, inlines every WOFF2 as a base64
+    data: URI, and returns a fully-offline @font-face block.
+
+    Backwards-compat: if the cache fetch fails (e.g. network down at
+    startup), falls back to the @import URL so renders still get the
+    fonts — at the price of the original hang. The startup probe in
+    /api/pdf-health surfaces fontsready state so operators can spot
+    the degraded mode."""
+    from fonts_cache import get_local_fonts_css
+    cached = get_local_fonts_css()
+    if cached:
+        return cached
+    # Network-down fallback. Better than an empty CSS (system fonts =
+    # editorial mismatch) but liable to hang the render.
+    return (
+        "@import url('https://fonts.googleapis.com/css2?"
+        "family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700"
+        "&family=Lora:ital,wght@0,400;0,500;0,600;0,700"
+        "&display=swap');"
+    )
+
+
+# Backwards-compat constant — existing call sites use this name. We
+# resolve lazily via the function above so the cache is populated by
+# the time the first render runs.
+GOOGLE_FONTS_IMPORT = ""  # populated at first use in `_build_html` / `_build_cover_spread_html`
+
+
+async def _try_serve_fonts_route(route, req_url: str) -> bool:
+    """Shared helper for Chromium `page.route` callbacks. If the URL
+    is a Google Fonts CSS or WOFF2 fetch, fulfill it from the local
+    cache (or fail fast on miss) and return True so the caller skips
+    its image-route logic. Returns False otherwise."""
+    if "fonts.gstatic.com" in req_url:
+        try:
+            from fonts_cache import font_url_cache_get
+            cached = font_url_cache_get(req_url)
+            if cached is not None:
+                try:
+                    await route.fulfill(status=200, body=cached, content_type="font/woff2")
+                except Exception:
+                    pass
+                return True
+        except Exception:
+            pass
+        # Cache miss — fail fast so Chromium falls back to system
+        # fonts rather than hanging on the slow Google fetch.
+        try:
+            await route.fulfill(status=408, body=b"")
+        except Exception:
+            pass
+        return True
+    if "fonts.googleapis.com" in req_url:
+        # The cached @font-face CSS is already inlined in our HTML;
+        # any additional CSS fetch is redundant. Block it.
+        try:
+            await route.fulfill(status=200, body=b"", content_type="text/css")
+        except Exception:
+            pass
+        return True
+    return False
 
 
 def _is_dark_hex(color: str) -> bool:
@@ -677,7 +717,7 @@ def _build_html(
     )
 
     css = (
-        f"{GOOGLE_FONTS_IMPORT}"
+        f"{_google_fonts_css()}"
         f"@page {{ size: {outer_w}px {outer_h}px; margin: 0; }}"
         "html, body { margin: 0; padding: 0; background: #FFFFFF; "
         "-webkit-print-color-adjust: exact; print-color-adjust: exact; }"
@@ -848,7 +888,7 @@ def _build_cover_spread_html(
     spine_bg = _css_color(pages[front_idx].get("background_color"), "#1C1B19")
 
     css = (
-        f"{GOOGLE_FONTS_IMPORT}"
+        f"{_google_fonts_css()}"
         f"@page {{ size: {total_w}px {total_h}px; margin: 0; }}"
         "html, body { margin: 0; padding: 0; background: #FFFFFF; "
         "-webkit-print-color-adjust: exact; print-color-adjust: exact; }"
@@ -929,6 +969,8 @@ async def build_cover_spread_pdf(
 
     async def _handle_route(route):
         req_url = route.request.url
+        if await _try_serve_fonts_route(route, req_url):
+            return
         marker = "/api/files/"
         if marker in req_url:
             key = req_url.split(marker, 1)[1].split("?", 1)[0]
@@ -1209,6 +1251,8 @@ async def build_book_pdf(
     # Falls through for everything else (Google Fonts, etc).
     async def _handle_route(route):
         req_url = route.request.url
+        if await _try_serve_fonts_route(route, req_url):
+            return
         marker = "/api/files/"
         if marker in req_url:
             key = req_url.split(marker, 1)[1].split("?", 1)[0]

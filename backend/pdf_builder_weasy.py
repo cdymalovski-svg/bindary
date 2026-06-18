@@ -76,6 +76,25 @@ def _build_url_fetcher(
                 data, mime = _maybe_downscale(raw, ctype or "image/png",
                                               long_edge_cap, jpeg_quality)
                 return {"string": data, "mime_type": mime}
+            # Google Fonts WOFF2 — serve from local cache to avoid
+            # the synchronous network fetch that Support identified
+            # as the full-book hang cause. The inlined CSS already
+            # base64-embeds every font face, so this branch only
+            # fires if WeasyPrint encounters a stray URL we missed.
+            if "fonts.gstatic.com" in url:
+                from fonts_cache import font_url_cache_get
+                cached = font_url_cache_get(url)
+                if cached is not None:
+                    return {"string": cached, "mime_type": "font/woff2"}
+                # Not cached — return empty so the font falls back to
+                # system rather than blocking on the slow Google fetch.
+                log.warning("WeasyPrint: blocking %s (not in cache)", url)
+                return {"string": b"", "mime_type": "font/woff2"}
+            # Google Fonts CSS — same defence. Always blocked; the
+            # inlined CSS in HTML supersedes it.
+            if "fonts.googleapis.com" in url:
+                log.warning("WeasyPrint: blocking Google Fonts CSS fetch (%s)", url)
+                return {"string": b"", "mime_type": "text/css"}
         except Exception as e:
             log.warning("WeasyPrint url_fetcher failed for %s: %s", url, e)
             return {"string": _BLANK_PNG, "mime_type": "image/png"}

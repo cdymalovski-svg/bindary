@@ -379,6 +379,14 @@ Build me a book template app to be able to add texts and illustrations, page num
 - **5-min hard timeout** via `asyncio.wait_for(asyncio.to_thread(write_pdf), 300)` — WeasyPrint never hangs, but the cap is defensive.
 - **Tests**: 67/67 PDF tests pass including all IngramSpark Phase 1+2+3, page-range exports, even-page padding, PDF/X conversion, and cancel flows. Tests use the new default engine, proving the Chromium → WeasyPrint swap is invisible at the API level.
 
+## What's been implemented (2026-06-18 / iteration 47 — Google Fonts local cache)
+**Root cause (per Emergent Support)**: the PDF HTML imported 27 Google Fonts families at render time via `@import url('https://fonts.googleapis.com/...')`. Both WeasyPrint AND Chromium fetched the CSS *and every WOFF2 file it references* synchronously for every render. On a slow pod-to-Google connection this hung any export larger than 1 page. The 1-page exports succeeded only because the network had finished by the time WeasyPrint moved on.
+- **Fix shipped**: New `fonts_cache.py` module — downloads the Google Fonts CSS + every WOFF2 *once* at server startup (background thread), caches the WOFF2 bytes in memory. Subsequent renders see a small ~150KB CSS @font-face block inlined into HTML, with `fonts.gstatic.com` URLs intercepted by the WeasyPrint `url_fetcher` (and by Chromium's `page.route`) and served from the in-memory cache.
+- **Result**: 15-page full-book export now completes in **10.5s** (was hanging indefinitely on production). 53/53 PDF backend tests pass.
+- **`/api/pdf-health` enhanced**: surfaces `fonts_cache_ready`, `fonts_cache_woff2_count` (typically 163), `fonts_cache_css_bytes` (~155KB), and `fonts_cache_failed` so operators can spot the degraded "system fonts" fallback mode if the startup download fails.
+- **Defence-in-depth**: even if a WOFF2 URL escapes the local cache, the url_fetcher fails it fast (HTTP 408) instead of blocking — WeasyPrint falls back to system fonts rather than hanging. Same defence in the Chromium `page.route`.
+- **Backwards-compat**: `_google_fonts_css()` falls back to the old `@import` URL if the startup download failed; renders still work, just slower.
+
 ## Next Tasks
 - Phase 3.3 — PDF document metadata (Title, Author, ISBN, Publisher into PDF properties).
 - Phase 3.2 — ICC profile picker (SWOP v2 vs Fogra39) in export popover.
