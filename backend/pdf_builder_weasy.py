@@ -178,63 +178,73 @@ async def build_book_pdf(
     e = total if end_page is None else min(total, int(end_page))
     if s >= e:
         s, e = 0, min(total, 1)
-    html_text, outer_w, outer_h = _pb._build_html(
-        book, {}, page_range=(s, e), pdfx_bleed=pdfx_bleed,
-    )
 
     base = (public_base_url or "").rstrip("/") + "/"
     fetcher = _build_url_fetcher(get_image, public_base_url, dpi=dpi)
 
-    def _render_sync() -> bytes:
-        _emit("rendering with weasyprint")
-        # WeasyPrint's `HTML().write_pdf()` is fully synchronous and
-        # cannot be cancelled mid-render. We run it in a worker thread
-        # so the asyncio loop stays responsive (heartbeats, polling).
-        doc = HTML(string=html_text, base_url=base, url_fetcher=fetcher)
-        # `presentational_hints=False` — our HTML uses inline styles so
-        # we don't want WeasyPrint inferring extra defaults that could
-        # differ from Chromium.
+    # Chunked rendering — render `CHUNK_SIZE` pages per WeasyPrint call,
+    # then merge with pypdf. Big art-heavy books (60+ pages with full
+    # bleed illustrations) take 5-10s per page in WeasyPrint; rendering
+    # them all in one `write_pdf()` blew through the 10-minute frontend
+    # polling deadline. Chunking gives us:
+    #   - Visible progress between chunks (stage_at updates per chunk)
+    #   - Bounded memory (no big intermediate page tree)
+    #   - Each chunk's failure isolated to ~5 pages, not the whole book
+    CHUNK_SIZE = 5
+    page_count = e - s
+    chunks = [(s + i, min(s + i + CHUNK_SIZE, e)) for i in range(0, page_count, CHUNK_SIZE)]
+    log.info(
+        "WeasyPrint: rendering %d pages in %d chunks of up to %d",
+        page_count, len(chunks), CHUNK_SIZE,
+    )
+
+    def _render_chunk_sync(chunk_start: int, chunk_end: int) -> bytes:
+        # Re-build HTML for just this slice — the URL fetcher / fonts
+        # cache are shared across all chunks so there's no extra
+        # network cost.
+        chunk_html, _w, _h = _pb._build_html(
+            book, {}, page_range=(chunk_start, chunk_end), pdfx_bleed=pdfx_bleed,
+        )
+        doc = HTML(string=chunk_html, base_url=base, url_fetcher=fetcher)
         out = io.BytesIO()
         doc.write_pdf(target=out, presentational_hints=False)
         return out.getvalue()
 
-    # Async heartbeat — pushes a fresh `stage_at` to Mongo every 10s
-    # while WeasyPrint's blocking `write_pdf()` runs in the worker
-    # thread. Without it, big books look frozen at "rendering with
-    # weasyprint" for the entire ~60s render, and users can't tell
-    # whether it's still working or has hung.
-    stop_hb = asyncio.Event()
-
-    async def _heartbeat():
-        elapsed = 0
-        while not stop_hb.is_set():
-            try:
-                await asyncio.wait_for(stop_hb.wait(), timeout=10.0)
-                return  # event fired, render finished
-            except asyncio.TimeoutError:
-                pass
-            elapsed += 10
-            try:
-                _emit(f"rendering with weasyprint ({elapsed}s)")
-            except Exception:
-                pass
-
-    hb_task = asyncio.create_task(_heartbeat())
-    try:
-        # Bound the render with `asyncio.wait_for` so a pathological
-        # book can't stall the worker forever. WeasyPrint itself never
-        # hangs — this is purely defensive against e.g. an infinite-
-        # loop CSS bug.
-        pdf_bytes = await asyncio.wait_for(
-            asyncio.to_thread(_render_sync),
-            timeout=WEASY_TIMEOUT_S,
-        )
-    finally:
-        stop_hb.set()
+    # Heartbeat between chunks gives the user a visible progress
+    # signal AND keeps the stuck-job sweeper from false-firing.
+    chunk_pdfs: list[bytes] = []
+    for idx, (cs, ce) in enumerate(chunks):
+        _emit(f"rendering chunk {idx + 1}/{len(chunks)} (pages {cs + 1}-{ce})")
+        # Per-chunk wall-clock cap — even WeasyPrint can grind on
+        # pathological art (e.g. a 20 MB PNG never downscaled). 120s
+        # is generous for 5 pages but bounded.
         try:
-            await asyncio.wait_for(hb_task, timeout=2.0)
-        except Exception:
-            hb_task.cancel()
+            chunk_bytes = await asyncio.wait_for(
+                asyncio.to_thread(_render_chunk_sync, cs, ce),
+                timeout=120.0,
+            )
+            chunk_pdfs.append(chunk_bytes)
+        except asyncio.TimeoutError as e:
+            raise RuntimeError(
+                f"chunk {idx + 1}/{len(chunks)} (pages {cs + 1}-{ce}) "
+                f"exceeded 120s render budget — try lowering DPI or "
+                f"reducing illustration resolution on these pages"
+            ) from e
+
+    # Merge chunks. WeasyPrint produces one PDF per chunk; pypdf
+    # concatenates without re-rasterising — fast and lossless.
+    _emit("merging chunks")
+    if len(chunk_pdfs) == 1:
+        pdf_bytes = chunk_pdfs[0]
+    else:
+        from pypdf import PdfReader, PdfWriter
+        writer = PdfWriter()
+        for blob in chunk_pdfs:
+            for pg in PdfReader(io.BytesIO(blob)).pages:
+                writer.add_page(pg)
+        out_buf = io.BytesIO()
+        writer.write(out_buf)
+        pdf_bytes = out_buf.getvalue()
 
     # Stamp IngramSpark print boxes (MediaBox / TrimBox / BleedBox) the
     # same way the Chromium pipeline does. Then auto-pad to even page

@@ -1278,7 +1278,17 @@ export default function Editor() {
       // Reset on phase change (different denominator) so the next phase
       // restarts cleanly.
       let lastFraction = { done: 0, total: 0 };
-      while (Date.now() - start < 600_000) {
+      // Per-stage idle deadline. Resets every time we see a NEW stage
+      // string from the server — so an actively progressing job (e.g.
+      // a 60-page book that chunks through 12 "rendering chunk N/M"
+      // updates) is never killed for taking too long overall. Only a
+      // genuine stall (no stage change for N minutes) triggers the
+      // timeout error. This replaces the old wall-clock-from-start
+      // budget which falsely killed big art-heavy books at 10 min.
+      const STAGE_IDLE_DEADLINE_MS = 240_000; // 4 min without ANY stage change
+      let stageDeadline = Date.now() + STAGE_IDLE_DEADLINE_MS;
+      let prevStage = '';
+      while (Date.now() < stageDeadline) {
         if (cancelState.cancelled) {
           // Local cancel already fired the backend cancel request. Bail.
           throw new Error('Cancelled by user');
@@ -1291,7 +1301,17 @@ export default function Editor() {
         }
         const sb = await s.json();
         lastStatus = sb.status;
-        if (sb.stage) lastStage = sb.stage;
+        if (sb.stage) {
+          // Reset the idle deadline ONLY when the stage string actually
+          // changes. Heartbeat emissions like "rendering chunk 3/12"
+          // count as progress; a frozen stage for 4+ minutes is a real
+          // stall and we surface the timeout error.
+          if (sb.stage !== prevStage) {
+            prevStage = sb.stage;
+            stageDeadline = Date.now() + STAGE_IDLE_DEADLINE_MS;
+          }
+          lastStage = sb.stage;
+        }
         if (sb.status === 'ready') { serverFilename = sb.filename || null; break; }
         if (sb.status === 'failed') {
           const detail = sb.error || 'PDF build failed';
