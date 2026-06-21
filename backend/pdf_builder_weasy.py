@@ -25,11 +25,25 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FuturesTimeout
 from typing import Callable, Optional
 
 from weasyprint import HTML, CSS  # noqa: F401  CSS reserved for future per-export overrides
 
 import pdf_builder as _pb
+
+# Dedicated executor for image fetches inside WeasyPrint's `url_fetcher`.
+# We call it from a SYNC context (WeasyPrint runs in `asyncio.to_thread`),
+# so we cannot use asyncio.wait_for here — we need a thread-pool with a
+# `future.result(timeout=...)` we can bail on. 4 workers lets multiple
+# images in a single page fetch in parallel without overwhelming the
+# pod's network stack.
+_IMG_FETCH_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="wp-img-fetch")
+# Per-image hard ceiling — beyond this, the storage backend is presumed
+# stuck and we substitute a blank PNG. WeasyPrint then continues with
+# the next image so the page still renders.
+_IMG_FETCH_TIMEOUT_S = 25.0
 
 log = logging.getLogger("bindery.pdf_weasy")
 
@@ -75,7 +89,35 @@ def _build_url_fetcher(
                 cached = img_cache.get(key)
                 if cached is not None:
                     return {"string": cached[0], "mime_type": cached[1]}
-                raw, ctype = get_image(key)
+                # Bounded fetch — a slow/hung object-storage backend
+                # can't wedge the WeasyPrint render thread. Beyond the
+                # timeout we substitute a blank PNG so the page still
+                # renders (just without that image).
+                fetch_started = time.monotonic()
+                try:
+                    future = _IMG_FETCH_EXECUTOR.submit(get_image, key)
+                    raw, ctype = future.result(timeout=_IMG_FETCH_TIMEOUT_S)
+                except _FuturesTimeout:
+                    log.warning(
+                        "WeasyPrint: image fetch timed out after %.0fs for %s — "
+                        "substituting blank PNG",
+                        _IMG_FETCH_TIMEOUT_S, key,
+                    )
+                    img_cache[key] = (_BLANK_PNG, "image/png")
+                    return {"string": _BLANK_PNG, "mime_type": "image/png"}
+                except Exception as fe:
+                    log.warning(
+                        "WeasyPrint: image fetch errored for %s: %s — "
+                        "substituting blank PNG", key, fe,
+                    )
+                    img_cache[key] = (_BLANK_PNG, "image/png")
+                    return {"string": _BLANK_PNG, "mime_type": "image/png"}
+                fetch_ms = (time.monotonic() - fetch_started) * 1000
+                if fetch_ms > 3000:
+                    log.warning(
+                        "WeasyPrint: SLOW image fetch %.0fms for %s (size=%d)",
+                        fetch_ms, key, len(raw or b""),
+                    )
                 if not raw:
                     log.warning("WeasyPrint: empty bytes for %s", key)
                     # Returning None would crash WeasyPrint; instead
@@ -87,8 +129,15 @@ def _build_url_fetcher(
                 # directly into the PDF, so a 12000×12000 PNG would
                 # produce a 200 MB file. Cap at the chosen DPI long-edge
                 # and re-encode to JPEG (or keep PNG for transparency).
-                data, mime = _maybe_downscale(raw, ctype or "image/png",
-                                              long_edge_cap, jpeg_quality)
+                try:
+                    data, mime = _maybe_downscale(raw, ctype or "image/png",
+                                                  long_edge_cap, jpeg_quality)
+                except Exception as de:
+                    log.warning(
+                        "WeasyPrint: downscale failed for %s (%s) — using raw bytes",
+                        key, de,
+                    )
+                    data, mime = raw, ctype or "image/png"
                 img_cache[key] = (data, mime)
                 return {"string": data, "mime_type": mime}
             # Google Fonts WOFF2 — serve from local cache to avoid
@@ -195,7 +244,6 @@ async def build_book_pdf(
         s, e = 0, min(total, 1)
 
     base = (public_base_url or "").rstrip("/") + "/"
-    fetcher = _build_url_fetcher(get_image, public_base_url, dpi=dpi)
 
     # Chunked rendering — render `CHUNK_SIZE` pages per WeasyPrint call,
     # then merge with pypdf. Big art-heavy books take 5-15s per page in
@@ -205,9 +253,14 @@ async def build_book_pdf(
     #   - Visible progress between chunks (stage_at updates per chunk)
     #   - Bounded memory (no big intermediate page tree)
     #   - Failures isolated to a small page range, not the whole book
-    # Chunk size of 2: even at 15s/page the chunk finishes in 30s, with
-    # room to spare under the per-chunk budget.
-    CHUNK_SIZE = 2
+    # CHUNK_SIZE=1 — fully isolates every page. Production debugging on
+    # art-heavy books (5+ full-bleed 300-DPI illustrations) showed that
+    # even two-page chunks could exceed the 240s budget when both pages
+    # were heavy. With single-page chunks, a problem page can't drag
+    # neighbors down, the per-page timing log surfaces exactly which
+    # page is slow, and the emergency blank-page fallback below can
+    # substitute one bad page rather than killing the whole job.
+    CHUNK_SIZE = 1
     page_count = e - s
     chunks = [(s + i, min(s + i + CHUNK_SIZE, e)) for i in range(0, page_count, CHUNK_SIZE)]
     log.info(
@@ -231,6 +284,34 @@ async def build_book_pdf(
         doc.write_pdf(target=out, presentational_hints=False)
         return out.getvalue()
 
+    def _render_blank_page_sync(chunk_start: int, chunk_end: int) -> bytes:
+        """Last-resort fallback — render the page-range with all images
+        and content stripped, just the page geometry. Used only when a
+        real render times out so the user still gets a contiguous PDF
+        with placeholders for the bad pages, rather than nothing."""
+        size_key = book.get("page_size", "a4")
+        if size_key not in _pb.PAGE_SIZES_PX:
+            size_key = "a4"
+        w_px, h_px = _pb.PAGE_SIZES_PX[size_key]
+        # Inline minimal HTML: one empty page per slot, exact trim size.
+        page_count_local = max(1, chunk_end - chunk_start)
+        page_div = (
+            f'<div style="width:{w_px}px;height:{h_px}px;page-break-after:always;'
+            f'background:white;display:flex;align-items:center;justify-content:center;'
+            f'color:#aaa;font-family:sans-serif;font-size:14px;">'
+            f'[page could not be rendered]</div>'
+        )
+        html_text = (
+            f'<!doctype html><html><head><style>@page{{size:{w_px}px {h_px}px;margin:0}}'
+            f'body{{margin:0}}</style></head><body>'
+            + (page_div * page_count_local)
+            + "</body></html>"
+        )
+        doc = HTML(string=html_text, base_url=base, url_fetcher=job_fetcher)
+        out = io.BytesIO()
+        doc.write_pdf(target=out, presentational_hints=False)
+        return out.getvalue()
+
     chunk_pdfs: list[bytes] = []
     for idx, (cs, ce) in enumerate(chunks):
         # Emit a heartbeat task during this chunk so the frontend's
@@ -238,8 +319,9 @@ async def build_book_pdf(
         # clock on older UIs) never fires on a legitimately rendering
         # chunk. Heartbeat ticks every 10s with cumulative elapsed
         # time, which counts as a "stage change" to the polling UI.
-        chunk_label = f"rendering chunk {idx + 1}/{len(chunks)} (pages {cs + 1}-{ce})"
+        chunk_label = f"rendering page {cs + 1}/{e}"
         _emit(chunk_label)
+        page_t0 = time.monotonic()
         stop_hb = asyncio.Event()
 
         async def _heartbeat(label=chunk_label):
@@ -257,50 +339,78 @@ async def build_book_pdf(
                     pass
 
         hb_task = asyncio.create_task(_heartbeat())
-        # Generous per-chunk budget — 240s lets even a 2-page chunk
-        # with two full-bleed 300-DPI illustrations finish on a slow
-        # pod. Total worst case for a 60-page book: 30 chunks × 240s
-        # = 2 hr, BUT typical case is 30 × 15s = 7.5 min, which is
-        # well within the 4-min stage-idle frontend deadline because
-        # the heartbeat ticks every 10s.
+        # Per-page budget — 240s is enormous (typical page renders in
+        # 5-15s) but it gives even a worst-case pod (cold CPU, full-bleed
+        # 600-DPI illustration) plenty of headroom before we declare the
+        # page pathological. With CHUNK_SIZE=1 we lose only that one page
+        # to a blank placeholder; the rest of the book renders normally.
         try:
             chunk_bytes = await asyncio.wait_for(
                 asyncio.to_thread(_render_chunk_sync, cs, ce),
                 timeout=240.0,
             )
             chunk_pdfs.append(chunk_bytes)
-        except asyncio.TimeoutError:
-            # Last-resort fallback — render each of the two pages in
-            # this chunk individually. If one page has a pathological
-            # image (e.g. 50 MB PNG) it gets isolated; the other page
-            # in the chunk still makes it into the output.
-            log.warning(
-                "WeasyPrint chunk %d/%d (pages %d-%d) hit 240s budget — "
-                "falling back to per-page rendering",
-                idx + 1, len(chunks), cs + 1, ce,
+            page_ms = (time.monotonic() - page_t0) * 1000
+            log.info(
+                "WeasyPrint: page %d/%d rendered in %.0fms",
+                cs + 1, e, page_ms,
             )
-            per_page_ok = 0
-            for p in range(cs, ce):
-                try:
-                    _emit(f"{chunk_label} · fallback page {p + 1}")
-                    blob = await asyncio.wait_for(
-                        asyncio.to_thread(_render_chunk_sync, p, p + 1),
-                        timeout=180.0,
-                    )
-                    chunk_pdfs.append(blob)
-                    per_page_ok += 1
-                except Exception as inner:
-                    log.error(
-                        "WeasyPrint: single-page %d failed: %s",
-                        p + 1, inner,
-                    )
-            if per_page_ok == 0:
-                raise RuntimeError(
-                    f"chunk {idx + 1}/{len(chunks)} (pages {cs + 1}-{ce}) "
-                    f"exceeded 240s render budget AND every per-page "
-                    f"fallback failed — try lowering DPI or reducing "
-                    f"illustration resolution on these pages"
+            if page_ms > 60_000:
+                log.warning(
+                    "WeasyPrint: page %d/%d was SLOW (%.1fs) — check for "
+                    "oversized images or complex CSS on this page",
+                    cs + 1, e, page_ms / 1000,
                 )
+        except asyncio.TimeoutError:
+            # The page exceeded 240s. Substitute a blank placeholder so
+            # the rest of the book still exports — far better than the
+            # whole job failing because of one bad page. The user gets
+            # a PDF with a clearly-marked blank slot and can investigate
+            # that specific page in the editor.
+            log.error(
+                "WeasyPrint: page %d/%d exceeded 240s render budget — "
+                "substituting blank placeholder so the export can complete",
+                cs + 1, e,
+            )
+            _emit(f"page {cs + 1} too slow — using placeholder")
+            try:
+                blank_bytes = await asyncio.wait_for(
+                    asyncio.to_thread(_render_blank_page_sync, cs, ce),
+                    timeout=30.0,
+                )
+                chunk_pdfs.append(blank_bytes)
+            except Exception as blank_err:
+                # Even the blank fallback failed — at this point the
+                # WeasyPrint install is so broken that we should fail
+                # fast rather than build a partially-broken PDF.
+                log.exception(
+                    "WeasyPrint: blank-placeholder fallback also failed: %s",
+                    blank_err,
+                )
+                raise RuntimeError(
+                    f"page {cs + 1} exceeded 240s render budget AND the "
+                    f"blank-placeholder fallback also failed ({blank_err}). "
+                    f"Try lowering DPI (300 instead of 600) or reducing the "
+                    f"illustration resolution on page {cs + 1}."
+                ) from blank_err
+        except Exception as e_render:
+            # Unexpected error (not a timeout). Same placeholder strategy
+            # so one bad page doesn't kill the whole export.
+            log.exception(
+                "WeasyPrint: page %d/%d raised %s — substituting blank placeholder",
+                cs + 1, e, e_render,
+            )
+            _emit(f"page {cs + 1} errored — using placeholder")
+            try:
+                blank_bytes = await asyncio.wait_for(
+                    asyncio.to_thread(_render_blank_page_sync, cs, ce),
+                    timeout=30.0,
+                )
+                chunk_pdfs.append(blank_bytes)
+            except Exception:
+                # Re-raise the ORIGINAL render error so the operator can
+                # see the actual failure cause in the job's error field.
+                raise e_render
         finally:
             stop_hb.set()
             try:

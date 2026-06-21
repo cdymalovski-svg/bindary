@@ -387,6 +387,18 @@ Build me a book template app to be able to add texts and illustrations, page num
 - **Defence-in-depth**: even if a WOFF2 URL escapes the local cache, the url_fetcher fails it fast (HTTP 408) instead of blocking — WeasyPrint falls back to system fonts rather than hanging. Same defence in the Chromium `page.route`.
 - **Backwards-compat**: `_google_fonts_css()` falls back to the old `@import` URL if the startup download failed; renders still work, just slower.
 
+## What's been implemented (2026-06-21 / iteration 48 — WeasyPrint per-page isolation)
+**Symptom from production**: even after iteration 47's font cache + 2-page chunks + 240s/chunk budget + image cache, a 5-page art-heavy export still failed in production at bindery.au (user confirmed: tested after a fresh deploy).
+- **Hypothesis**: with `CHUNK_SIZE=2`, two heavy full-bleed pages in the same chunk could compound past 240s, and the per-page fallback shared the same `to_thread` hang risk. Also, slow object-storage image fetches inside WeasyPrint's `url_fetcher` had no timeout — a single hung fetch could wedge the render thread indefinitely (no async cancellation possible from sync code).
+- **Fix shipped** (`pdf_builder_weasy.py`):
+  1. **CHUNK_SIZE = 1** — every page renders in its own WeasyPrint invocation. A bad page can never poison neighbours, and timing logs surface exactly which page is slow.
+  2. **Bounded image fetcher** — `url_fetcher` now submits `get_image` calls to a dedicated `ThreadPoolExecutor` and waits at most **25s per image** via `future.result(timeout=...)`. Beyond the cap, the fetcher substitutes a blank PNG and logs the slow URL. Slow object-storage requests can no longer hang Cairo.
+  3. **Blank-page emergency fallback** — if a page exceeds the 240s render budget OR raises an unexpected exception, we render an obvious "[page could not be rendered]" placeholder of the correct trim size and continue. The user gets a complete PDF with at most one or two clearly-marked placeholders instead of a failed export.
+  4. **Per-page timing logs** — every page logs its render time; pages >60s log a SLOW warning so operators can spot pathological pages from the supervisor log alone.
+  5. **Defensive downscale** — `_maybe_downscale` exceptions now degrade to raw bytes instead of aborting the fetch.
+- **Test status**: 42/42 PDF-related tests pass (`test_pdf_export.py`, `test_pdf_export_jobs.py`, `test_pdf_export_timeouts.py`, `test_pdf_cancel.py`, `test_export_dpi.py`, `test_ingramspark_phase1/2/3.py`).
+- **What this changes for the user**: a 5-page export now has per-page wall-clock visibility AND degrades gracefully if one page is pathological. The next failure should leave a precise per-page timing trace in `/api/pdf-health` recent_failures.
+
 ## Next Tasks
 - Phase 3.3 — PDF document metadata (Title, Author, ISBN, Publisher into PDF properties).
 - Phase 3.2 — ICC profile picker (SWOP v2 vs Fogra39) in export popover.
