@@ -273,6 +273,85 @@ async def build_book_pdf(
     # Massively reduces wall-clock on books that re-use a logo /
     # template image.
     job_image_cache: dict[str, tuple[bytes, str]] = {}
+
+    # ── PRE-FETCH PHASE ──────────────────────────────────────────────
+    # Production debugging revealed that WeasyPrint can wedge inside
+    # `write_pdf()` when its internal url_fetcher blocks on slow Object
+    # Storage reads — heartbeats stop ticking because the render thread
+    # holds the GIL while it waits on network I/O it issued itself.
+    # Fix: fetch every image referenced by this page-range BEFORE we
+    # call WeasyPrint. Then the in-render url_fetcher is a pure cache
+    # lookup (microseconds), never blocks, and the heartbeat keeps
+    # flowing. We also get visible per-image stage updates the user
+    # sees in the toast ("prefetching image 3/12").
+    long_edge_cap = _pb.DPI_LONG_EDGE_CAPS.get(_pb._resolve_dpi(dpi), 3300)
+    jpeg_quality = 92 if dpi >= 450 else 85
+    image_paths_in_range: list[str] = []
+    seen_paths: set[str] = set()
+    for page_idx in range(s, e):
+        if page_idx < 0 or page_idx >= len(pages):
+            continue
+        for block in (pages[page_idx].get("blocks") or []):
+            if block.get("type") != "image":
+                continue
+            p = _pb._resolve_image_path(block)
+            if not p or p in seen_paths:
+                continue
+            seen_paths.add(p)
+            image_paths_in_range.append(p)
+
+    if image_paths_in_range:
+        log.info(
+            "WeasyPrint: pre-fetching %d unique images for pages %d-%d",
+            len(image_paths_in_range), s + 1, e,
+        )
+        for img_idx, key in enumerate(image_paths_in_range, start=1):
+            _emit(f"prefetching image {img_idx}/{len(image_paths_in_range)}")
+            # Per-image 25s ceiling — same as the in-render fetcher.
+            # Above this, we substitute blank PNG so the render still
+            # works (image just appears empty on the page).
+            try:
+                fut = _IMG_FETCH_EXECUTOR.submit(get_image, key)
+                raw, ctype = await asyncio.wait_for(
+                    asyncio.wrap_future(fut), timeout=_IMG_FETCH_TIMEOUT_S,
+                )
+            except asyncio.TimeoutError:
+                log.warning(
+                    "WeasyPrint: pre-fetch timed out (%ss) for %s — using blank PNG",
+                    _IMG_FETCH_TIMEOUT_S, key,
+                )
+                job_image_cache[key] = (_BLANK_PNG, "image/png")
+                continue
+            except Exception as fe:
+                log.warning("WeasyPrint: pre-fetch errored for %s: %s", key, fe)
+                job_image_cache[key] = (_BLANK_PNG, "image/png")
+                continue
+            if not raw:
+                job_image_cache[key] = (_BLANK_PNG, "image/png")
+                continue
+            # Downscale in a thread so the event loop keeps spinning
+            # and the heartbeat ticks even for huge images.
+            try:
+                data, mime = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        _maybe_downscale, raw, ctype or "image/png",
+                        long_edge_cap, jpeg_quality,
+                    ),
+                    timeout=60.0,
+                )
+            except Exception as de:
+                log.warning(
+                    "WeasyPrint: pre-fetch downscale failed for %s (%s) — using raw bytes",
+                    key, de,
+                )
+                data, mime = raw, ctype or "image/png"
+            job_image_cache[key] = (data, mime)
+            log.info(
+                "WeasyPrint: pre-fetched %s (%d bytes → %d bytes, %s)",
+                key, len(raw), len(data), mime,
+            )
+    # ── END PRE-FETCH PHASE ──────────────────────────────────────────
+
     job_fetcher = _build_url_fetcher(get_image, public_base_url, dpi=dpi, cache=job_image_cache)
 
     def _render_chunk_sync(chunk_start: int, chunk_end: int) -> bytes:

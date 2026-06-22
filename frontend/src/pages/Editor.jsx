@@ -1285,7 +1285,11 @@ export default function Editor() {
       // genuine stall (no stage change for N minutes) triggers the
       // timeout error. This replaces the old wall-clock-from-start
       // budget which falsely killed big art-heavy books at 10 min.
-      const STAGE_IDLE_DEADLINE_MS = 240_000; // 4 min without ANY stage change
+      // 6 min ceiling: pre-fetch of a single oversized PNG (e.g.
+      // 12000×12000) at 600 DPI can take ~1 min to downscale; we want
+      // headroom above any legitimate single-step duration so a
+      // genuinely slow operation still completes.
+      const STAGE_IDLE_DEADLINE_MS = 360_000; // 6 min without ANY stage change
       let stageDeadline = Date.now() + STAGE_IDLE_DEADLINE_MS;
       let prevStage = '';
       while (Date.now() < stageDeadline) {

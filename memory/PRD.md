@@ -399,6 +399,16 @@ Build me a book template app to be able to add texts and illustrations, page num
 - **Test status**: 42/42 PDF-related tests pass (`test_pdf_export.py`, `test_pdf_export_jobs.py`, `test_pdf_export_timeouts.py`, `test_pdf_cancel.py`, `test_export_dpi.py`, `test_ingramspark_phase1/2/3.py`).
 - **What this changes for the user**: a 5-page export now has per-page wall-clock visibility AND degrades gracefully if one page is pathological. The next failure should leave a precise per-page timing trace in `/api/pdf-health` recent_failures.
 
+## What's been implemented (2026-06-21 / iteration 49 — Pre-fetch images before WeasyPrint)
+**Confirmed root cause from production toast**: a 5-page export wedged at `"rendering page 5/5 · 100s"` — backend heartbeats stopped flowing because WeasyPrint's in-render `url_fetcher` was blocking the render thread on a slow Object Storage read. With the GIL held during the network wait, the asyncio event loop couldn't tick the heartbeat OR enforce its 240s timeout. The frontend's 4-min idle deadline eventually expired and surfaced the "stuck at:" error.
+- **Fix shipped** (`pdf_builder_weasy.py`):
+  1. **Pre-fetch phase before the chunk loop** — scan every block in the requested page range, collect unique image storage keys, and fetch + downscale them ALL into `job_image_cache` BEFORE WeasyPrint is invoked. Each image emits a `prefetching image N/M` stage update the toast shows. Per-image 25s fetch cap and 60s downscale cap, both via `asyncio.wait_for` (real cancellation, not blocked-thread).
+  2. **In-render url_fetcher is now pure cache lookup** — WeasyPrint never blocks on network during `write_pdf`. Cairo can run cleanly, heartbeats keep ticking, the 240s per-page timeout actually fires if rendering itself stalls.
+  3. **Pre-fetch failures degrade gracefully** — slow/missing image → blank PNG → page renders without it instead of wedging the export.
+- **Frontend** (`Editor.jsx`): `STAGE_IDLE_DEADLINE_MS` 240s → 360s. Single-step ceiling (one huge image downscale) can legitimately exceed 4 min on 600 DPI; 6 min is safer.
+- **Test status**: 46/46 PDF tests pass (`test_pdf_export.py` 6, `test_pdf_export_jobs.py` 14, `test_pdf_export_timeouts.py`, `test_export_dpi.py`, `test_pdf_cancel.py` 26 combined).
+- **What the user will see if it still fails after redeploy**: the toast will now show either `prefetching image N/M` (network problem on a specific image — its index pinpoints the file) or `rendering page N/M` (legitimate Cairo CPU load — different fix path). Either way the failure mode is now diagnosable from the toast alone.
+
 ## Next Tasks
 - Phase 3.3 — PDF document metadata (Title, Author, ISBN, Publisher into PDF properties).
 - Phase 3.2 — ICC profile picker (SWOP v2 vs Fogra39) in export popover.
