@@ -302,54 +302,112 @@ async def build_book_pdf(
 
     if image_paths_in_range:
         log.info(
-            "WeasyPrint: pre-fetching %d unique images for pages %d-%d",
+            "WeasyPrint: pre-fetching %d unique images for pages %d-%d "
+            "(concurrency=%d)",
             len(image_paths_in_range), s + 1, e,
+            _IMG_FETCH_EXECUTOR._max_workers,
         )
-        for img_idx, key in enumerate(image_paths_in_range, start=1):
-            _emit(f"prefetching image {img_idx}/{len(image_paths_in_range)}")
-            # Per-image 25s ceiling — same as the in-render fetcher.
-            # Above this, we substitute blank PNG so the render still
-            # works (image just appears empty on the page).
-            try:
-                fut = _IMG_FETCH_EXECUTOR.submit(get_image, key)
-                raw, ctype = await asyncio.wait_for(
-                    asyncio.wrap_future(fut), timeout=_IMG_FETCH_TIMEOUT_S,
+        # Concurrent pre-fetch — bounded by a semaphore at the SAME size
+        # as the executor (4), so we never have more than 4 images decoded
+        # in memory simultaneously (each can be ~25-30 MB at 2625×2625 RGB
+        # mid-resize). The semaphore is acquired/released per-image, not
+        # per-batch, so a single slow image (e.g. one hitting the 25 s
+        # timeout) never blocks the next image from starting — it just
+        # holds its own slot while the others churn through.  This is
+        # what naive batching of 4-at-a-time would NOT give us (head of
+        # line blocking on the slow image in each batch).
+        prefetch_t0 = time.monotonic()
+        prefetch_total = len(image_paths_in_range)
+        # Counter shared across coroutines, mutated only in the asyncio
+        # event-loop thread (no lock needed). Used by `prefetching image
+        # N/M` toast updates that count COMPLETIONS, not array index, so
+        # users see real progress as fetches finish in non-deterministic
+        # order.
+        prefetch_done = {"n": 0}
+        prefetch_blank_fallbacks = {"n": 0}
+        sem = asyncio.Semaphore(_IMG_FETCH_EXECUTOR._max_workers)
+
+        async def _fetch_one(idx: int, key: str) -> None:
+            async with sem:
+                try:
+                    fut = _IMG_FETCH_EXECUTOR.submit(get_image, key)
+                    raw, ctype = await asyncio.wait_for(
+                        asyncio.wrap_future(fut), timeout=_IMG_FETCH_TIMEOUT_S,
+                    )
+                except asyncio.TimeoutError:
+                    log.warning(
+                        "WeasyPrint: pre-fetch timed out (%ss) for %s — using blank PNG",
+                        _IMG_FETCH_TIMEOUT_S, key,
+                    )
+                    job_image_cache[key] = (_BLANK_PNG, "image/png")
+                    prefetch_blank_fallbacks["n"] += 1
+                    _bump_prefetch_progress()
+                    return
+                except Exception as fe:
+                    log.warning("WeasyPrint: pre-fetch errored for %s: %s", key, fe)
+                    job_image_cache[key] = (_BLANK_PNG, "image/png")
+                    prefetch_blank_fallbacks["n"] += 1
+                    _bump_prefetch_progress()
+                    return
+                if not raw:
+                    job_image_cache[key] = (_BLANK_PNG, "image/png")
+                    prefetch_blank_fallbacks["n"] += 1
+                    _bump_prefetch_progress()
+                    return
+                # Downscale in a thread so the event loop keeps spinning
+                # and the heartbeat ticks even for huge images.
+                try:
+                    data, mime = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            _maybe_downscale, raw, ctype or "image/png",
+                            long_edge_cap, jpeg_quality,
+                        ),
+                        timeout=60.0,
+                    )
+                except Exception as de:
+                    log.warning(
+                        "WeasyPrint: pre-fetch downscale failed for %s (%s) — using raw bytes",
+                        key, de,
+                    )
+                    data, mime = raw, ctype or "image/png"
+                job_image_cache[key] = (data, mime)
+                log.info(
+                    "WeasyPrint: pre-fetched %s (%d bytes → %d bytes, %s)",
+                    key, len(raw), len(data), mime,
                 )
-            except asyncio.TimeoutError:
-                log.warning(
-                    "WeasyPrint: pre-fetch timed out (%ss) for %s — using blank PNG",
-                    _IMG_FETCH_TIMEOUT_S, key,
-                )
-                job_image_cache[key] = (_BLANK_PNG, "image/png")
-                continue
-            except Exception as fe:
-                log.warning("WeasyPrint: pre-fetch errored for %s: %s", key, fe)
-                job_image_cache[key] = (_BLANK_PNG, "image/png")
-                continue
-            if not raw:
-                job_image_cache[key] = (_BLANK_PNG, "image/png")
-                continue
-            # Downscale in a thread so the event loop keeps spinning
-            # and the heartbeat ticks even for huge images.
-            try:
-                data, mime = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        _maybe_downscale, raw, ctype or "image/png",
-                        long_edge_cap, jpeg_quality,
-                    ),
-                    timeout=60.0,
-                )
-            except Exception as de:
-                log.warning(
-                    "WeasyPrint: pre-fetch downscale failed for %s (%s) — using raw bytes",
-                    key, de,
-                )
-                data, mime = raw, ctype or "image/png"
-            job_image_cache[key] = (data, mime)
-            log.info(
-                "WeasyPrint: pre-fetched %s (%d bytes → %d bytes, %s)",
-                key, len(raw), len(data), mime,
-            )
+                _bump_prefetch_progress()
+
+        def _bump_prefetch_progress() -> None:
+            # Called on completion (success OR fallback) of every fetch.
+            # Counts COMPLETIONS so the toast reads "prefetching image
+            # 7/12" reflecting actual progress, not a fixed array index.
+            prefetch_done["n"] += 1
+            _emit(f"prefetching image {prefetch_done['n']}/{prefetch_total}")
+
+        # Kick off all fetches; the semaphore caps live concurrency at 4.
+        # Any unexpected exception still completes the gather because we
+        # handle EVERY failure mode inside `_fetch_one` by writing a
+        # blank-PNG fallback to the cache, so `return_exceptions=True`
+        # here is purely defensive against asyncio bugs.
+        await asyncio.gather(
+            *[_fetch_one(idx, key) for idx, key in enumerate(image_paths_in_range)],
+            return_exceptions=True,
+        )
+        prefetch_elapsed_s = time.monotonic() - prefetch_t0
+        prefetch_per_image_ms = (
+            (prefetch_elapsed_s * 1000) / prefetch_total
+            if prefetch_total else 0.0
+        )
+        log.info(
+            "WeasyPrint: pre-fetch phase finished in %.2fs (%d images, "
+            "avg %.0f ms/image, %d blank-PNG fallbacks)",
+            prefetch_elapsed_s, prefetch_total,
+            prefetch_per_image_ms, prefetch_blank_fallbacks["n"],
+        )
+    else:
+        prefetch_elapsed_s = 0.0
+        prefetch_total = 0
+        prefetch_blank_fallbacks = {"n": 0}
     # ── END PRE-FETCH PHASE ──────────────────────────────────────────
 
     job_fetcher = _build_url_fetcher(get_image, public_base_url, dpi=dpi, cache=job_image_cache)
@@ -392,6 +450,13 @@ async def build_book_pdf(
         return out.getvalue()
 
     chunk_pdfs: list[bytes] = []
+    # Phase #4 instrumentation: track render-phase wall-clock + count of
+    # placeholder fallbacks so the end-of-job summary surfaces silent
+    # quality regressions (a "fast" book that secretly substituted six
+    # blank pages is a worse outcome than a slow book that rendered
+    # everything — the summary line must make that visible at a glance).
+    render_t0 = time.monotonic()
+    render_placeholder_count = 0
     for idx, (cs, ce) in enumerate(chunks):
         # Emit a heartbeat task during this chunk so the frontend's
         # stage-idle deadline (4 min on the latest UI; 10 min wall
@@ -452,6 +517,7 @@ async def build_book_pdf(
                 cs + 1, e,
             )
             _emit(f"page {cs + 1} too slow — using placeholder")
+            render_placeholder_count += 1
             try:
                 blank_bytes = await asyncio.wait_for(
                     asyncio.to_thread(_render_blank_page_sync, cs, ce),
@@ -480,6 +546,7 @@ async def build_book_pdf(
                 cs + 1, e, e_render,
             )
             _emit(f"page {cs + 1} errored — using placeholder")
+            render_placeholder_count += 1
             try:
                 blank_bytes = await asyncio.wait_for(
                     asyncio.to_thread(_render_blank_page_sync, cs, ce),
@@ -538,6 +605,30 @@ async def build_book_pdf(
             except Exception as e:
                 log.warning("WeasyPrint: ensure_even_page_count failed: %s", e)
 
+    # Phase #4 — end-of-job summary. This single line is what turns
+    # "PDF export is slow again" into a 30-second diagnosis. It captures:
+    #   - pre-fetch and render wall-clock time SEPARATELY (so the next
+    #     regression is attributed to fetch vs render, not guessed)
+    #   - average ms per image and ms per page for each phase
+    #   - count of blank-PNG / placeholder fallbacks (so a "fast" book
+    #     that secretly skipped 6 broken pages is loud, not silent)
+    # Total wall clock is the sum of both phases (they run sequentially).
+    render_elapsed_s = time.monotonic() - render_t0
+    render_per_page_ms = (
+        (render_elapsed_s * 1000) / page_count if page_count else 0.0
+    )
+    total_elapsed_s = prefetch_elapsed_s + render_elapsed_s
+    log.info(
+        "WeasyPrint JOB SUMMARY: total=%.2fs | prefetch=%.2fs (%d imgs, "
+        "avg %.0fms/img, %d blank-fallbacks) | render=%.2fs (%d pages, "
+        "avg %.0fms/page, %d placeholders)",
+        total_elapsed_s,
+        prefetch_elapsed_s, prefetch_total,
+        (prefetch_elapsed_s * 1000) / prefetch_total if prefetch_total else 0.0,
+        prefetch_blank_fallbacks["n"],
+        render_elapsed_s, page_count, render_per_page_ms,
+        render_placeholder_count,
+    )
     _emit("done")
     return pdf_bytes
 
