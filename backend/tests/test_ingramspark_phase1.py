@@ -1,8 +1,8 @@
 """Tests for the IngramSpark v5.11.26 Phase 1 compliance work.
 
 Covers:
-1. apply_print_boxes() — every page has MediaBox 630×630 pt, BleedBox =
-   MediaBox, and per-parity TrimBox positions.
+1. apply_print_boxes() — every page has MediaBox = trim+2×bleed pt,
+   BleedBox = MediaBox, and per-parity TrimBox positions.
 2. ensure_even_page_count() — odd-paged PDFs get a blank appended with
    the correct parity boxes; even-paged PDFs pass through unchanged.
 3. /api/books/{id}/preflight — returns structured warnings for odd page
@@ -67,26 +67,38 @@ def _export_and_read(s, bid: str) -> PdfReader:
 
 class TestPrintBoxes:
     def test_square_book_has_canonical_ingramspark_boxes(self):
-        """Every page: MediaBox 630×630, BleedBox = MediaBox, TrimBox alternates."""
+        """Every page: MediaBox = trim+2×bleed, BleedBox = MediaBox, TrimBox alternates."""
         s = _auth()
         bid = _make_book(s, pages=2, page_size="square")
         try:
             reader = _export_and_read(s, bid)
             assert len(reader.pages) == 2
+            # Square trim = page_size_px × 0.75 (96 DPI px → pt).
+            # 8.75" → 840 px → 630 pt trim. +0.125" bleed (=9 pt) all
+            # round → MediaBox 648×648 pt.
+            from pdf_builder import PAGE_SIZES_PX, INTERIOR_BLEED_PX
+            trim_w_pt = PAGE_SIZES_PX["square"][0] * 0.75
+            trim_h_pt = PAGE_SIZES_PX["square"][1] * 0.75
+            bleed_pt = INTERIOR_BLEED_PX * 0.75
+            media_w_pt = trim_w_pt + 2 * bleed_pt
+            media_h_pt = trim_h_pt + 2 * bleed_pt
             for i, p in enumerate(reader.pages):
-                # MediaBox always 630×630 pt
+                # MediaBox always trim+2×bleed (symmetric IngramSpark MediaBox).
                 mb = p.mediabox
-                assert float(mb.width) == 630.0, f"page {i+1} mediabox {float(mb.width)}"
-                assert float(mb.height) == 630.0
-                # BleedBox = full MediaBox
+                assert float(mb.width) == media_w_pt, f"page {i+1} mediabox width {float(mb.width)} vs {media_w_pt}"
+                assert float(mb.height) == media_h_pt, f"page {i+1} mediabox height {float(mb.height)} vs {media_h_pt}"
+                # BleedBox = full MediaBox.
                 bb = p.bleedbox
-                assert [float(x) for x in bb] == [0.0, 0.0, 630.0, 630.0]
-                # TrimBox: odd (i==0) → [0, 9, 621, 621]; even (i==1) → [9, 9, 630, 621]
+                assert [float(x) for x in bb] == [0.0, 0.0, media_w_pt, media_h_pt]
+                # TrimBox alternates per parity. The cutter cuts here.
                 tb = [float(x) for x in p.trimbox]
                 if i % 2 == 0:
-                    assert tb == [0.0, 9.0, 621.0, 621.0], (i, tb)
+                    # Recto (right-hand): spine LEFT, bleed extends RIGHT past trim.
+                    expected = [0.0, bleed_pt, trim_w_pt + bleed_pt, trim_h_pt + bleed_pt]
                 else:
-                    assert tb == [9.0, 9.0, 630.0, 621.0], (i, tb)
+                    # Verso (left-hand): spine RIGHT, bleed extends LEFT of trim.
+                    expected = [bleed_pt, bleed_pt, bleed_pt + trim_w_pt + bleed_pt, trim_h_pt + bleed_pt]
+                assert tb == expected, (i, tb, expected)
         finally:
             s.delete(f"{API}/books/{bid}")
 
@@ -98,8 +110,13 @@ class TestPrintBoxes:
             reader = _export_and_read(s, bid)
             assert len(reader.pages) == 4, "should auto-pad odd → even"
             # Page 4 must be verso (spine right) since page 3 was recto.
+            from pdf_builder import PAGE_SIZES_PX, INTERIOR_BLEED_PX
+            trim_w_pt = PAGE_SIZES_PX["square"][0] * 0.75
+            trim_h_pt = PAGE_SIZES_PX["square"][1] * 0.75
+            bleed_pt = INTERIOR_BLEED_PX * 0.75
+            expected = [bleed_pt, bleed_pt, bleed_pt + trim_w_pt + bleed_pt, trim_h_pt + bleed_pt]
             tb_4 = [float(x) for x in reader.pages[3].trimbox]
-            assert tb_4 == [9.0, 9.0, 630.0, 621.0], tb_4
+            assert tb_4 == expected, tb_4
         finally:
             s.delete(f"{API}/books/{bid}")
 

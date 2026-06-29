@@ -409,6 +409,16 @@ Build me a book template app to be able to add texts and illustrations, page num
 - **Test status**: 46/46 PDF tests pass (`test_pdf_export.py` 6, `test_pdf_export_jobs.py` 14, `test_pdf_export_timeouts.py`, `test_export_dpi.py`, `test_pdf_cancel.py` 26 combined).
 - **What the user will see if it still fails after redeploy**: the toast will now show either `prefetching image N/M` (network problem on a specific image — its index pinpoints the file) or `rendering page N/M` (legitimate Cairo CPU load — different fix path). Either way the failure mode is now diagnosable from the toast alone.
 
+## What's been implemented (2026-06-21 / iteration 50 — 8.75″ Square + ≥300 DPI cap fix)
+1. **Square trim 8.5″ → 8.75″** in all three places that mirror each other so canvas, importer, and PDF renderer stay in sync:
+   - `/app/frontend/src/lib/pageSizes.js`: `{ width: 840, height: 840 }` (was 816)
+   - `/app/backend/pdf_builder.py`: `PAGE_SIZES_PX["square"] = (840, 840)`
+   - `/app/backend/book_importer.py`: same.
+2. **PDF cap bug found by new regression test** — `DPI_LONG_EDGE_CAPS[300] = 3300` was sized for an 11″ long-edge book but **A4 is 11.69″ tall**, so at the default 300 DPI export the pipeline silently shipped only ~282 DPI on full-bleed A4 images. Bumped caps to `{300: 3600, 450: 5400, 600: 7200}` — now ≥300 DPI is guaranteed at every supported page size (Square 8.75″, A4, Letter, 6×9).
+3. **New regression test** (`tests/test_export_image_resolution.py`) — uploads a 4000 px PNG, places it full-bleed on each supported page size, exports the PDF, then walks the PDF's image XObject inventory with `pypdf` and asserts the embedded long-edge ≥ `trim_inches × 300 DPI`. Also asserts MediaBox = 648 pt for the new Square trim. **This guards against the silent "scales-to-inches but ships 96 DPI raster" failure mode**.
+4. **96 DPI audit (per user request)** — confirmed that ALL `96`/`PX_PER_INCH` references are CSS-pixel-to-points layout math (correct: 1 CSS px = 0.75 pt) OR on-screen canvas/preview math. **No 96 DPI value drives export raster resolution.** Embedded images keep their source pixel count (up to the bumped cap). Vector text and shapes remain vector in the PDF (never rasterized).
+5. **IngramSpark Phase 1 tests made dimension-aware** — previously hardcoded `630` and `[0, 9, 621, 621]` for the old 8.5″ trim; now computed dynamically from `PAGE_SIZES_PX["square"]` so future dimension changes don't require test edits.
+
 ## Next Tasks
 - Phase 3.3 — PDF document metadata (Title, Author, ISBN, Publisher into PDF properties).
 - Phase 3.2 — ICC profile picker (SWOP v2 vs Fogra39) in export popover.

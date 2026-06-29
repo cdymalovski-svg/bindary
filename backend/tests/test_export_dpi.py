@@ -73,10 +73,16 @@ class TestDpiResolverUnit:
         # Higher DPI must always yield a larger (or equal) pixel cap.
         caps = [DPI_LONG_EDGE_CAPS[d] for d in (300, 450, 600)]
         assert caps == sorted(caps)
-        # And specifically the documented 3300 / 4950 / 6600 mapping.
-        assert DPI_LONG_EDGE_CAPS[300] == 3300
-        assert DPI_LONG_EDGE_CAPS[450] == 4950
-        assert DPI_LONG_EDGE_CAPS[600] == 6600
+        # And specifically the documented 3600 / 5400 / 7200 mapping.
+        # The cap for each DPI tier must be ≥ longest_supported_page_inches
+        # × dpi, where longest supported = A4 height = 11.69". So:
+        #   300 DPI: ≥ 3508 → 3600
+        #   450 DPI: ≥ 5261 → 5400
+        #   600 DPI: ≥ 7016 → 7200
+        # See pdf_builder.py DPI_LONG_EDGE_CAPS docstring.
+        assert DPI_LONG_EDGE_CAPS[300] == 3600
+        assert DPI_LONG_EDGE_CAPS[450] == 5400
+        assert DPI_LONG_EDGE_CAPS[600] == 7200
 
 
 class TestDpiApiPersistence:

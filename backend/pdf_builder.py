@@ -195,7 +195,7 @@ async def _ensure_chromium_installed_inner() -> None:
 PAGE_SIZES_PX = {
     "a4": (794, 1123),
     "letter": (816, 1056),
-    "square": (816, 816),
+    "square": (840, 840),
     "book6x9": (576, 864),
 }
 PAGE_MARGIN_PX = 48  # 0.5" @ 96dpi — matches frontend PAGE_MARGIN_PX.
@@ -208,8 +208,8 @@ INTERIOR_BLEED_PX = round(INTERIOR_BLEED_IN * 96)  # = 12
 
 
 def _page_bleed_sides(page_index: int) -> dict:
-    """Positioning offsets for placing the 612×612 trim rectangle within
-    the symmetric 630×630 MediaBox (IngramSpark v5.11.26).
+    """Positioning offsets for placing the trim rectangle within
+    the symmetric (trim + 2×bleed) MediaBox (IngramSpark v5.11.26).
 
     Convention: index 0 is the cover (recto = right-hand). Even indices
     are right-hand (recto, spine on LEFT); odd indices are left-hand
@@ -248,7 +248,7 @@ def apply_print_boxes(pdf_bytes: bytes, page_w_px: int, page_h_px: int) -> bytes
     with the outer bleed extension on the far side.
 
     Per IngramSpark v5.11.26 (Learning Smart adaptation):
-      * MediaBox: 630 × 630 pt (= page+2bleed) — left untouched.
+      * MediaBox: trim + 2×bleed pt — left untouched.
       * BleedBox: full MediaBox.
       * TrimBox:
           - Odd PDF pages  (1, 3, 5… → right-hand, spine LEFT):
@@ -789,7 +789,16 @@ DEFAULT_PAPER_CALIPER_IN = 0.002252
 #   • 600 DPI ⇒ 6600 px
 # Mapping is computed from `dpi × 11` so 600 DPI on an A4 page still
 # resolves to ≥ 600 PPI when rendered.
-DPI_LONG_EDGE_CAPS: dict[int, int] = {300: 3300, 450: 4950, 600: 6600}
+# Per-DPI cap on the long-edge pixel count of an embedded image. The
+# 300/450/600 here are EXPORT raster resolutions (i.e. the floor a PDF
+# printed at that DPI will reach for a full-bleed image).  The cap must
+# be ≥ longest_supported_page_inches × dpi so an image filling the
+# longest dimension still meets the requested DPI.  Of our supported
+# page sizes, A4 (297 mm = 11.69 in) is the tallest; 11.69 × 300 ≈ 3508
+# → round UP to 3600. 11.69 × 600 ≈ 7016 → round UP to 7200. This avoids
+# silently shipping below-spec output on A4 books at 300 DPI — a bug
+# caught by tests/test_export_image_resolution.py.
+DPI_LONG_EDGE_CAPS: dict[int, int] = {300: 3600, 450: 5400, 600: 7200}
 DEFAULT_EXPORT_DPI = 300
 
 
@@ -1086,8 +1095,8 @@ async def build_book_pdf(
     end_page: Optional[int] = None,
     # Defaulted ON so every export embeds the 0.125" print bleed required
     # for IngramSpark / commercial perfect-bound printing. Interior pages
-    # come out at trim+bleed (e.g. an 8.5×8.5 Square book exports as
-    # 8.625×8.75) so the printer can crop to the trim without leaving a
+    # come out at trim+bleed (e.g. an 8.75×8.75 Square book exports as
+    # 8.875×8.875) so the printer can crop to the trim without leaving a
     # white sliver at the edges. PDF/X-1a exports still flip this on
     # because the PDF/X spec mandates a TrimBox/BleedBox annotation
     # alongside the bleed pixels.
@@ -1154,7 +1163,7 @@ async def build_book_pdf(
     # appears on multiple pages. Cap memory at a few images worth.
     image_cache: dict[str, tuple[bytes, str]] = {}
     # Image downscale ceiling — selected by the requested `dpi` parameter.
-    # 300 DPI → 3300 px (default, prod-safe); 450 → 4950; 600 → 6600.
+    # 300 DPI → 3600 px (covers A4 long-edge 11.69" × 300); 450 → 5400; 600 → 7200.
     # Indistinguishable from the source at the chosen DPI to the eye, but
     # halves Chromium's per-image decoded memory vs serving full-res
     # 8000+ px source files.
