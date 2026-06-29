@@ -361,7 +361,7 @@ def ensure_even_page_count(pdf_bytes: bytes) -> tuple[bytes, bool]:
     return out.getvalue(), True
 
 
-def _google_fonts_css() -> str:
+def _google_fonts_css(used_families: Optional[set] = None) -> str:
     """Build the CSS that goes at the top of every render's <style>.
 
     Originally this was a bare `@import url('https://fonts.googleapis.com/...')`
@@ -371,8 +371,22 @@ def _google_fonts_css() -> str:
     routinely hung the export.
 
     The cached version (see `fonts_cache.get_local_fonts_css`) downloads
-    everything once at server startup, inlines every WOFF2 as a base64
-    data: URI, and returns a fully-offline @font-face block.
+    everything once at server startup; the woff2 binaries are intercepted
+    by the WeasyPrint url_fetcher from a process-local cache, and the
+    CSS text itself is what we return here.
+
+    `used_families` — if provided, the cached CSS is filtered down to ONLY
+    the @font-face blocks whose font-family matches the set (case-insensitive,
+    quotes stripped). This avoids re-parsing 369 unused @font-face rules
+    per page (a 9 s/page parser tax — see PRD for the iteration-51 audit).
+    When None or empty, returns the full block (backwards-compat).
+
+    Failure modes (escalating):
+      * Cache empty → fall back to the @import URL (slow but functional).
+      * Subset requested but contains a family not present in the cached
+        CSS → that family is silently DROPPED from the subset; the caller
+        is responsible for warning the user (see `_extract_used_font_families`
+        which logs missing families to backend logs).
 
     Backwards-compat: if the cache fetch fails (e.g. network down at
     startup), falls back to the @import URL so renders still get the
@@ -381,16 +395,152 @@ def _google_fonts_css() -> str:
     the degraded mode."""
     from fonts_cache import get_local_fonts_css
     cached = get_local_fonts_css()
-    if cached:
+    if not cached:
+        # Network-down fallback. Better than an empty CSS (system fonts =
+        # editorial mismatch) but liable to hang the render.
+        return (
+            "@import url('https://fonts.googleapis.com/css2?"
+            "family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700"
+            "&family=Lora:ital,wght@0,400;0,500;0,600;0,700"
+            "&display=swap');"
+        )
+    if not used_families:
         return cached
-    # Network-down fallback. Better than an empty CSS (system fonts =
-    # editorial mismatch) but liable to hang the render.
-    return (
-        "@import url('https://fonts.googleapis.com/css2?"
-        "family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700"
-        "&family=Lora:ital,wght@0,400;0,500;0,600;0,700"
-        "&display=swap');"
-    )
+    # ── @font-face SUBSETTING ──────────────────────────────────────────
+    # The cached CSS is a sequence of `@font-face { ... }` blocks (plus
+    # the occasional `/* latin-ext */` style comment between them).
+    # Keep blocks whose `font-family: '<name>'` declaration matches the
+    # requested set. Comparison is case-insensitive and ignores quotes
+    # so 'Cormorant Garamond', "Cormorant Garamond", and Cormorant
+    # Garamond all match.
+    target_norm = {f.strip().strip("'\"").lower() for f in used_families if f}
+    # Regex matches `font-family: <value>;` capturing the value text.
+    fam_re = re.compile(r"font-family\s*:\s*([^;]+)\s*;", re.IGNORECASE)
+    kept_blocks: list[str] = []
+    # Split on `@font-face` boundaries. Index 0 is whatever precedes the
+    # first block (typically a stray comment) — preserve it verbatim so
+    # any global @import directives upstream aren't lost.
+    parts = cached.split("@font-face")
+    if parts:
+        kept_blocks.append(parts[0])
+    for chunk in parts[1:]:
+        # `chunk` is everything from the `{` through the next `@font-face`.
+        m = fam_re.search(chunk)
+        if not m:
+            # Malformed block — keep it to avoid surprising regressions.
+            kept_blocks.append("@font-face" + chunk)
+            continue
+        fam = m.group(1).strip().strip("'\"").lower()
+        if fam in target_norm:
+            kept_blocks.append("@font-face" + chunk)
+    return "".join(kept_blocks)
+
+
+# Regex compiled once — extracts the FIRST family name from a CSS
+# font-family declaration. Inline rich-text styles look like
+# `font-family: "Lora", serif` or `font-family:Helvetica`.  We capture
+# only the head of the stack (the first comma-separated entry) since
+# WeasyPrint only loads what's referenced; the rest is system fallback.
+_INLINE_FONT_FAMILY_RE = re.compile(
+    r"font-family\s*:\s*['\"]?([^,;'\"]+?)['\"]?\s*(?:,|;|\Z)",
+    re.IGNORECASE,
+)
+
+# System fonts that are NEVER in the cached Google Fonts CSS — these
+# resolve via the host's installed font catalog. Referencing one is
+# legal and shouldn't trigger a "missing font" warning.  The list
+# mirrors the system fonts surfaced in the editor's font dropdown
+# (frontend/src/lib/fonts.js) plus a few common defaults.
+_KNOWN_SYSTEM_FONTS = {
+    "georgia", "times new roman", "times", "helvetica", "arial",
+    "verdana", "courier", "courier new", "monaco", "menlo", "consolas",
+    "serif", "sans-serif", "monospace",
+}
+
+
+def _extract_used_font_families(book: dict) -> tuple[set, set]:
+    """Walk every font-introduction surface in a book and return
+    `(used_families, missing_families)`.
+
+    Surfaces scanned (this is the COMPLETE list — keep it that way; any
+    new surface that introduces a font without being added here re-creates
+    the silent-fallback-to-serif failure mode this function exists to
+    prevent):
+
+      1. block.font_family            (per-block dropdown choice)
+      2. text_presets.title.font_family,
+         text_presets.subtitle.font_family,
+         text_presets.page_text.font_family   (per-book defaults)
+      3. inline `style="font-family: …"` declarations inside block.html
+         (rich-text toolbar character-level overrides)
+
+    The default font 'Cormorant Garamond' is ALWAYS included regardless of
+    whether the book references it — `_render_block` injects it as a
+    hardcoded fallback string in every text block's CSS even when
+    block.font_family is None, and the page-number renderer does the
+    same. If we omit it from the subset, those fallback strings would
+    silently resolve to system serif, breaking the visual default for
+    every legacy book whose blocks predate the font_family field. No
+    other font has an equivalent hardcoded fallback, so the safety set
+    stops at one family.
+
+    `missing_families` contains any family that was referenced by the
+    book but is NEITHER in the cached Google Fonts catalog NOR a known
+    system font. These will silently fall back to `serif` at render
+    time; the caller MUST log them so silent corruption is visible."""
+    used: set = {"Cormorant Garamond"}
+
+    # Surface 1 + 3: every block's per-block font + inline HTML overrides.
+    for page in (book.get("pages") or []):
+        for block in (page.get("blocks") or []):
+            f = (block.get("font_family") or "").strip()
+            if f:
+                used.add(f)
+            html = block.get("html") or ""
+            if html:
+                for m in _INLINE_FONT_FAMILY_RE.finditer(html):
+                    inline = m.group(1).strip()
+                    if inline:
+                        used.add(inline)
+
+    # Surface 2: text_presets defaults.
+    tp = book.get("text_presets") or {}
+    for key in ("title", "subtitle", "page_text"):
+        sub = tp.get(key) or {}
+        f = (sub.get("font_family") or "").strip()
+        if f:
+            used.add(f)
+
+    # Determine which referenced families WILL resolve from the cached
+    # Google Fonts CSS, vs which will silently fall back to serif.
+    from fonts_cache import get_local_fonts_css
+    cached = get_local_fonts_css() or ""
+    if cached:
+        fam_re = re.compile(r"font-family\s*:\s*([^;]+)\s*;", re.IGNORECASE)
+        available = {
+            m.group(1).strip().strip("'\"").lower()
+            for m in fam_re.finditer(cached)
+        }
+    else:
+        available = set()
+
+    missing: set = set()
+    for fam in used:
+        norm = fam.strip().strip("'\"").lower()
+        if norm in available:
+            continue
+        if norm in _KNOWN_SYSTEM_FONTS:
+            continue
+        missing.add(fam)
+
+    if missing:
+        log.warning(
+            "WeasyPrint: %d font families referenced by book but NOT present "
+            "in the Google Fonts cache (and not a known system font); they "
+            "will silently fall back to serif: %s",
+            len(missing), sorted(missing),
+        )
+    return used, missing
 
 
 # Backwards-compat constant — existing call sites use this name. We
@@ -678,6 +828,7 @@ def _build_html(
     image_data_urls: dict,
     page_range: Optional[tuple[int, int]] = None,
     pdfx_bleed: bool = True,
+    used_font_families: Optional[set] = None,
 ) -> tuple[str, int, int]:
     """Render a (slice of a) book to a self-contained HTML document.
 
@@ -686,7 +837,15 @@ def _build_html(
     cover detection stay correct when the book is rendered in chunks.
 
     `pdfx_bleed=True` adds 0.125" bleed on top/bottom/outside of every page
-    — required by IngramSpark and most other commercial printers."""
+    — required by IngramSpark and most other commercial printers.
+
+    `used_font_families` — when supplied, the embedded Google Fonts CSS is
+    subsetted to ONLY these families (case-insensitive match). This cuts
+    the @font-face parser tax from ~9 s/page to ~30-50 ms/page on books
+    that use 1-3 families (the common case).  Callers should obtain the
+    set from `_extract_used_font_families(book)` and pass the same set to
+    every per-page `_build_html` call within a single export job. When
+    `None`, the full 369-rule catalog is embedded (backwards-compat)."""
     page_size_key = book.get("page_size") or "a4"
     page_w, page_h = PAGE_SIZES_PX.get(page_size_key, PAGE_SIZES_PX["a4"])
     pages = book.get("pages") or []
@@ -717,7 +876,7 @@ def _build_html(
     )
 
     css = (
-        f"{_google_fonts_css()}"
+        f"{_google_fonts_css(used_font_families)}"
         f"@page {{ size: {outer_w}px {outer_h}px; margin: 0; }}"
         "html, body { margin: 0; padding: 0; background: #FFFFFF; "
         "-webkit-print-color-adjust: exact; print-color-adjust: exact; }"

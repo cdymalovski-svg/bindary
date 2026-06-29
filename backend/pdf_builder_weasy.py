@@ -412,9 +412,27 @@ async def build_book_pdf(
 
     job_fetcher = _build_url_fetcher(get_image, public_base_url, dpi=dpi, cache=job_image_cache)
 
+    # ── FONT SUBSETTING ────────────────────────────────────────────────
+    # Scan every block / preset / inline-style for font references and
+    # build the set ONCE per export job. Threaded into every per-page
+    # `_build_html` call so the embedded @font-face block contains only
+    # the fonts actually used by THIS book — a parser-tax cut from 9 s/
+    # page (369 unused rules) to ~16 ms/page (the actual Cairo render
+    # cost). See pdf_builder._extract_used_font_families for the surface
+    # list and pdf_builder._google_fonts_css for the subset logic.
+    used_font_families, missing_font_families = _pb._extract_used_font_families(book)
+    log.info(
+        "WeasyPrint: font subset = %d families (%s); %d referenced "
+        "families missing from Google Fonts cache: %s",
+        len(used_font_families), sorted(used_font_families),
+        len(missing_font_families),
+        sorted(missing_font_families) if missing_font_families else "none",
+    )
+
     def _render_chunk_sync(chunk_start: int, chunk_end: int) -> bytes:
         chunk_html, _w, _h = _pb._build_html(
             book, {}, page_range=(chunk_start, chunk_end), pdfx_bleed=pdfx_bleed,
+            used_font_families=used_font_families,
         )
         doc = HTML(string=chunk_html, base_url=base, url_fetcher=job_fetcher)
         out = io.BytesIO()
@@ -621,13 +639,18 @@ async def build_book_pdf(
     log.info(
         "WeasyPrint JOB SUMMARY: total=%.2fs | prefetch=%.2fs (%d imgs, "
         "avg %.0fms/img, %d blank-fallbacks) | render=%.2fs (%d pages, "
-        "avg %.0fms/page, %d placeholders)",
+        "avg %.0fms/page, %d placeholders) | fonts: %d used, %d missing%s",
         total_elapsed_s,
         prefetch_elapsed_s, prefetch_total,
         (prefetch_elapsed_s * 1000) / prefetch_total if prefetch_total else 0.0,
         prefetch_blank_fallbacks["n"],
         render_elapsed_s, page_count, render_per_page_ms,
         render_placeholder_count,
+        len(used_font_families), len(missing_font_families),
+        # Spell out missing families when there ARE any — silent fallback
+        # to serif is the most common quality regression an operator will
+        # miss otherwise. When zero, omit so the line stays scannable.
+        f" {sorted(missing_font_families)}" if missing_font_families else "",
     )
     _emit("done")
     return pdf_bytes
