@@ -29,9 +29,12 @@ import {
   PanelLeft,
   ChevronLeft,
   ChevronRight,
+  BookText,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
@@ -1557,31 +1560,92 @@ export default function Editor() {
           <Layers className="w-4 h-4" />
         </button>
         <div className="w-px h-6 bg-rule shrink-0" />
-        <Input
-          value={book.title}
-          onChange={(e) => setBook({ ...book, title: e.target.value })}
-          className="bg-transparent border-0 font-serif text-xl text-ink focus-visible:ring-1 focus-visible:ring-terracotta rounded-sm w-32 sm:w-40 lg:w-56 xl:w-64 min-w-0 shrink-0"
-          data-testid="book-title-input"
-        />
-        <Input
-          value={book.author || ''}
-          onChange={(e) => setBook({ ...book, author: e.target.value })}
-          placeholder="Author"
-          className="bg-transparent border-0 text-ink-soft text-sm italic w-24 lg:w-32 xl:w-40 focus-visible:ring-1 focus-visible:ring-terracotta rounded-sm min-w-0 hidden lg:block shrink-0"
-          data-testid="book-author-input"
-        />
-        {/* ISBN — when set, drives IngramSpark file naming convention
-            (`{isbn}_txt.pdf` interior, `{isbn}_cvr.pdf` cover). Optional;
-            blank means we use the title-slug naming for downloads. */}
-        <Input
-          value={book.isbn || ''}
-          onChange={(e) => setBook({ ...book, isbn: e.target.value })}
-          placeholder="ISBN"
-          maxLength={17} /* 13 digits + 4 dashes */
-          className="bg-transparent border-0 text-ink-mute text-xs tabular-nums w-24 lg:w-28 xl:w-32 focus-visible:ring-1 focus-visible:ring-terracotta rounded-sm min-w-0 hidden xl:block shrink-0"
-          data-testid="book-isbn-input"
-          title="13-digit ISBN — drives the IngramSpark-style export filename"
-        />
+        {/* Book metadata — title, author and ISBN are set-once-and-forget
+            for almost every user, but together they cost ~500 px of
+            toolbar width at xl. Collapsed into a single Popover button
+            so the canvas action controls (page size, view mode, insert
+            tools, Save/Print-ready/Export) fit comfortably on a 1280 px
+            screen without horizontal scroll.
+
+            The button label shows a truncated title so the user can see
+            at a glance which book they're editing.  data-testids of the
+            underlying inputs are PRESERVED (`book-title-input`,
+            `book-author-input`, `book-isbn-input`) so the existing test
+            suite continues to drive them by id once the popover opens. */}
+        <Popover>
+          <PopoverTrigger asChild>
+            <Button
+              variant="ghost"
+              data-testid="book-details-trigger"
+              title="Edit book title, author and ISBN"
+              className="rounded-sm h-9 px-2.5 flex items-center gap-2 shrink-0 max-w-[14rem] sm:max-w-[16rem] lg:max-w-[20rem] hover:bg-desk text-left"
+            >
+              <BookText className="w-4 h-4 shrink-0 text-ink-soft" />
+              <span className="flex flex-col items-start leading-tight min-w-0 flex-1">
+                <span
+                  className="font-serif text-base text-ink truncate w-full"
+                  data-testid="book-title-display"
+                >
+                  {book.title || 'Untitled'}
+                </span>
+                {book.author && (
+                  <span className="text-[10px] text-ink-mute italic truncate w-full">
+                    by {book.author}
+                  </span>
+                )}
+              </span>
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent
+            align="start"
+            sideOffset={6}
+            className="w-80 bg-paper border-rule rounded-sm p-4 space-y-3"
+            data-testid="book-details-popover"
+          >
+            <div className="space-y-1.5">
+              <Label htmlFor="book-title-input" className="text-[11px] uppercase tracking-wider text-ink-mute">
+                Title
+              </Label>
+              <Input
+                id="book-title-input"
+                value={book.title}
+                onChange={(e) => setBook({ ...book, title: e.target.value })}
+                className="bg-white border-rule rounded-sm font-serif text-lg text-ink focus-visible:ring-1 focus-visible:ring-terracotta"
+                data-testid="book-title-input"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="book-author-input" className="text-[11px] uppercase tracking-wider text-ink-mute">
+                Author
+              </Label>
+              <Input
+                id="book-author-input"
+                value={book.author || ''}
+                onChange={(e) => setBook({ ...book, author: e.target.value })}
+                placeholder="e.g. Jane Doe"
+                className="bg-white border-rule rounded-sm text-ink italic focus-visible:ring-1 focus-visible:ring-terracotta"
+                data-testid="book-author-input"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="book-isbn-input" className="text-[11px] uppercase tracking-wider text-ink-mute">
+                ISBN
+                <span className="ml-1.5 normal-case tracking-normal text-ink-mute/70">
+                  — drives IngramSpark filename when set
+                </span>
+              </Label>
+              <Input
+                id="book-isbn-input"
+                value={book.isbn || ''}
+                onChange={(e) => setBook({ ...book, isbn: e.target.value })}
+                placeholder="978-0-00-000000-0"
+                maxLength={17}
+                className="bg-white border-rule rounded-sm text-ink-soft text-sm tabular-nums focus-visible:ring-1 focus-visible:ring-terracotta"
+                data-testid="book-isbn-input"
+              />
+            </div>
+          </PopoverContent>
+        </Popover>
         <div className="w-px h-6 bg-rule shrink-0 hidden lg:block" />
         <Select value={book.page_size} onValueChange={(v) => setBook({ ...book, page_size: v })}>
           <SelectTrigger className="bg-white border-rule rounded-sm h-8 w-24 lg:w-32 xl:w-36 text-sm shrink-0" data-testid="page-size-trigger">
