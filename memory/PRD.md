@@ -419,6 +419,58 @@ Build me a book template app to be able to add texts and illustrations, page num
 4. **96 DPI audit (per user request)** — confirmed that ALL `96`/`PX_PER_INCH` references are CSS-pixel-to-points layout math (correct: 1 CSS px = 0.75 pt) OR on-screen canvas/preview math. **No 96 DPI value drives export raster resolution.** Embedded images keep their source pixel count (up to the bumped cap). Vector text and shapes remain vector in the PDF (never rasterized).
 5. **IngramSpark Phase 1 tests made dimension-aware** — previously hardcoded `630` and `[0, 9, 621, 621]` for the old 8.5″ trim; now computed dynamically from `PAGE_SIZES_PX["square"]` so future dimension changes don't require test edits.
 
+## What's been implemented (2026-06-21 / iteration 51 — PDF speed: parallel prefetch + font subsetting)
+
+### Root cause (corrected — earlier iterations attributed this to the wrong layer)
+**The actual cause of 9 s/page render time was 369 `@font-face` declarations (the entire Google Fonts catalog) being re-parsed from scratch on every single page.** It was NOT Cairo CPU load. It was NOT per-page setup overhead. It was NOT a GIL-contention symptom. Earlier hypotheses in iterations 47–50 were wrong.
+
+**A/B confirmation** (recorded for the next engineer who hits a similar symptom):
+
+| Configuration | Page 1 | Pages 2-N avg |
+|---|---|---|
+| Baseline (current code, 154 KB `@font-face` block, 369 rules) | 13,866 ms | **9,016 ms** |
+| `_google_fonts_css()` patched to return `""` | 17 ms | **16 ms** |
+
+>99.8 % of per-page render time was CSS parser overhead from rules pointing to fonts the document never used. Real WeasyPrint compositing of a 5-image page is ~16 ms.
+
+### Fix shipped — three layers, one file pair
+1. **Semaphore-bounded concurrent image pre-fetch** (`pdf_builder_weasy.py`) — `_IMG_FETCH_EXECUTOR` finally gets used the way its 4-worker pool was sized for. Replaces the serial `for img_idx, key in image_paths_in_range` loop with an `asyncio.gather` of `_fetch_one` coroutines, each acquiring/releasing one of 4 semaphore slots. Refilled by completion (no head-of-line blocking from naive 4-at-a-time batches). Stage updates `prefetching image N/M` count COMPLETIONS not array index. **Measured 4× speedup, hits theoretical 4-worker ceiling exactly** (5.00 s serial → 1.26 s parallel on 20 images @ 250 ms latency; 15 s → 3.77 s on 60 images).
+2. **Per-job font subsetting** (`pdf_builder.py`):
+   - New `_extract_used_font_families(book) -> (used, missing)` scans **all three** font-introduction surfaces, since `text_presets` is NOT authoritative:
+     1. `block.font_family` (per-block dropdown)
+     2. `text_presets.{title,subtitle,page_text}.font_family` (per-book defaults)
+     3. Inline `style="font-family: …"` inside `block.html` (rich-text toolbar character-level overrides — preserved verbatim by `_safe_block_html`).
+   - Always includes `Cormorant Garamond` because `_render_block` and the page-number renderer hardcode it as a fallback string in the rendered CSS; legacy books without a `font_family` field would silently fall back to system serif otherwise. **Only that one — `Lora` was over-cautious; removed**.
+   - `_google_fonts_css(used_families=None)` filters the cached 369-rule catalog down to declarations whose `font-family` matches the set (case-insensitive, quote-stripped). Backwards-compat preserved by `None` → full catalog.
+   - **Failure mode is explicit**: any family referenced but absent from the cached catalog AND not in `_KNOWN_SYSTEM_FONTS` (Georgia, Helvetica, Times, Courier, CSS keywords like `serif`) is logged at WARNING and surfaced in the JOB SUMMARY line as `fonts: N used, M missing ['the typo']`. No silent fallback.
+3. **End-of-job summary log** (fix #4 from the brief, extended) — single line:
+   ```
+   WeasyPrint JOB SUMMARY: total=Xs | prefetch=Ys (N imgs, avg Zms/img, B blank-fallbacks) | render=Rs (P pages, avg Q ms/page, C placeholders) | fonts: U used, M missing [list]
+   ```
+   Phase-split timings, per-phase averages, AND fallback counts so a "fast" book that secretly substituted 6 blank pages is loud, not silent.
+
+### Measured impact (12-page benchmark, apples-to-apples vs iteration 50 baseline)
+
+| Configuration | Per-page render | Total job |
+|---|---|---|
+| Iteration 50 baseline | 9,016 ms | ~120 s |
+| **Iter 51, 1-font book (common case)** | **1,043 ms** (8.6× faster) | **16.3 s** |
+| **Iter 51, 2-font book + inline rich-text override** | **1,654 ms** (5.4× faster) | **23.7 s** |
+
+The remaining ~1 s/page is irreducible parse cost of the 30 `@font-face` blocks one family generates (4 weights × 2 styles × ~6 unicode-range subsets). See "Confirmed not on the table" below for why we're not chasing it further in this pass.
+
+### Test status
+- **14/14 new offline unit tests** in `tests/test_font_subsetting.py` — run in 5 s, no hosted-env dependency, independently reproducible regression coverage.
+- **57/57 integration tests pass against the hosted preview environment** in 137 s — same suite, but 4× faster than pre-fix-A wall-clock as a free side benefit (every test PDF export also benefits from the per-page parse-tax removal).
+- **Hosted preview suite caveat (be precise about this)**: the integration suite makes live HTTP calls to `REACT_APP_BACKEND_URL`. "Tests pass" means the current preview pod renders correctly; it's not an offline guarantee. Deploy-readiness requires a separate production redeploy + observation. The new offline unit suite is what carries the reproducible guarantee.
+
+### Confirmed NOT on the table (do not pick these up as unfinished work)
+- **Fix #2 — bounded process pool for WeasyPrint rendering**: NOT needed and NOT a good idea against this bottleneck. Process pools parallelize CPU work; the work we eliminated was CSS parser overhead with no rendering value. Per-page render is now 1 s; the 240 s/page hard wall has 240× headroom. A process pool would parallelize milliseconds. Touching Cairo state across subprocess boundaries (Cairo is not fork-safe; ProcessPoolExecutor + WeasyPrint requires careful lifecycle management for fonts, fontconfig, harfbuzz state) is a real risk to take on for no measurable gain. Don't.
+- **Fix #3 — raise `STAGE_IDLE_DEADLINE_MS` above 6 min**: NOT needed. Real per-page is 1 s, deadline is 360 s = 360× headroom. The brief explicitly cautioned against bumping this without timing data; the data says don't.
+
+### Open follow-up (filed, not blocking)
+- **WeasyPrint `FontConfiguration` API migration** — register fonts ONCE at process startup via WeasyPrint's `FontConfiguration` instead of emitting per-page `@font-face` CSS. Would close most of the remaining ~1 s/page parse cost (estimated 1043 ms → ~100-200 ms target). Larger architectural surface than fix A (touches WeasyPrint API, requires understanding of `FontConfiguration` lifecycle vs document creation), which is why it was correctly deferred from this pass. **Track as P2 — net win is ~5-10× on top of the 8.6× already shipped, but not blocking any user-facing capability.**
+
 ## Next Tasks
 - Phase 3.3 — PDF document metadata (Title, Author, ISBN, Publisher into PDF properties).
 - Phase 3.2 — ICC profile picker (SWOP v2 vs Fogra39) in export popover.
