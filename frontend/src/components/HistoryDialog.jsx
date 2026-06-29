@@ -25,8 +25,15 @@ function formatTime(iso) {
   }
 }
 
-export default function HistoryDialog({ bookId, onRestored }) {
-  const [open, setOpen] = useState(false);
+export default function HistoryDialog({ bookId, onRestored, open: controlledOpen, onOpenChange: controlledOnOpenChange, hideTrigger = false }) {
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  // Controlled mode: parent owns `open` state and provides the trigger.
+  // Uncontrolled: this component renders its own trigger button (the
+  // long-standing toolbar default).  Used by the editor's "More" menu
+  // which wants to fire the dialog from a DropdownMenuItem.
+  const isControlled = controlledOpen !== undefined;
+  const open = isControlled ? controlledOpen : uncontrolledOpen;
+  const setOpen = isControlled ? (controlledOnOpenChange || (() => {})) : setUncontrolledOpen;
   const [loading, setLoading] = useState(false);
   const [restoringId, setRestoringId] = useState(null);
   const [revisions, setRevisions] = useState([]);
@@ -64,16 +71,18 @@ export default function HistoryDialog({ bookId, onRestored }) {
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button
-          variant="outline"
-          className="bg-white border-rule hover:bg-desk text-ink rounded-sm h-8"
-          data-testid="open-history-button"
-          title="See and restore previous saves of this book"
-        >
-          <History className="w-4 h-4 mr-1" /> History
-        </Button>
-      </DialogTrigger>
+      {!hideTrigger && (
+        <DialogTrigger asChild>
+          <Button
+            variant="outline"
+            className="bg-white border-rule hover:bg-desk text-ink rounded-sm h-8"
+            data-testid="open-history-button"
+            title="See and restore previous saves of this book"
+          >
+            <History className="w-4 h-4 mr-1" /> History
+          </Button>
+        </DialogTrigger>
+      )}
       <DialogContent className="bg-paper border-rule rounded-sm max-w-md">
         <DialogHeader>
           <DialogTitle className="font-serif text-ink">Edit history</DialogTitle>

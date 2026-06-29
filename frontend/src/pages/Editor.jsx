@@ -30,6 +30,9 @@ import {
   ChevronLeft,
   ChevronRight,
   BookText,
+  MoreHorizontal,
+  History as HistoryIcon,
+  Bookmark,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -143,6 +146,12 @@ export default function Editor() {
   const [panelsDrawerOpen, setPanelsDrawerOpen] = useState(
     () => (typeof window !== 'undefined' ? window.innerWidth >= 1024 : false),
   );
+  // Controlled state for dialogs that live inside the "More" dropdown
+  // (top toolbar). Lifting state here lets us collapse History +
+  // Save-as-template behind one icon button without losing the ability
+  // to fire the dialogs from a DropdownMenuItem.
+  const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
+  const [templateDialogOpen, setTemplateDialogOpen] = useState(false);
   // On window resize, snap drawers to "open" once we cross into lg+. Below
   // lg we don't auto-close — a user who explicitly opened the drawer on a
   // tablet keeps their view.
@@ -1578,7 +1587,7 @@ export default function Editor() {
               variant="ghost"
               data-testid="book-details-trigger"
               title="Edit book title, author and ISBN"
-              className="rounded-sm h-9 px-2.5 flex items-center gap-2 shrink-0 max-w-[14rem] sm:max-w-[16rem] lg:max-w-[20rem] hover:bg-desk text-left"
+              className="rounded-sm h-9 px-2.5 flex items-center gap-2 shrink-0 max-w-[14rem] sm:max-w-[15rem] lg:max-w-[17rem] hover:bg-desk text-left"
             >
               <BookText className="w-4 h-4 shrink-0 text-ink-soft" />
               <span className="flex flex-col items-start leading-tight min-w-0 flex-1">
@@ -1663,7 +1672,7 @@ export default function Editor() {
             their content can occupy. Hidden on the narrowest layouts to
             keep the toolbar from wrapping. */}
         <div
-          className="hidden md:flex flex-col items-start leading-tight text-[10px] text-ink-mute shrink-0 tabular-nums pl-1"
+          className="hidden 2xl:flex flex-col items-start leading-tight text-[10px] text-ink-mute shrink-0 tabular-nums pl-1"
           data-testid="page-dimensions-readout"
           title="Trim size of the page (the PDF export dimensions) and the inner safety margin"
         >
@@ -1682,7 +1691,7 @@ export default function Editor() {
             className={`h-7 px-2.5 flex items-center gap-1 rounded-sm text-xs tracking-wide transition-colors ${viewMode === 'single' ? 'bg-ink text-paper' : 'text-ink-soft hover:bg-desk'}`}
             title="Single page"
           >
-            <Square className="w-3.5 h-3.5" /> <span className="hidden xl:inline">Single</span>
+            <Square className="w-3.5 h-3.5" /> <span className="hidden 2xl:inline">Single</span>
           </button>
           <button
             type="button"
@@ -1691,7 +1700,7 @@ export default function Editor() {
             className={`h-7 px-2.5 flex items-center gap-1 rounded-sm text-xs tracking-wide transition-colors ${viewMode === 'spread' ? 'bg-ink text-paper' : 'text-ink-soft hover:bg-desk'}`}
             title="Two-page spread"
           >
-            <BookOpen className="w-3.5 h-3.5" /> <span className="hidden xl:inline">Spread</span>
+            <BookOpen className="w-3.5 h-3.5" /> <span className="hidden 2xl:inline">Spread</span>
           </button>
           <button
             type="button"
@@ -1700,7 +1709,7 @@ export default function Editor() {
             className={`h-7 px-2.5 flex items-center gap-1 rounded-sm text-xs tracking-wide transition-colors ${viewMode === 'cover' ? 'bg-ink text-paper' : 'text-ink-soft hover:bg-desk'}`}
             title="Cover spread (back · spine · front) with binding markers"
           >
-            <LayoutTemplate className="w-3.5 h-3.5" /> <span className="hidden xl:inline">Cover</span>
+            <LayoutTemplate className="w-3.5 h-3.5" /> <span className="hidden 2xl:inline">Cover</span>
           </button>
         </div>
 
@@ -1721,7 +1730,7 @@ export default function Editor() {
           }`}
         >
           <Droplets className="w-3.5 h-3.5" />
-          <span className="hidden lg:inline">Ink</span>
+          <span className="hidden xl:inline">Ink</span>
         </button>
 
         <div className="flex-1 min-w-0" />
@@ -1803,27 +1812,80 @@ export default function Editor() {
             e.target.value = '';
           }}
         />
-        <div className="w-px h-6 bg-rule mx-1 shrink-0 hidden md:block" />
-        <div className="hidden md:block shrink-0">
-          <SaveStatus saving={saving} lastSavedAt={lastSavedAt} />
-        </div>
-        <div className="shrink-0">
-          <HistoryDialog
-            bookId={book.id}
-            onRestored={(restored) => {
-              // Skip the next autosave so the restored snapshot isn't immediately
-              // overwritten by a stale in-memory state.
-              skipNextAutoSaveRef.current = true;
-              setBook(restored);
-              setSelectedBlockId(null);
-              setEditingTextId(null);
-              setActivePageIndex(0);
-            }}
-          />
-        </div>
-        <div className="shrink-0">
-          <SaveTemplateDialog book={book} />
-        </div>
+        <div className="w-px h-6 bg-rule mx-1 shrink-0 hidden xl:block" />
+        {/* "More" dropdown — historically the toolbar had three separate
+            inline buttons here (SaveStatus indicator, History dialog,
+            Save-as-template dialog) which together cost ~280 px. Folded
+            into one ~36 px icon trigger so the canvas-action cluster
+            (Save, Print-ready, Export PDF) stays comfortably reachable
+            on a 1280 px screen. The two dialog children are kept inside
+            the dropdown (still in the React tree) and driven via lifted
+            `open`/`onOpenChange` state — see the controlled-mode wiring
+            in HistoryDialog.jsx and SaveTemplateDialog.jsx. */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="outline"
+              className="rounded-sm h-8 border-rule shrink-0 px-2 hover:bg-desk"
+              data-testid="toolbar-more-trigger"
+              title="History · Save as template · Save status"
+              aria-label="More actions"
+            >
+              <MoreHorizontal className="w-4 h-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            align="end"
+            className="bg-paper border-rule rounded-sm w-56 p-1"
+            data-testid="toolbar-more-menu"
+          >
+            {/* Inline save status — a single read-only row. Saved-at
+                timestamp is the most actionable piece of context for
+                a user who's been editing for hours. */}
+            <div className="px-2 py-1.5 text-xs text-ink-mute border-b border-rule mb-1">
+              <SaveStatus saving={saving} lastSavedAt={lastSavedAt} />
+            </div>
+            <DropdownMenuItem
+              onSelect={(e) => { e.preventDefault(); setHistoryDialogOpen(true); }}
+              className="rounded-sm cursor-pointer gap-2"
+              data-testid="more-menu-history"
+            >
+              <HistoryIcon className="w-4 h-4 text-ink-soft" />
+              <span>History…</span>
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={(e) => { e.preventDefault(); setTemplateDialogOpen(true); }}
+              className="rounded-sm cursor-pointer gap-2"
+              data-testid="more-menu-save-template"
+            >
+              <Bookmark className="w-4 h-4 text-ink-soft" />
+              <span>Save as template…</span>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        {/* Dialogs themselves — invisible until their respective state
+            flips true via a More-menu click. `hideTrigger` skips the
+            default inline button so they don't re-introduce the width
+            the dropdown just reclaimed. */}
+        <HistoryDialog
+          bookId={book.id}
+          open={historyDialogOpen}
+          onOpenChange={setHistoryDialogOpen}
+          hideTrigger
+          onRestored={(restored) => {
+            skipNextAutoSaveRef.current = true;
+            setBook(restored);
+            setSelectedBlockId(null);
+            setEditingTextId(null);
+            setActivePageIndex(0);
+          }}
+        />
+        <SaveTemplateDialog
+          book={book}
+          open={templateDialogOpen}
+          onOpenChange={setTemplateDialogOpen}
+          hideTrigger
+        />
         </div>
         {/* Pinned right cluster — never scrolls off-screen. */}
         <div className="flex items-center gap-2 px-3 border-l border-rule shrink-0 bg-paper h-full">

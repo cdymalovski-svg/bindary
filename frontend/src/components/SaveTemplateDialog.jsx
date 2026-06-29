@@ -21,8 +21,14 @@ function pageStyle(p) {
   };
 }
 
-export default function SaveTemplateDialog({ book }) {
-  const [open, setOpen] = useState(false);
+export default function SaveTemplateDialog({ book, open: controlledOpen, onOpenChange: controlledOnOpenChange, hideTrigger = false }) {
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  // Controlled mode lets the editor's "More" dropdown drive the dialog
+  // without rendering this component's own trigger button (which would
+  // otherwise re-introduce ~140 px of toolbar width we just freed).
+  const isControlled = controlledOpen !== undefined;
+  const open = isControlled ? controlledOpen : uncontrolledOpen;
+  const setOpen = isControlled ? (controlledOnOpenChange || (() => {})) : setUncontrolledOpen;
   const [name, setName] = useState('');
   const [saving, setSaving] = useState(false);
 
@@ -61,16 +67,18 @@ export default function SaveTemplateDialog({ book }) {
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button
-          variant="outline"
-          className="rounded-sm h-8 border-rule"
-          data-testid="save-template-button"
-        >
-          <Bookmark className="w-4 h-4 mr-1" />
-          Save as template
-        </Button>
-      </DialogTrigger>
+      {!hideTrigger && (
+        <DialogTrigger asChild>
+          <Button
+            variant="outline"
+            className="rounded-sm h-8 border-rule"
+            data-testid="save-template-button"
+          >
+            <Bookmark className="w-4 h-4 mr-1" />
+            Save as template
+          </Button>
+        </DialogTrigger>
+      )}
       <DialogContent className="bg-paper border-rule rounded-sm sm:max-w-md">
         <DialogHeader>
           <DialogTitle className="font-serif text-2xl text-ink">Save book as template</DialogTitle>
