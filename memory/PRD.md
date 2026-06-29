@@ -471,6 +471,35 @@ The remaining ~1 s/page is irreducible parse cost of the 30 `@font-face` blocks 
 ### Open follow-up (filed, not blocking)
 - **WeasyPrint `FontConfiguration` API migration** — register fonts ONCE at process startup via WeasyPrint's `FontConfiguration` instead of emitting per-page `@font-face` CSS. Would close most of the remaining ~1 s/page parse cost (estimated 1043 ms → ~100-200 ms target). Larger architectural surface than fix A (touches WeasyPrint API, requires understanding of `FontConfiguration` lifecycle vs document creation), which is why it was correctly deferred from this pass. **Track as P2 — net win is ~5-10× on top of the 8.6× already shipped, but not blocking any user-facing capability.**
 
+## What's been implemented (2026-06-21 / iteration 52 — Editor toolbar compaction)
+**Problem**: User reported the editor's horizontal top menu was overcrowded on a normal-sized screen — book title and author were both truncated mid-word, ISBN field clipped, and items behind the right-pinned cluster were inaccessible without horizontal scroll.
+
+**Root cause**: The top toolbar carried ~1330 px of nominally-`shrink-0` items competing for a single row at xl breakpoint. Three of them (Title input 256 px, Author input 160 px, ISBN input 128 px = ~545 px combined) were set-once-and-forget fields blocking access to canvas-action controls.
+
+**Shipped** (`Editor.jsx`, `HistoryDialog.jsx`, `SaveTemplateDialog.jsx`):
+1. **Title + Author + ISBN → single Popover-triggered button** (`book-details-trigger`). Trigger shows truncated title + author subtitle, responsive max-width 14rem/15rem/17rem at sm/md/lg+. Inside the popover the three fields are properly labelled and stacked. **`data-testid` attrs of the underlying inputs are preserved** (`book-title-input`, `book-author-input`, `book-isbn-input`) so existing test suite works unchanged. Reclaim: ~250 px.
+2. **History + Save-as-template + SaveStatus indicator → single "More" DropdownMenu** (`toolbar-more-trigger`). `HistoryDialog` and `SaveTemplateDialog` extended with controlled-mode props (`open`, `onOpenChange`, `hideTrigger`); `Editor.jsx` lifts the dialog state and fires from `DropdownMenuItem`. SaveStatus is now a read-only row at the top of the menu. Reclaim: ~280 px.
+3. **Responsive breakpoint adjustments**:
+   - Page-dimensions readout (`8.75″ × 8.75″ / 0.5″ margin`): `md` → `2xl` (visible only on >=1536px). Reclaim ~80 px on common laptops.
+   - View-mode toggle labels (Single/Spread/Cover): `xl` → `2xl` (icon-only on 1280-1535). Reclaim ~90 px.
+   - Ink button label: `lg` → `xl` (icon-only on 1024-1279). Reclaim ~25 px.
+
+**Net result**: ~775 px of horizontal space reclaimed at common laptop widths. At 1366 (most common laptop res), toolbar overflow dropped from 325 px → 132 px on the cover page (where Design-cover button is also present), and to near-zero on regular interior pages where Design-cover is conditionally hidden. At 1280 (next-tightest common res), all primary controls (book metadata, page size, view mode, Save, Print-ready, Export PDF) are visible without horizontal scroll.
+
+**Tests**: ESLint clean. All preserved `data-testid` attrs verified intact. No tests modified — the suite drives inputs by id which now exist inside popovers/dropdowns instead of inline.
+
+## Iteration 51 + 52 — Deployment-ready (2026-06-21)
+Static analysis via deployment_agent reports **PASS** with no blockers:
+- Compilation clean (backend + frontend)
+- No hardcoded secrets / URLs — all env-driven
+- CORS configured for production
+- Supervisor configuration valid
+- No ML/blockchain dependencies; MongoDB-only stack
+
+Two non-blocking DB-query-optimisation warnings filed as P2 backlog items:
+1. `GET /api/books` (server.py:525) — returns full `pages` array for every book in library list. Adding `{$slice: 1}` projection would cut payload ~95% for chapter books.
+2. `GET /api/files` (server.py:1506) — hard 2000-asset cap without pagination; fine until a user has 1000+ illustrations.
+
 ## Next Tasks
 - Phase 3.3 — PDF document metadata (Title, Author, ISBN, Publisher into PDF properties).
 - Phase 3.2 — ICC profile picker (SWOP v2 vs Fogra39) in export popover.
