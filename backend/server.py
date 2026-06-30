@@ -18,10 +18,35 @@ from datetime import datetime, timezone, timedelta
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-# MongoDB connection
+# MongoDB connection — single shared AsyncIOMotorClient instantiated once
+# at module-load time. NEVER re-instantiated per-request; motor manages
+# its own connection pool internally. MONGO_URL and DB_NAME are read
+# from the environment with NO defaults so a missing/typo'd env var
+# fails the process at startup rather than silently falling back to a
+# wrong database.
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
+
+
+def _redact_mongo_url(url: str) -> str:
+    """Strip the password from `mongodb://user:password@host:port/...`
+    so the connection target can be safely printed to logs (and grepped
+    across pods to verify they all connect to the same DB without
+    leaking credentials)."""
+    return re.sub(r"://([^:/@]+):[^@]+@", r"://\1:***@", url)
+
+
+# Startup log — printed once when this module loads (i.e. once per
+# worker process / pod). If the user sees /api/pdf-health counters
+# diverging between two pods, comparing this line across pod logs is
+# the definitive way to confirm or rule out a multi-pod-DB-split.
+# Format kept on a single line and grep-friendly.
+logging.getLogger("uvicorn.error").info(
+    "MongoDB connected: target=%s db=%s",
+    _redact_mongo_url(mongo_url),
+    os.environ['DB_NAME'],
+)
 
 # Storage configuration
 STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
@@ -1191,6 +1216,15 @@ async def pdf_health():
         "detected_browsers_path": _autodetect_chromium_path(),
         "chromium_ready_cached": _chromium_ready,
         "python": f"{__import__('sys').version_info.major}.{__import__('sys').version_info.minor}",
+        # MongoDB target — same redacted string we log at startup. The
+        # value MUST be identical across every pod behind the load
+        # balancer; if /api/pdf-health on two consecutive requests
+        # returns DIFFERENT `mongo_target` strings, you have a
+        # multi-pod-DB split and counts WILL diverge no matter what
+        # the query layer does. Reading this value from a browser is
+        # the diagnostic the user can run without SSH access.
+        "mongo_target": _redact_mongo_url(mongo_url),
+        "mongo_db_name": os.environ['DB_NAME'],
     }
     # WeasyPrint probe — confirm the engine module imports and reports
     # its version. A failure here means the install is broken on the
