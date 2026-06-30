@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Download, Loader2, FileDown, Trash2, Sparkles } from 'lucide-react';
+import { Download, Loader2, FileDown, Printer, Trash2, Sparkles } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -163,6 +163,16 @@ export default function ExportPopover({ bookId, totalPages, exporting, onExport,
     onExport(null, { previewInTab, pdfx, dpi });
   };
 
+  // Print = generate the PDF then open the browser's print dialog with
+  // the result. Implemented as a flag on the existing export pipeline so
+  // every option (page range future, PDF/X, DPI) flows through one path.
+  // `printAfter` overrides `previewInTab` in Editor.onExportPdf so we
+  // don't double-open a new tab.
+  const submitPrint = () => {
+    setOpen(false);
+    onExport(null, { pdfx, dpi, printAfter: true });
+  };
+
   // Cover spread = a single wide PDF with BACK | SPINE | FRONT layout plus
   // outer-edge allowance (0.125" bleed for perfect-bound, 0.625" wrap for
   // casebound). The exact file IngramSpark / KDP printers expect.
@@ -279,6 +289,21 @@ export default function ExportPopover({ bookId, totalPages, exporting, onExport,
             <FileDown className="w-4 h-4 mr-2" />
             <span>Whole book</span>
             <span className="ml-auto text-paper/60 text-xs">{totalPages} page{totalPages === 1 ? '' : 's'}</span>
+          </Button>
+
+          {/* Print = render PDF then open the browser print dialog.
+              Uses the same backend job pipeline so PDF/X + DPI options
+              still apply. Document is not auto-downloaded. */}
+          <Button
+            onClick={submitPrint}
+            disabled={exporting || totalPages === 0}
+            variant="outline"
+            className="w-full mt-2 border-rule rounded-sm justify-start h-10 hover:bg-paper-soft"
+            data-testid="export-print"
+          >
+            <Printer className="w-4 h-4 mr-2" />
+            <span>Print on local printer</span>
+            <span className="ml-auto text-ink-mute text-xs">{totalPages} page{totalPages === 1 ? '' : 's'}</span>
           </Button>
         </div>
 

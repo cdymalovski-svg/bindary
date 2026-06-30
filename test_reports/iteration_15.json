@@ -1,0 +1,36 @@
+{
+  "summary": "Frontend-only verification of the new 'Print on local printer' button in ExportPopover. Logged in as admin, opened the seed book 'Belinda and the Great Playground Challenge' (id dc988a6f-...) in the Editor, opened the Export Popover, and clicked the new Print button. The end-to-end flow works as designed: the button is present with the right testid, closes the popover on click, kicks off the same PDF job pipeline as Whole-book, produces a hidden offscreen iframe with a blob: src, and surfaces the printer-suffixed success toast ('PDF ready in 126.1s — opening printer…'). No console errors, no window.open() call (so the 'Open in new tab' toggle is correctly ignored on the Print path).",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "verified_behaviours": [
+    "Export popover (data-testid='export-popover') shows new 'Print on local printer' button (data-testid='export-print') directly under 'Whole book'.",
+    "Button label reads 'Print on local printer' with the page count badge ('32 pages').",
+    "Clicking Print closes the popover (popover.offsetParent is null after click).",
+    "PDF job runs end-to-end (~126s for the 32-page seed book) using the same /api/books/{id}/pdf-jobs pipeline — no separate backend route.",
+    "Success toast shows 'PDF ready in 126.1s — opening printer…' (the printer suffix, not the generic 'export complete' suffix), confirming printAfter branched correctly.",
+    "Hidden iframe is appended to the DOM with aria-hidden='true', position:fixed, left:-9999px, width:1px, height:1px, src starting with blob: — exactly as Editor.jsx lines 1460–1468 specify.",
+    "'Open in new tab instead of downloading' toggle was intentionally ON before the Print click; window.open was NOT called (window.__openCalls is empty) — confirming printAfter overrides previewInTab in onExportPdf (Editor.jsx line 1193).",
+    "No console errors / pageerrors during the whole flow.",
+    "Regression (code-level inspection): the non-print branch at Editor.jsx lines 1518–1525 still creates an `<a download={…}>` element so Whole-book + Cover-spread continue to download as before. Range submit + Cover-spread submit both still forward previewInTab without printAfter (ExportPopover.jsx lines 158, 183)."
+  ],
+  "test_report_links": ["/app/test_reports/iteration_15.json"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Editor.jsx is 2872 lines — well over the 700-line guideline. The print path (lines 1451–1492) is logically separable; consider extracting onExportPdf and its print/iframe helper into a dedicated hook (e.g. usePdfExport) to ease future maintenance, but this is pre-existing and not introduced by the current change.",
+    "Minor: the 8s window.open fallback (Editor.jsx line 1485) opens a new tab if iframe load never fires. This is the right user-visible behaviour but the new tab's blob URL is never revoked on that path (the 120s cleanup at line 1489 still fires, which actually does revoke it — so this is fine, just worth a comment to make the lifecycle obvious).",
+    "Minor: when the Safari catch-branch fires (line 1477–1479) we open the blob in a new tab but still log the toast as 'opening printer…'. The user actually has to press Cmd+P themselves in that fallback. Consider toasting 'PDF ready — press Cmd/Ctrl+P to print' if iframe.contentWindow.print() throws. Not a blocker."
+  ],
+  "playwright_artifact_note": "Chromium headless (which Playwright uses) does NOT ship the PDF Viewer plugin, so when the hidden iframe loads a blob:application/pdf URL, Chromium fires a 'download' event for that blob instead of rendering it inline. We observed exactly one download event ('5f8c627a-...pdf') as a result. This is a headless-Chromium artifact, NOT a bug in the Print code path — the code does not call a.click()/a.download for the printAfter branch (confirmed by source review of Editor.jsx lines 1451–1492). In a real user's Chrome/Edge/Firefox with the built-in PDF viewer, the iframe renders the PDF inline and iframe.contentWindow.print() pops the OS print dialog as designed. The presence of the hidden iframe and the absence of window.open calls are the reliable verification signals here.",
+  "updated_files": [],
+  "success_rate": { "backend": "N/A (skipped per request)", "frontend": "100%" },
+  "test_credentials": "chris@dcsbuilt.com.au / Redcar01 (admin) — from /app/memory/test_credentials.md",
+  "seed_data_creation": "None — used existing seed book 'Belinda and the Great Playground Challenge' (id dc988a6f-5595-4d94-a959-d7e6affecf51).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "ExportPopover gained a third primary CTA: data-testid='export-print' (text 'Print on local printer'). Clicking it routes through the existing PDF-job pipeline with options.printAfter=true. Editor.jsx onExportPdf handles printAfter by creating an offscreen hidden iframe with the blob URL and calling iframe.contentWindow.print() once it loads. Note: Chromium headless (Playwright) downloads blob PDFs because it lacks the PDF viewer plugin — this is NOT a bug, it's why we look for the iframe + 'opening printer…' toast as the verification signal instead of trying to observe the OS print dialog.",
+  "rca of the issue": "N/A — no issues to RCA. New feature works as specified."
+}

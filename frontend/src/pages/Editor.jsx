@@ -1186,7 +1186,11 @@ export default function Editor() {
   // (using the browser's built-in PDF viewer) instead of triggering a
   // download — useful for iterating on layout without piling up files.
   const onExportPdf = async (range = null, options = {}) => {
-    const previewInTab = options?.previewInTab === true;
+    const printAfter = options?.printAfter === true;
+    // When printing, suppress the new-tab open path — we route the
+    // bytes into a hidden iframe and call .print() instead so the user
+    // lands on the OS print dialog directly.
+    const previewInTab = !printAfter && options?.previewInTab === true;
     const pdfx = options?.pdfx === true;
     const coverSpread = options?.coverSpread === true;
     const spineWidthIn = options?.spineWidthIn;
@@ -1444,7 +1448,49 @@ export default function Editor() {
       const fallback = `${(book.title || 'book').replace(/[^a-z0-9-_]+/gi, '_')}.pdf`;
       const downloadName = serverFilename || fallback;
       const url = URL.createObjectURL(blob);
-      if (previewInTab) {
+      if (printAfter) {
+        // Hidden iframe → browser PDF viewer renders the blob → we call
+        // .print() once it's loaded so the user lands directly on the
+        // OS print dialog. Same-origin blob URL so contentWindow access
+        // is allowed in Chrome/Edge. Safari sometimes blocks the
+        // programmatic print() call against a PDF iframe — in that
+        // case we fall back to opening the blob in a new tab so the
+        // user can press Cmd/Ctrl+P themselves.
+        let printed = false;
+        const iframe = document.createElement('iframe');
+        iframe.setAttribute('aria-hidden', 'true');
+        iframe.style.position = 'fixed';
+        iframe.style.left = '-9999px';
+        iframe.style.width = '1px';
+        iframe.style.height = '1px';
+        iframe.style.border = '0';
+        iframe.src = url;
+        document.body.appendChild(iframe);
+        const triggerPrint = () => {
+          // 300ms settle so the PDF plugin has actually rendered. Some
+          // browsers fire load before the plugin is interactive.
+          setTimeout(() => {
+            try {
+              iframe.contentWindow.focus();
+              iframe.contentWindow.print();
+              printed = true;
+            } catch {
+              window.open(url, '_blank', 'noopener,noreferrer');
+            }
+          }, 300);
+        };
+        iframe.onload = triggerPrint;
+        // Hard fallback: if iframe load never fires within 8s, open in
+        // a new tab so the user isn't stuck with no print dialog.
+        setTimeout(() => { if (!printed) window.open(url, '_blank', 'noopener,noreferrer'); }, 8000);
+        // Reclaim the iframe + blob URL after a generous delay; the
+        // browser holds a reference for the print preview until the
+        // user dismisses it, then GC is fine.
+        setTimeout(() => {
+          if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+          URL.revokeObjectURL(url);
+        }, 120_000);
+      } else if (previewInTab) {
         // Open in a new tab so the browser's built-in PDF viewer renders
         // it. We do NOT immediately revoke the object URL — the new tab
         // still needs it. Schedule revoke after a generous delay; the
@@ -1485,9 +1531,11 @@ export default function Editor() {
       // lingers visually. Dismiss + fresh toast gives a clean swap.
       toast.dismiss(toastId);
       toast.success(
-        previewInTab
-          ? `PDF export complete in ${secs}s — opened in new tab`
-          : `PDF export complete in ${secs}s`,
+        printAfter
+          ? `PDF ready in ${secs}s — opening printer…`
+          : previewInTab
+            ? `PDF export complete in ${secs}s — opened in new tab`
+            : `PDF export complete in ${secs}s`,
         // Persist until the user dismisses it so a completed job is
         // never missed (they might have switched tabs while it ran).
         { duration: Infinity, closeButton: true },
