@@ -220,11 +220,23 @@ async def build_book_pdf(
     end_page: Optional[int] = None,
     pdfx_bleed: bool = True,
     dpi: int = 300,
+    path_existence_check: Optional[Callable[[list], "asyncio.Future"]] = None,
 ) -> bytes:
     """Render the whole book (or a page slice) to PDF via WeasyPrint.
 
     Same signature as `pdf_builder.build_book_pdf` — the worker in
-    server.py can swap between engines without other changes."""
+    server.py can swap between engines without other changes.
+
+    `path_existence_check` — optional async callback `(paths) -> set[str]`
+    that returns the subset of `paths` which have NO corresponding row
+    in db.files. The caller (server.py) wires this; pdf_builder_weasy
+    can't import `db` itself without a circular dependency, and the
+    builder shouldn't know about Mongo at all. When provided, the
+    callback runs once before the pre-fetch loop and surfaces
+    orphaned / deleted image references via a WARNING log per missing
+    path. It does NOT block the export — the existing blank-PNG
+    fallback in the fetch path handles 404s downstream — it only makes
+    the failure mode visible at the start instead of mid-fetch."""
     def _emit(stage: str):
         if progress_cb:
             try:
@@ -301,6 +313,31 @@ async def build_book_pdf(
             image_paths_in_range.append(p)
 
     if image_paths_in_range:
+        # Orphan / deleted-asset surfacing — runs once before any fetch
+        # begins. Catches paths the editor still references but that no
+        # longer have a row in db.files (deleted by the user, GC'd by
+        # a future cleanup job, or the result of importing a book from
+        # another environment). Logs one WARNING per missing path so an
+        # operator can grep the supervisor output and see exactly which
+        # blocks have orphaned references. Does NOT alter the export —
+        # the existing blank-PNG fallback in `_fetch_one` below handles
+        # the actual fetch failure; this just makes the cause visible
+        # at the start instead of mid-fetch.
+        if path_existence_check:
+            try:
+                missing_paths = await path_existence_check(list(image_paths_in_range))
+                if missing_paths:
+                    log.warning(
+                        "WeasyPrint: %d image path(s) referenced by the book have "
+                        "no db.files record (deleted or orphaned): %s",
+                        len(missing_paths), sorted(missing_paths),
+                    )
+            except Exception as ve:
+                # Validation failure must NOT block the export — it's
+                # diagnostic-only. If db.files is unreachable we still
+                # want the export to complete from object storage.
+                log.warning("WeasyPrint: path_existence_check failed: %s", ve)
+
         log.info(
             "WeasyPrint: pre-fetching %d unique images for pages %d-%d "
             "(concurrency=%d)",
@@ -350,6 +387,11 @@ async def build_book_pdf(
                     _bump_prefetch_progress()
                     return
                 if not raw:
+                    log.warning(
+                        "WeasyPrint: pre-fetch returned empty bytes for %s — "
+                        "using blank PNG (asset may be deleted from storage)",
+                        key,
+                    )
                     job_image_cache[key] = (_BLANK_PNG, "image/png")
                     prefetch_blank_fallbacks["n"] += 1
                     _bump_prefetch_progress()

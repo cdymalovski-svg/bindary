@@ -836,6 +836,24 @@ async def _run_pdf_job(
                 dpi=dpi,
             )
         else:
+            # Orphan-image diagnostic callback (passed only to the
+            # weasy engine, which knows how to log per-path warnings).
+            # Returns the set of paths that have NO row in db.files.
+            # Does NOT block the export — the blank-PNG fallback in
+            # the fetch path handles 404s. This callback exists purely
+            # to make the failure mode visible at start instead of
+            # mid-fetch. `is_deleted: True` rows count as missing
+            # too — a soft-deleted file is functionally unavailable.
+            async def _check_missing_paths(paths: list) -> set:
+                if not paths:
+                    return set()
+                cur = db.files.find(
+                    {"storage_path": {"$in": paths}, "is_deleted": {"$ne": True}},
+                    {"_id": 0, "storage_path": 1},
+                )
+                existing = {row["storage_path"] async for row in cur}
+                return set(paths) - existing
+
             pdf_bytes = await _build_book_pdf(
                 book, get_object, public_base_url=base_url, progress_cb=_on_stage,
                 start_page=applied_start if is_range else None,
@@ -845,6 +863,7 @@ async def _run_pdf_job(
                 # print-ready. PDF/X conversion still happens on top when
                 # the user toggles Print-ready.
                 pdfx_bleed=True,
+                path_existence_check=_check_missing_paths,
             )
         # Post-process to PDF/X-1a (CMYK, embedded fonts, OutputIntent) if
         # the caller requested a print-ready file. Runs only when the toggle
@@ -1424,24 +1443,76 @@ async def upload_image(file: UploadFile = File(...), book_id: Optional[str] = Fo
     content_type = file.content_type or MIME_TYPES.get(ext, "application/octet-stream")
     if not content_type.startswith("image/"):
         raise HTTPException(400, "Only image uploads are supported")
-    path = f"{APP_NAME}/uploads/{uuid.uuid4()}.{ext}"
     data = await file.read()
     if len(data) > 10 * 1024 * 1024:
         raise HTTPException(413, "File too large (max 10MB)")
-    result = put_object(path, data, content_type)
-    canonical_path = result["path"]
-    # Probe the image's pixel dimensions so the preflight DPI check
-    # (Phase 1.3) can warn about low-resolution uploads at render time
-    # without having to re-fetch the bytes from object storage.
-    img_w = img_h = None
+
+    # ── PRE-STORAGE VALIDATION ──────────────────────────────────────────
+    # Three checks BEFORE we hit object storage, so corrupt / fake-image
+    # uploads never land in S3 and never waste a storage round-trip.
+    # User-facing error messages are intentionally plain English (no
+    # technical jargon, no exception text) so the toast in the editor
+    # explains what to do next.
+
+    # 1. Zero-byte upload — the most common cause of a "looks like an
+    #    image but the pipeline wedges" downstream bug. Catch early.
+    if len(data) == 0:
+        raise HTTPException(
+            400, "The uploaded file is empty. Please choose a real image file.",
+        )
+
+    # 2. Pillow verify() — confirms the bytes really are a parseable
+    #    image. Catches: truncated downloads, files with wrong extension
+    #    (e.g. a .docx renamed to .png), corrupt files, and arbitrary
+    #    text files renamed to .png/.jpg. verify() CLOSES the file
+    #    object, so we have to re-open for the dimension read below.
+    try:
+        from PIL import Image
+        with Image.open(io.BytesIO(data)) as probe:
+            probe.verify()
+    except Exception as e:
+        logging.getLogger(__name__).info(
+            "upload_image: rejected %s (verify failed: %s)",
+            file.filename, type(e).__name__,
+        )
+        raise HTTPException(
+            400,
+            "This file appears to be corrupted or is not a valid image. "
+            "Please try uploading it again.",
+        )
+
+    # 3. Real pixel dimensions — verify() passes for some files (notably
+    #    SVGs treated as raster, certain GIF variants) that report a
+    #    zero-sized canvas. A zero-dimension image would later wedge the
+    #    PDF export pipeline because Cairo can't lay out a 0×0 region.
     try:
         from PIL import Image
         with Image.open(io.BytesIO(data)) as im:
             img_w, img_h = im.size
-    except Exception as e:
-        logging.getLogger(__name__).warning(
-            "upload_image: could not probe dims for %s: %s", path, e,
+    except Exception:
+        # If verify() succeeded but a second open fails, treat the same
+        # as a corrupt file — the user shouldn't have to debug a
+        # Pillow internal error.
+        raise HTTPException(
+            400,
+            "This file appears to be corrupted or is not a valid image. "
+            "Please try uploading it again.",
         )
+    if not img_w or not img_h or img_w <= 0 or img_h <= 0:
+        raise HTTPException(
+            400,
+            "This image has no pixel dimensions and can't be used in a "
+            "book layout. Please try a different file.",
+        )
+    # ── END VALIDATION ─────────────────────────────────────────────────
+
+    path = f"{APP_NAME}/uploads/{uuid.uuid4()}.{ext}"
+    result = put_object(path, data, content_type)
+    canonical_path = result["path"]
+    # width_px / height_px are now ALWAYS populated (validation above
+    # guarantees both >0). The preflight DPI check (Phase 1.3) relies
+    # on these fields being non-null to compute effective DPI without
+    # re-fetching bytes from storage.
     await db.files.insert_one({
         "id": str(uuid.uuid4()),
         "storage_path": canonical_path,
@@ -1545,7 +1616,13 @@ async def list_assets(book_id: Optional[str] = None):
         query["book_id"] = book_id
     docs = await db.files.find(
         query,
-        {"_id": 0, "id": 1, "storage_path": 1, "original_filename": 1, "content_type": 1, "size": 1, "created_at": 1, "book_id": 1},
+        {"_id": 0, "id": 1, "storage_path": 1, "original_filename": 1,
+         "content_type": 1, "size": 1, "created_at": 1, "book_id": 1,
+         # Dimensions are now guaranteed populated at upload time
+         # (iteration 54 validation). Exposing them here lets the
+         # editor render correctly-proportioned placeholder boxes
+         # during drag-drop without having to fetch the image first.
+         "width_px": 1, "height_px": 1},
     ).sort("created_at", -1).to_list(2000)
     return [
         {
@@ -1555,6 +1632,8 @@ async def list_assets(book_id: Optional[str] = None):
             "original_filename": d.get("original_filename"),
             "content_type": d.get("content_type"),
             "size": d.get("size"),
+            "width_px": d.get("width_px"),
+            "height_px": d.get("height_px"),
             "created_at": d.get("created_at"),
             "book_id": d.get("book_id"),
         }
