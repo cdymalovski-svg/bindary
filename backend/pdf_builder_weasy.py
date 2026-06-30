@@ -221,6 +221,7 @@ async def build_book_pdf(
     pdfx_bleed: bool = True,
     dpi: int = 300,
     path_existence_check: Optional[Callable[[list], "asyncio.Future"]] = None,
+    summary_cb: Optional[Callable[[str], None]] = None,
 ) -> bytes:
     """Render the whole book (or a page slice) to PDF via WeasyPrint.
 
@@ -678,10 +679,11 @@ async def build_book_pdf(
         (render_elapsed_s * 1000) / page_count if page_count else 0.0
     )
     total_elapsed_s = prefetch_elapsed_s + render_elapsed_s
-    log.info(
+    summary_text = (
         "WeasyPrint JOB SUMMARY: total=%.2fs | prefetch=%.2fs (%d imgs, "
         "avg %.0fms/img, %d blank-fallbacks) | render=%.2fs (%d pages, "
-        "avg %.0fms/page, %d placeholders) | fonts: %d used, %d missing%s",
+        "avg %.0fms/page, %d placeholders) | fonts: %d used, %d missing%s"
+    ) % (
         total_elapsed_s,
         prefetch_elapsed_s, prefetch_total,
         (prefetch_elapsed_s * 1000) / prefetch_total if prefetch_total else 0.0,
@@ -694,6 +696,15 @@ async def build_book_pdf(
         # miss otherwise. When zero, omit so the line stays scannable.
         f" {sorted(missing_font_families)}" if missing_font_families else "",
     )
+    log.info(summary_text)
+    # Persist the summary onto the pdf_jobs doc via the caller-supplied
+    # callback. Cross-pod safe — the recent-exports admin UI reads from
+    # MongoDB, so any pod can see any export's summary line.
+    if summary_cb:
+        try:
+            summary_cb(summary_text)
+        except Exception:
+            pass
     # Phase 3.3 — stamp Info dict (Title/Author/ISBN/Publisher) AFTER
     # all upstream PDF rewrites have settled. Doing this last guarantees
     # no downstream step can clobber the metadata.  Idempotent and

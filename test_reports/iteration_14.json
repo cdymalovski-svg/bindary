@@ -1,0 +1,40 @@
+{
+  "summary": "Verified DB-only admin storage audit, recent-exports panel, and per-book file-health pre-flight. New backend test file test_audit_recent_health.py (8 tests) passes alongside the existing test_admin_storage_audit.py (8) and test_upload_validation.py (5) — 21/21 green for the targeted iteration-14 surface. Broad pytest run: 179 passed, 12 pre-existing failures (all in test_assets_api.py / test_books_api.py / test_assets_book_scope_iter10.py / test_pdf_export.py where hand-crafted PNG_BYTES fail strict Pillow validation — flagged as known in the request). Frontend UI: login, More dropdown, Storage Audit dialog, and Recent Exports dialog all work end-to-end against the public preview URL.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "RecentExportsDialog", "issues": ["Dialog copy says 'Cross-pod visibility' instead of literal 'scope: cluster-wide' as the spec requested. The underlying API does return scope:'cluster-wide' so this is purely a UX-copy preference, not a bug."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_audit_recent_health.py",
+    "/app/backend/tests/test_admin_storage_audit.py",
+    "/app/backend/tests/test_upload_validation.py",
+    "/app/test_reports/pytest/iter14_new_results.xml",
+    "/app/test_reports/pytest/iter14_results.xml"
+  ],
+  "action_items": [
+    "Optional: surface the literal phrase 'cluster-wide' (or 'cluster-wide visibility') in RecentExportsDialog so admins recognise the spec wording.",
+    "Pre-existing: 12 backend tests use hand-crafted PNG bytes that fail Pillow validation (test_assets_api.py, test_books_api.py, test_assets_book_scope_iter10.py, test_pdf_export.py::test_pdf_export_embeds_image_blocks). Rewrite them to use Pillow-generated PNGs when bandwidth allows. NOT new — explicitly called out by main agent."
+  ],
+  "critical_code_review_comments": [
+    "server.py 1742-1830: admin_storage_audit uses 2 indexed Mongo queries (db.books + db.files) with projections — O(n) memory but no I/O. Safe, fast, no S3 fetches. ✓",
+    "server.py 1833-1857: admin_recent_exports projects only display fields, ISO-stringifies datetimes — no _id leak. ✓",
+    "server.py 1860-1917: file-health pre-flight queries db.files with $in for unique paths only (deduped). Auth check before book lookup uses request.state.user_id which is set by the existing /api/* middleware. ✓",
+    "Editor.jsx 1203-1228: pre-flight calls /file-health and aborts setExporting(true) when body.problems.length > 0; uses options.__skipHealthCheck flag to avoid looping when user clicks 'Export anyway'. Good defensive code (silent fall-through on network/HTTP failure so the pre-flight is advisory not blocking). ✓",
+    "StorageAuditDialog.jsx and RecentExportsDialog.jsx read token from localStorage.getItem('bindery_token') — consistent with the rest of the app. ✓",
+    "Live storage audit on prod DB returned 341 file_records / 10 paths referenced — 44 needs_reupload (legacy uploads pre-iter-54) and several orphaned paths flagged. The audit is doing exactly what's advertised."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_audit_recent_health.py (new — 8 tests covering audit shape/idempotency/auth, recent-exports shape/auth, file-health clean/404/unauth)"
+  ],
+  "success_rate": { "backend": "94% (179/191 broad; 21/21 new+targeted)", "frontend": "verified login / Storage Audit dialog / Recent Exports dialog flows" },
+  "test_credentials": "Admin chris@dcsbuilt.com.au / Redcar01 (from /app/memory/test_credentials.md). Login produced a valid JWT in localStorage.bindery_token (224 chars).",
+  "seed_data_creation": "No new seed data created in this iteration. Used existing book 'Belinda and the Great Playground Challenge' (id=dc988a6f-5595-4d94-a959-d7e6affecf51) for UI exercises.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend new endpoints proven via test_audit_recent_health.py (8 tests). Conftest auto-injects admin Bearer token on every requests.Session — pass an explicit `headers={'Authorization': ''}` per-call to test anonymous behaviour (session-level header is bypassed by the patch). Frontend Export PDF button opens an ExportPopover; the actual /file-health pre-flight fires inside that popover's Export action (Editor.jsx onExportPdf). Live DB currently has 44 'needs_reupload' images so a real export on the seeded book WILL trigger the FileHealthWarningDialog — useful for follow-up UI tests of the Cancel / Export-anyway flow.",
+  "rca of the issue": "n/a — no new defects. The 12 broad-suite failures are pre-existing PIL validation gaps in test fixtures, unrelated to this iteration's changes."
+}

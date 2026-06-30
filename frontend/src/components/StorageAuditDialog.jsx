@@ -1,17 +1,30 @@
 /**
- * Admin Storage Audit modal.
+ * Admin Storage Audit modal — DB-only, fast.
  *
- * Calls POST /api/admin/storage-audit (admin-gated). Walks every
- * db.files row, re-probes the bytes from object storage, and reports
- * three lists: `fixed` (rows that were missing width_px/height_px and
- * have now been backfilled), `bad` (Pillow can't open OR zero dims),
- * `orphaned` (db.files row references a path that no longer exists in
- * storage). Each bad/orphaned entry carries the book title that still
- * references the path, so the admin can find broken images quickly.
+ * Calls POST /api/admin/storage-audit (admin-gated). The backend
+ * issues two MongoDB queries (db.files + db.books) — no object-storage
+ * I/O, no Pillow decode — so the call returns in milliseconds even on
+ * large libraries. This replaces the earlier audit that timed out in
+ * production behind CDN edge proxies (HTTP 524).
  *
- * The endpoint never deletes anything — it only updates dimensions on
- * `fixed` rows. The admin decides whether to clean up bad/orphaned
- * rows through a separate UI (not built here).
+ * Response shape:
+ *   {
+ *     needs_reupload: [{ id, storage_path, filename, book_title, page_no }],
+ *     orphaned:       [{ storage_path, filename, book_title, page_no }],
+ *     healthy_count: int,
+ *     total_referenced_paths: int,
+ *     total_file_records: int,
+ *     ran_at, ran_by,
+ *   }
+ *
+ *   - needs_reupload: db.files rows whose width_px or height_px is
+ *     missing/zero. These were uploaded before iteration 54's mandatory
+ *     validation; the preflight DPI check silently skips them.
+ *     Fix: book owner re-uploads through the validating endpoint.
+ *   - orphaned: storage_path referenced by a book's image block that
+ *     has NO matching row in db.files (or row is soft-deleted). At
+ *     export time the image falls back to a blank PNG.
+ *   - healthy_count: db.files rows with valid dimensions.
  *
  * Download report: serialises the latest run as plain text (one line
  * per entry, grouped by section) so the admin can paste it into a
@@ -67,28 +80,24 @@ export default function StorageAuditDialog({ open, onOpenChange }) {
     const lines = [];
     lines.push(`Bindery storage audit — ${report.ran_at || 'unknown time'}`);
     lines.push(`Ran by: ${report.ran_by || 'unknown'}`);
-    lines.push(`Total files scanned: ${report.total_scanned}`);
+    lines.push(`Total file records:      ${report.total_file_records}`);
+    lines.push(`Total referenced paths:  ${report.total_referenced_paths}`);
+    lines.push(`Healthy file records:    ${report.healthy_count}`);
     lines.push('');
-    lines.push(`FIXED (${(report.fixed || []).length}) — dimensions backfilled`);
+    lines.push(`NEEDS RE-UPLOAD (${(report.needs_reupload || []).length}) — missing image dimensions`);
     lines.push('-'.repeat(60));
-    for (const f of (report.fixed || [])) {
-      lines.push(`  ${f.original_filename || f.storage_path}  →  ${f.width_px}×${f.height_px}px`);
+    for (const f of (report.needs_reupload || [])) {
+      lines.push(`  ${f.filename || f.storage_path}`);
+      lines.push(`    book : ${f.book_title || '(not referenced by any book)'}`);
+      lines.push(`    page : ${f.page_no != null ? f.page_no : '—'}`);
     }
     lines.push('');
-    lines.push(`BAD FILES (${(report.bad || []).length}) — cannot be opened or zero dimensions`);
-    lines.push('-'.repeat(60));
-    for (const f of (report.bad || [])) {
-      lines.push(`  ${f.original_filename || f.storage_path}`);
-      lines.push(`    error : ${f.decode_error}`);
-      lines.push(`    book  : ${f.book_title || '(not referenced by any book)'}`);
-    }
-    lines.push('');
-    lines.push(`ORPHANED RECORDS (${(report.orphaned || []).length}) — file missing from storage`);
+    lines.push(`ORPHANED PATHS (${(report.orphaned || []).length}) — referenced by a book but no db.files row`);
     lines.push('-'.repeat(60));
     for (const f of (report.orphaned || [])) {
-      lines.push(`  ${f.original_filename || f.storage_path}`);
-      lines.push(`    error : ${f.fetch_error}`);
-      lines.push(`    book  : ${f.book_title || '(not referenced by any book)'}`);
+      lines.push(`  ${f.filename || f.storage_path}`);
+      lines.push(`    book : ${f.book_title || '(unknown)'}`);
+      lines.push(`    page : ${f.page_no != null ? f.page_no : '—'}`);
     }
     const blob = new Blob([lines.join('\n') + '\n'], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
@@ -110,9 +119,10 @@ export default function StorageAuditDialog({ open, onOpenChange }) {
         <DialogHeader>
           <DialogTitle className="font-serif text-2xl text-ink">Storage audit</DialogTitle>
           <DialogDescription className="text-sm text-ink-soft">
-            Scans every uploaded image, backfills missing dimensions, and
-            reports bad or orphaned files. Read-only — the audit never
-            deletes anything. Safe to run as often as needed.
+            Cross-references every image record against every book in the
+            database. Pure MongoDB — no object-storage reads — so the audit
+            completes in milliseconds and is safe to run as often as needed.
+            Read-only; the audit never deletes or modifies anything.
           </DialogDescription>
         </DialogHeader>
 
@@ -157,62 +167,62 @@ export default function StorageAuditDialog({ open, onOpenChange }) {
             className="overflow-y-auto flex-1 space-y-4 pr-1 text-sm"
             data-testid="storage-audit-report"
           >
-            <div className="text-xs text-ink-mute italic">
-              Scanned {report.total_scanned} file{report.total_scanned === 1 ? '' : 's'}
-              {report.ran_at ? ` at ${new Date(report.ran_at).toLocaleString()}` : ''}.
+            <div
+              className="text-xs text-ink-mute italic"
+              data-testid="storage-audit-summary"
+            >
+              {report.total_file_records} file record
+              {report.total_file_records === 1 ? '' : 's'} ·{' '}
+              {report.total_referenced_paths} path
+              {report.total_referenced_paths === 1 ? '' : 's'} referenced in books
+              {report.ran_at ? ` · ${new Date(report.ran_at).toLocaleString()}` : ''}
             </div>
 
             <Section
-              title="Fixed"
-              count={(report.fixed || []).length}
-              icon={<CheckCircle2 className="w-4 h-4 text-green-700" />}
-              empty="Nothing to backfill — every file already has dimensions."
-              testid="storage-audit-section-fixed"
+              title="Needs re-upload"
+              count={(report.needs_reupload || []).length}
+              icon={<AlertCircle className="w-4 h-4 text-amber-700" />}
+              empty="Every file record has valid width/height dimensions."
+              testid="storage-audit-section-needs-reupload"
             >
-              {(report.fixed || []).map((f) => (
-                <li key={f.id} className="py-1 border-b border-rule/40 last:border-0">
-                  <div className="font-mono text-xs text-ink">{f.original_filename || f.storage_path}</div>
-                  <div className="text-xs text-ink-mute">
-                    dimensions recovered: {f.width_px}×{f.height_px}px
-                  </div>
-                </li>
-              ))}
-            </Section>
-
-            <Section
-              title="Bad files"
-              count={(report.bad || []).length}
-              icon={<AlertCircle className="w-4 h-4 text-red-700" />}
-              empty="No corrupt or zero-dimension files found."
-              testid="storage-audit-section-bad"
-            >
-              {(report.bad || []).map((f) => (
-                <li key={f.id} className="py-1 border-b border-rule/40 last:border-0">
-                  <div className="font-mono text-xs text-ink">{f.original_filename || f.storage_path}</div>
-                  <div className="text-xs text-red-700">{f.decode_error}</div>
+              {(report.needs_reupload || []).map((f) => (
+                <li key={f.id || f.storage_path} className="py-1 border-b border-rule/40 last:border-0">
+                  <div className="font-mono text-xs text-ink">{f.filename || f.storage_path}</div>
                   <div className="text-xs text-ink-soft italic">
-                    book: {f.book_title || '(not referenced by any book)'}
+                    book: {f.book_title || '(not referenced)'} · page {f.page_no != null ? f.page_no : '—'}
                   </div>
                 </li>
               ))}
             </Section>
 
             <Section
-              title="Orphaned records"
+              title="Orphaned"
               count={(report.orphaned || []).length}
-              icon={<FileQuestion className="w-4 h-4 text-amber-700" />}
-              empty="No orphaned database rows — every record points to a real file."
+              icon={<FileQuestion className="w-4 h-4 text-red-700" />}
+              empty="No orphaned image references — every block points to a real file record."
               testid="storage-audit-section-orphaned"
             >
               {(report.orphaned || []).map((f) => (
-                <li key={f.id} className="py-1 border-b border-rule/40 last:border-0">
-                  <div className="font-mono text-xs text-ink">{f.original_filename || f.storage_path}</div>
-                  <div className="text-xs text-amber-700">{f.fetch_error}</div>
+                <li key={f.storage_path} className="py-1 border-b border-rule/40 last:border-0">
+                  <div className="font-mono text-xs text-ink">{f.filename || f.storage_path}</div>
                   <div className="text-xs text-ink-soft italic">
-                    book: {f.book_title || '(not referenced by any book)'}
+                    book: {f.book_title || '(unknown)'} · page {f.page_no != null ? f.page_no : '—'}
                   </div>
                 </li>
               ))}
+            </Section>
+
+            <Section
+              title="Healthy"
+              count={report.healthy_count || 0}
+              icon={<CheckCircle2 className="w-4 h-4 text-green-700" />}
+              empty="No healthy files yet — upload an image to see this populate."
+              testid="storage-audit-section-healthy"
+            >
+              <li className="py-1 text-xs text-ink-mute italic">
+                {report.healthy_count} file record{report.healthy_count === 1 ? '' : 's'} with valid dimensions
+                — not listed individually.
+              </li>
             </Section>
           </div>
         )}

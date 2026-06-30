@@ -1,16 +1,24 @@
 /**
- * Admin Recent Exports modal.
+ * Admin Recent Exports modal — cluster-wide DB query.
  *
  * Calls GET /api/admin/recent-exports (admin-gated). Returns up to the
- * last 20 JOB SUMMARY log lines emitted by the PDF render pipeline on
- * this pod. Each line carries phase-split timings + fallback counts +
- * missing-font list — the same forensic data we ship to supervisor.
+ * last 20 PDF jobs from the shared `db.pdf_jobs` Mongo collection —
+ * cross-pod safe (any pod can see any export's status + summary).
  *
- * Multi-pod caveat: each backend process has its own ring buffer, so
- * a hit may land on a pod with a sparser history than another. The
- * backend tags the response with `scope: "this-pod-only"` and we
- * surface that in the UI so the admin isn't surprised when refreshing
- * shows different rows.
+ * Response shape:
+ *   {
+ *     scope: "cluster-wide",
+ *     max: 20,
+ *     entries: [
+ *       { job_id, book_id, status, error, stage,
+ *         filename, size, summary, created_at, finished_at }
+ *     ]
+ *   }
+ *
+ *   `summary` is the WeasyPrint "JOB SUMMARY: total=…" line emitted at
+ *   the end of each render — the same forensic data we ship to
+ *   supervisor logs, now also persisted onto the job doc so cross-pod
+ *   visibility works without a centralised log aggregator.
  */
 import { useState } from 'react';
 import {
@@ -21,7 +29,26 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { Loader2, RefreshCw } from 'lucide-react';
+import { Loader2, RefreshCw, CheckCircle2, AlertCircle } from 'lucide-react';
+
+function fmtSize(bytes) {
+  if (bytes == null) return '—';
+  const mb = bytes / (1024 * 1024);
+  if (mb >= 1) return `${mb.toFixed(2)} MB`;
+  const kb = bytes / 1024;
+  return `${kb.toFixed(0)} KB`;
+}
+
+function fmtDuration(startIso, endIso) {
+  if (!startIso || !endIso) return '—';
+  try {
+    const ms = new Date(endIso).getTime() - new Date(startIso).getTime();
+    if (!Number.isFinite(ms) || ms < 0) return '—';
+    return `${(ms / 1000).toFixed(1)}s`;
+  } catch {
+    return '—';
+  }
+}
 
 export default function RecentExportsDialog({ open, onOpenChange }) {
   const [loading, setLoading] = useState(false);
@@ -66,9 +93,8 @@ export default function RecentExportsDialog({ open, onOpenChange }) {
         <DialogHeader>
           <DialogTitle className="font-serif text-2xl text-ink">Recent exports</DialogTitle>
           <DialogDescription className="text-sm text-ink-soft">
-            Last 20 PDF render summaries from this backend process. Each
-            line shows total time, prefetch vs render breakdown, fallback
-            counts, and any missing fonts. Per-pod scope.
+            Last 20 PDF jobs from the shared <code className="font-mono text-xs">pdf_jobs</code> collection.
+            Cross-pod visibility — any backend pod can see any export&apos;s status, size, and JOB SUMMARY line.
           </DialogDescription>
         </DialogHeader>
 
@@ -84,8 +110,8 @@ export default function RecentExportsDialog({ open, onOpenChange }) {
             Refresh
           </Button>
           {data && (
-            <span className="text-xs text-ink-mute italic">
-              scope: {data.scope || 'this-pod-only'}, showing {(data.entries || []).length} of max {data.max || 20}
+            <span className="text-xs text-ink-mute italic" data-testid="recent-exports-scope">
+              scope: {data.scope || 'cluster-wide'} · showing {(data.entries || []).length} of max {data.max || 20}
             </span>
           )}
         </div>
@@ -101,28 +127,62 @@ export default function RecentExportsDialog({ open, onOpenChange }) {
 
         {data && (
           <div
-            className="overflow-y-auto flex-1 space-y-1 pr-1"
+            className="overflow-y-auto flex-1 space-y-2 pr-1"
             data-testid="recent-exports-list"
           >
             {(data.entries || []).length === 0 ? (
-              <p className="text-sm text-ink-mute italic">
-                No exports captured on this pod yet. Render a PDF to populate this list.
+              <p className="text-sm text-ink-mute italic" data-testid="recent-exports-empty">
+                No exports recorded yet. Render a PDF to populate this list.
               </p>
             ) : (
-              (data.entries || []).map((e, i) => (
-                <div key={i} className="border-b border-rule/40 last:border-0 py-2">
-                  <div className="text-[10px] text-ink-mute uppercase tracking-wider">
-                    {new Date(e.ts).toLocaleString()} · {e.level}
-                  </div>
-                  <pre className="font-mono text-xs text-ink whitespace-pre-wrap break-all">
-                    {e.message}
-                  </pre>
-                </div>
+              (data.entries || []).map((e) => (
+                <ExportRow key={e.job_id} entry={e} />
               ))
             )}
           </div>
         )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+function ExportRow({ entry }) {
+  const ok = entry.status === 'ready';
+  return (
+    <div
+      className="border border-rule/60 rounded-sm px-3 py-2 bg-paper-soft"
+      data-testid={`recent-exports-row-${entry.job_id}`}
+    >
+      <div className="flex items-center gap-2 text-xs">
+        {ok ? (
+          <CheckCircle2 className="w-4 h-4 text-green-700" />
+        ) : (
+          <AlertCircle className="w-4 h-4 text-red-700" />
+        )}
+        <span className="font-semibold text-ink">{entry.status}</span>
+        <span className="text-ink-mute">·</span>
+        <span className="font-mono text-ink-soft">{entry.filename || '(no file)'}</span>
+        <span className="text-ink-mute">·</span>
+        <span className="text-ink-soft">{fmtSize(entry.size)}</span>
+        <span className="text-ink-mute">·</span>
+        <span className="text-ink-soft">{fmtDuration(entry.created_at, entry.finished_at)}</span>
+        <span className="ml-auto text-[10px] text-ink-mute">
+          {entry.created_at ? new Date(entry.created_at).toLocaleString() : '—'}
+        </span>
+      </div>
+      {entry.error && (
+        <div className="mt-1 font-mono text-xs text-red-700 whitespace-pre-wrap break-all">
+          error: {entry.error}
+        </div>
+      )}
+      {entry.summary && (
+        <pre className="mt-1 font-mono text-xs text-ink whitespace-pre-wrap break-all">
+          {entry.summary}
+        </pre>
+      )}
+      {!entry.summary && !entry.error && entry.stage && (
+        <div className="mt-1 font-mono text-xs text-ink-soft">stage: {entry.stage}</div>
+      )}
+    </div>
   );
 }

@@ -63,6 +63,7 @@ import CompliancePanel from '@/components/CompliancePanel';
 import CoverSpreadPreview from '@/components/CoverSpreadPreview';
 import StorageAuditDialog from '@/components/StorageAuditDialog';
 import RecentExportsDialog from '@/components/RecentExportsDialog';
+import FileHealthWarningDialog from '@/components/FileHealthWarningDialog';
 import { useAuth } from '@/auth/AuthContext';
 
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -160,6 +161,14 @@ export default function Editor() {
   // never modify book/page data.
   const [storageAuditOpen, setStorageAuditOpen] = useState(false);
   const [recentExportsOpen, setRecentExportsOpen] = useState(false);
+  // File-health pre-flight: holds the `problems` list returned by
+  // GET /api/books/{id}/file-health when the user clicks Export. When
+  // non-null AND non-empty, the FileHealthWarningDialog shows and the
+  // user must confirm before the actual PDF job is started. `pending`
+  // captures the (range, options) args of the original Export call so
+  // we can resume after confirmation.
+  const [fileHealthProblems, setFileHealthProblems] = useState(null);
+  const [pendingExport, setPendingExport] = useState(null);
   const { user: authUser } = useAuth();
   const isAdmin = authUser?.role === 'admin';
   // On window resize, snap drawers to "open" once we cross into lg+. Below
@@ -1185,6 +1194,39 @@ export default function Editor() {
     const dpiRaw = parseInt(options?.dpi, 10);
     const dpi = dpiRaw === 450 || dpiRaw === 600 ? dpiRaw : 300;
     if (!book) return;
+
+    // Pre-flight: ask the backend whether any image references in this
+    // book are missing or have no dimensions. Skip the check ONLY when
+    // the user has just acknowledged the warning ("Export anyway") —
+    // signalled by options.__skipHealthCheck. Cover-spread exports use
+    // only the cover page so the same per-book check is still valid.
+    if (!options?.__skipHealthCheck) {
+      try {
+        const BASE = process.env.REACT_APP_BACKEND_URL;
+        const token = (() => {
+          try { return localStorage.getItem('bindery_token'); } catch { return null; }
+        })();
+        const r = await fetch(`${BASE}/api/books/${book.id}/file-health`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        if (r.ok) {
+          const body = await r.json();
+          if (body && Array.isArray(body.problems) && body.problems.length > 0) {
+            // Surface the warning dialog; the user decides whether to
+            // proceed. The dialog's "Export anyway" handler re-invokes
+            // onExportPdf with __skipHealthCheck so we don't loop.
+            setFileHealthProblems(body.problems);
+            setPendingExport({ range, options });
+            return;
+          }
+        }
+        // r.ok === false: silent fall-through — pre-flight is advisory.
+        // We don't block the export on a failed health-check call.
+      } catch {
+        // Network error talking to /file-health — also advisory, fall
+        // through to the regular export path.
+      }
+    }
     setExporting(true);
     const toastId = 'pdf-export';
     let kindLabel;
@@ -1954,6 +1996,22 @@ export default function Editor() {
             />
           </>
         )}
+        <FileHealthWarningDialog
+          open={fileHealthProblems !== null}
+          problems={fileHealthProblems}
+          onCancel={() => {
+            setFileHealthProblems(null);
+            setPendingExport(null);
+          }}
+          onProceed={() => {
+            const p = pendingExport;
+            setFileHealthProblems(null);
+            setPendingExport(null);
+            if (p) {
+              onExportPdf(p.range, { ...(p.options || {}), __skipHealthCheck: true });
+            }
+          }}
+        />
         </div>
         {/* Pinned right cluster — never scrolls off-screen. */}
         <div className="flex items-center gap-2 px-3 border-l border-rule shrink-0 bg-paper h-full">
