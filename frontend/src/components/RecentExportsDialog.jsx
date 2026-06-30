@@ -94,7 +94,7 @@ export default function RecentExportsDialog({ open, onOpenChange }) {
           <DialogTitle className="font-serif text-2xl text-ink">Recent exports</DialogTitle>
           <DialogDescription className="text-sm text-ink-soft">
             Last 20 PDF jobs from the shared <code className="font-mono text-xs">pdf_jobs</code> collection.
-            Cross-pod visibility — any backend pod can see any export&apos;s status, size, and JOB SUMMARY line.
+            Cluster-wide visibility — any backend pod can see any export&apos;s status, size, and JOB SUMMARY line.
           </DialogDescription>
         </DialogHeader>
 

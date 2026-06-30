@@ -574,3 +574,45 @@ Static analysis pass; both endpoints stress-tested under live load; admin-only g
 - Pure-K text strict override (PostScript `defs.ps` colour map — currently blocked).
 - Refactor `Editor.jsx` for maintainability (P1 — >2500 lines).
 - Drag-to-reorder pages in the sidebar.
+
+
+## 2026-02-13 — Iteration 14: DB-only Storage Audit + pre-export file-health pre-flight
+**Goal**: Replace the previous Storage Audit (which timed out with HTTP 524 in production because it fetched image bytes from Object Storage during the scan) with a **pure MongoDB** audit that returns in milliseconds. Add a per-book pre-export check so users are warned BEFORE spending PDF render time on a book containing missing or no-dimension images.
+
+### Backend
+- **`POST /api/admin/storage-audit`** (`server.py` ~1732) — rewrote to issue exactly two indexed Mongo queries (`db.files` + `db.books`). No Pillow, no S3, no I/O. Returns `{ needs_reupload, orphaned, healthy_count, total_file_records, total_referenced_paths, ran_at, ran_by }`. Cross-references each problem path against the books that reference it so the UI can show book title + page number.
+- **`GET /api/admin/recent-exports`** (`server.py` ~1833) — replaced the previous in-process ring-buffer (which only saw a single pod's exports) with a `db.pdf_jobs` query returning up to the last 20 jobs with `scope: "cluster-wide"`. Admin-only.
+- **`GET /api/books/{book_id}/file-health`** (`server.py` ~1860) — per-book pre-flight returning `{ problems: [...], checked: N }`. Each problem is `{ storage_path, filename, page_no, issue: "missing"|"no_dimensions" }`. Available to any logged-in user for any book they own.
+- **`pdf_builder_weasy.build_book_pdf`** — added optional `summary_cb(text)` parameter. The PDF worker installs a callback that writes the JOB SUMMARY line onto the `pdf_jobs.summary` field so the Recent Exports panel can display it cross-pod.
+
+### Frontend
+- **`StorageAuditDialog.jsx`** — refactored to consume the new response shape (three categorised sections: Needs re-upload / Orphaned / Healthy with counts and download-report button).
+- **`RecentExportsDialog.jsx`** — refactored to consume DB-backed entries (`status`, `filename`, `size`, `summary`, `error`, `created_at`, `finished_at`) with a refresh button.
+- **`FileHealthWarningDialog.jsx`** (new) — alert-dialog listing missing/no-dimension images with Cancel and Export anyway buttons.
+- **`Editor.jsx onExportPdf`** — pre-flights `/file-health` before starting a PDF job. If problems are returned, shows the warning dialog instead of triggering the export. Export anyway re-invokes with `__skipHealthCheck: true` so the dialog never loops. Silent fall-through on network/HTTP failures keeps the pre-flight advisory rather than blocking.
+
+### Tests
+- **`test_admin_storage_audit.py`** rewritten end-to-end against the new contract (8 tests):
+  - Non-admin gets 403 on both endpoints.
+  - Admin gets 200 with documented shape (every key present even when empty).
+  - Synthetic db.files row with no width_px/height_px + book reference → categorised as `needs_reupload` with book_title + page_no attached.
+  - Synthetic orphan path referenced by a book → categorised as `orphaned`.
+  - Read-only invariant verified (no rows deleted).
+  - Recent Exports returns `scope: "cluster-wide"` and capped at 20.
+  - File-health on unknown book → 404.
+  - File-health on book with no image blocks → `problems: [], checked: 0`.
+  - File-health on book with missing + no-dim images → both surfaced with correct `issue` discriminator and 1-indexed `page_no`.
+- Testing agent (iteration 14) report: **21/21 targeted tests green; 179 passed in broad pytest run**; 12 pre-existing test_assets_api failures unrelated (hand-crafted PNG bytes failing strict Pillow validation introduced in iteration 54).
+
+### Deploy-ready
+- Live audit on production DB completes instantly and returns 341 file_records / 10 referenced paths / 44 needs_reupload / handful of orphans — exactly the data the audit is designed to surface.
+- No new routes are public; all admin endpoints continue to require admin role.
+- Backwards compatible with the existing PDF worker (summary_cb is optional).
+
+## Next Tasks
+- Refactor `Editor.jsx` (>2700 lines) into `EditorToolbar` / `EditorCanvas` / `PageSidebar` / `useAutoSave` hook (P1 maintainability).
+- Phase 3.2 — ICC profile picker (SWOP v2 vs Fogra39).
+- Phase 3.4 — Starter-pack templates.
+- WeasyPrint FontConfiguration startup registration (last ~1s/page perf gap).
+- Drag-to-reorder pages in the sidebar (P3).
+- Remaining keyboard shortcuts: ⌘D duplicate, ⌘] bring forward, Delete.
