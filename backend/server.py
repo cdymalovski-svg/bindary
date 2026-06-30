@@ -1730,10 +1730,181 @@ async def _lookup_book_for_path(storage_path: str) -> Optional[dict]:
 
 
 @api_router.post("/admin/storage-audit")
-async def admin_storage_audit(
-    user=Depends(_get_current_user_admin),
-    limit: int = 500,
-):
+async def admin_storage_audit(user=Depends(_get_current_user_admin)):
+    """DB-only audit — pure MongoDB queries, no object-storage I/O.
+    Returns immediately regardless of library size.
+
+    Categorises every image reference in the system into one of:
+
+      * `needs_reupload` — a db.files row whose width_px or height_px
+        is missing/null/zero. These were uploaded before iteration 54's
+        mandatory validation and have no recorded dimensions, so the
+        preflight DPI check silently skips them. The fix is for the
+        owner to re-upload through the new validating endpoint.
+      * `orphaned`       — a storage_path referenced by a book's image
+        block that has NO matching row in db.files (or the row is
+        soft-deleted). The image will fall back to blank-PNG at export.
+      * `healthy_count`  — count of db.files rows with valid dimensions.
+
+    For each flagged path we attach `original_filename` (falling back
+    to the basename of the storage path), `book_title`, and `page_no`
+    (1-indexed) so the report is immediately actionable without manual
+    cross-referencing.
+
+    Never deletes, never modifies, idempotent. Safe to run repeatedly."""
+    _require_admin(user)
+
+    # All books in one query — image paths live inside `pages[].blocks`.
+    books_cur = db.books.find({}, {"_id": 0, "id": 1, "title": 1, "pages": 1})
+    # path_index[storage_path] = (book_title, page_no)
+    path_index: dict[str, tuple[str, int]] = {}
+    async for b in books_cur:
+        for page_idx, page in enumerate(b.get("pages") or []):
+            for block in (page.get("blocks") or []):
+                if block.get("type") != "image":
+                    continue
+                p = block.get("image_path")
+                if p and p not in path_index:
+                    path_index[p] = (b.get("title") or "(untitled)", page_idx + 1)
+
+    # All non-deleted file records.
+    files_cur = db.files.find(
+        {"is_deleted": {"$ne": True}},
+        {"_id": 0, "id": 1, "storage_path": 1, "original_filename": 1,
+         "width_px": 1, "height_px": 1},
+    )
+    files_by_path: dict[str, dict] = {}
+    async for f in files_cur:
+        if f.get("storage_path"):
+            files_by_path[f["storage_path"]] = f
+
+    def _basename(path: str) -> str:
+        return (path or "").rsplit("/", 1)[-1] or path
+
+    # 1. needs_reupload — rows with missing/zero dimensions.
+    needs_reupload: list[dict] = []
+    healthy_count = 0
+    for path, row in files_by_path.items():
+        w, h = row.get("width_px"), row.get("height_px")
+        if not w or not h or w <= 0 or h <= 0:
+            book_title, page_no = path_index.get(path, (None, None))
+            needs_reupload.append({
+                "id": row.get("id"),
+                "storage_path": path,
+                "filename": row.get("original_filename") or _basename(path),
+                "book_title": book_title,
+                "page_no": page_no,
+            })
+        else:
+            healthy_count += 1
+
+    # 2. orphaned — paths referenced by a book but with no db.files row.
+    orphaned: list[dict] = []
+    for path, (book_title, page_no) in path_index.items():
+        if path not in files_by_path:
+            orphaned.append({
+                "storage_path": path,
+                "filename": _basename(path),
+                "book_title": book_title,
+                "page_no": page_no,
+            })
+
+    return {
+        "needs_reupload": needs_reupload,
+        "orphaned": orphaned,
+        "healthy_count": healthy_count,
+        "total_referenced_paths": len(path_index),
+        "total_file_records": len(files_by_path),
+        "ran_at": _now_iso(),
+        "ran_by": user.get("email"),
+    }
+
+
+@api_router.get("/admin/recent-exports")
+async def admin_recent_exports(user=Depends(_get_current_user_admin)):
+    """Last 20 completed PDF jobs from `db.pdf_jobs`, sorted newest first.
+    Multi-pod safe — reads the same shared collection every pod writes
+    to. Returns the JOB SUMMARY data persisted at the end of each
+    export plus the high-level job fields the UI displays."""
+    _require_admin(user)
+    cur = db.pdf_jobs.find(
+        {"status": {"$in": ["ready", "failed"]}},
+        {"_id": 0, "job_id": 1, "book_id": 1, "status": 1, "error": 1,
+         "created_at": 1, "finished_at": 1, "summary": 1, "stage": 1,
+         "filename": 1, "size": 1},
+    ).sort("created_at", -1).limit(20)
+    entries = []
+    async for j in cur:
+        # Convert datetime to ISO string for JSON serialisation.
+        for k in ("created_at", "finished_at"):
+            v = j.get(k)
+            if v is not None and not isinstance(v, str):
+                try:
+                    j[k] = v.isoformat()
+                except Exception:
+                    j[k] = str(v)
+        entries.append(j)
+    return {"scope": "cluster-wide", "max": 20, "entries": entries}
+
+
+@api_router.get("/books/{book_id}/file-health")
+async def book_file_health(book_id: str, request: Request):
+    """Per-book pre-export file-health check. Visible to any logged-in
+    user (the auth middleware already guards `/api/*` for them) — the
+    book owner has a right to know which of THEIR images are problematic
+    before they spend render time. Returns the same shape the export
+    flow's pre-flight warning consumes."""
+    if not getattr(request.state, "user_id", None):
+        raise HTTPException(401, "Authentication required")
+
+    book = await db.books.find_one({"id": book_id}, {"_id": 0, "pages": 1, "title": 1})
+    if not book:
+        raise HTTPException(404, "Book not found")
+
+    # Collect every (path, page_no) reference in the book.
+    refs: list[tuple[str, int]] = []
+    for page_idx, page in enumerate(book.get("pages") or []):
+        for block in (page.get("blocks") or []):
+            if block.get("type") == "image":
+                p = block.get("image_path")
+                if p:
+                    refs.append((p, page_idx + 1))
+
+    if not refs:
+        return {"problems": [], "checked": 0}
+
+    paths = list({p for p, _ in refs})
+    rows = await db.files.find(
+        {"storage_path": {"$in": paths}, "is_deleted": {"$ne": True}},
+        {"_id": 0, "storage_path": 1, "original_filename": 1,
+         "width_px": 1, "height_px": 1},
+    ).to_list(len(paths))
+    by_path = {r["storage_path"]: r for r in rows}
+
+    def _basename(path: str) -> str:
+        return (path or "").rsplit("/", 1)[-1] or path
+
+    problems: list[dict] = []
+    for path, page_no in refs:
+        row = by_path.get(path)
+        if row is None:
+            problems.append({
+                "storage_path": path,
+                "filename": _basename(path),
+                "page_no": page_no,
+                "issue": "missing",
+            })
+            continue
+        w, h = row.get("width_px"), row.get("height_px")
+        if not w or not h or w <= 0 or h <= 0:
+            problems.append({
+                "storage_path": path,
+                "filename": row.get("original_filename") or _basename(path),
+                "page_no": page_no,
+                "issue": "no_dimensions",
+            })
+
+    return {"problems": problems, "checked": len(refs)}
     """Walk up to `limit` non-deleted db.files rows (default 500, max
     2000), re-probe the bytes from object storage, and categorise:
 
