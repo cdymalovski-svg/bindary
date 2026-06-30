@@ -61,6 +61,9 @@ import HistoryDialog from '@/components/HistoryDialog';
 import ExportPopover from '@/components/ExportPopover';
 import CompliancePanel from '@/components/CompliancePanel';
 import CoverSpreadPreview from '@/components/CoverSpreadPreview';
+import StorageAuditDialog from '@/components/StorageAuditDialog';
+import RecentExportsDialog from '@/components/RecentExportsDialog';
+import { useAuth } from '@/auth/AuthContext';
 
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 
@@ -152,6 +155,13 @@ export default function Editor() {
   // to fire the dialogs from a DropdownMenuItem.
   const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
   const [templateDialogOpen, setTemplateDialogOpen] = useState(false);
+  // Admin-only diagnostics, shown in the More dropdown when the
+  // signed-in user has role==='admin'. Both modals are read-only and
+  // never modify book/page data.
+  const [storageAuditOpen, setStorageAuditOpen] = useState(false);
+  const [recentExportsOpen, setRecentExportsOpen] = useState(false);
+  const { user: authUser } = useAuth();
+  const isAdmin = authUser?.role === 'admin';
   // On window resize, snap drawers to "open" once we cross into lg+. Below
   // lg we don't auto-close — a user who explicitly opened the drawer on a
   // tablet keeps their view.
@@ -1878,6 +1888,32 @@ export default function Editor() {
               <Bookmark className="w-4 h-4 text-ink-soft" />
               <span>Save as template…</span>
             </DropdownMenuItem>
+            {/* Admin-only diagnostics — never rendered for non-admins
+                so the items aren't visible (matches the "admin user
+                can see Storage audit" requirement). The endpoints
+                also enforce 403 on the server side as defense in
+                depth — see /api/admin/* in server.py. */}
+            {isAdmin && (
+              <>
+                <div className="my-1 border-t border-rule/60" />
+                <DropdownMenuItem
+                  onSelect={(e) => { e.preventDefault(); setStorageAuditOpen(true); }}
+                  className="rounded-sm cursor-pointer gap-2"
+                  data-testid="more-menu-storage-audit"
+                >
+                  <span className="w-4 h-4 text-ink-soft text-center text-xs">⚐</span>
+                  <span>Storage audit…</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={(e) => { e.preventDefault(); setRecentExportsOpen(true); }}
+                  className="rounded-sm cursor-pointer gap-2"
+                  data-testid="more-menu-recent-exports"
+                >
+                  <span className="w-4 h-4 text-ink-soft text-center text-xs">≣</span>
+                  <span>Recent exports…</span>
+                </DropdownMenuItem>
+              </>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
         {/* Dialogs themselves — invisible until their respective state
@@ -1903,6 +1939,21 @@ export default function Editor() {
           onOpenChange={setTemplateDialogOpen}
           hideTrigger
         />
+        {/* Admin-only diagnostic modals — mounted unconditionally so
+            their state survives a dropdown close/reopen cycle, but
+            content only loads when their `open` flag flips true. */}
+        {isAdmin && (
+          <>
+            <StorageAuditDialog
+              open={storageAuditOpen}
+              onOpenChange={setStorageAuditOpen}
+            />
+            <RecentExportsDialog
+              open={recentExportsOpen}
+              onOpenChange={setRecentExportsOpen}
+            />
+          </>
+        )}
         </div>
         {/* Pinned right cluster — never scrolls off-screen. */}
         <div className="flex items-center gap-2 px-3 border-l border-rule shrink-0 bg-paper h-full">

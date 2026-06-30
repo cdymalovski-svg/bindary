@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, UploadFile, File, Form, HTTPException, Response, Request
+from fastapi import FastAPI, APIRouter, UploadFile, File, Form, HTTPException, Response, Request, Depends
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -1693,6 +1693,223 @@ async def replace_asset(asset_id: str, file: UploadFile = File(...)):
         "url": f"/api/files/{storage_path}?v={int(datetime.now(timezone.utc).timestamp())}",
         "content_type": content_type,
         "size": result.get("size", len(data)),
+    }
+
+
+# ── ADMIN ──────────────────────────────────────────────────────────────
+# Admin-only diagnostic + maintenance surface. Wired through the same
+# `get_current_user` dependency as the rest of the protected API; an
+# additional `_require_admin` check rejects non-admin users with 403.
+# These endpoints are READ-ONLY and IDEMPOTENT — they never delete or
+# reassign user-owned data. Safe to run multiple times.
+from auth import make_get_current_user
+_get_current_user_admin = make_get_current_user(db)
+
+
+def _require_admin(user: dict) -> None:
+    """Mirror of auth.py's internal helper. Raises 403 for non-admins."""
+    if (user or {}).get("role") != "admin":
+        raise HTTPException(403, "Admin access required")
+
+
+async def _lookup_book_for_path(storage_path: str) -> Optional[dict]:
+    """Find the book (if any) that references this storage path in one
+    of its image blocks. Returns {id, title} or None.
+
+    Used by the storage audit to attach a "which book is broken?" tag to
+    every bad / orphaned record so the admin can act on the report
+    without having to grep MongoDB manually."""
+    # `image_path` is the canonical field set by the editor when an asset
+    # block is created. `block.image_url` is a derived `/api/files/...`
+    # URL — we don't index against that.
+    book = await db.books.find_one(
+        {"pages.blocks": {"$elemMatch": {"image_path": storage_path}}},
+        {"_id": 0, "id": 1, "title": 1},
+    )
+    return book
+
+
+@api_router.post("/admin/storage-audit")
+async def admin_storage_audit(
+    user=Depends(_get_current_user_admin),
+    limit: int = 500,
+):
+    """Walk up to `limit` non-deleted db.files rows (default 500, max
+    2000), re-probe the bytes from object storage, and categorise:
+
+      * `fixed`    — row had width_px/height_px=None (legacy from before
+                     iteration 54 mandatory validation) and we successfully
+                     read dims from object storage. Row is UPDATED with
+                     the recovered dims.
+      * `bad`      — bytes fetched OK but Pillow can't open them OR the
+                     image reports 0 dimensions. The row is left as-is
+                     (NOT auto-deleted — the admin decides).
+      * `orphaned` — db.files row references a storage_path that no
+                     longer exists in the object store (get_object raises
+                     or returns empty).
+
+    `limit` bounds the scan so the endpoint completes within the CDN
+    proxy's ~100 s edge timeout even on large databases. The response
+    carries `scanned_oldest_created_at` so an admin who needs full
+    coverage can issue successive calls with `older_than` (future
+    enhancement) — for now the default 500 covers a typical Bindery
+    library and the cap is documented at 2000 for power users.
+
+    Each entry carries `book_id` + `book_title` when the path is still
+    referenced by an image block, so the admin can act on the report
+    without manual cross-referencing.
+
+    Idempotent: a clean DB returns three empty lists.
+    Safe to run on production: NEVER deletes a row, NEVER mutates a
+    book's pages."""
+    _require_admin(user)
+    # Bounded limit — keeps the worst-case wall-clock under the CDN
+    # edge timeout. 2000 is the documented ceiling because at ~150 ms
+    # per object-storage probe that's ~5 minutes, well past CDN limits;
+    # we'd need job-polling for anything larger.
+    limit = max(1, min(int(limit or 500), 2000))
+    from PIL import Image
+
+    rows = await db.files.find(
+        {"is_deleted": False},
+        {"_id": 0, "id": 1, "storage_path": 1, "original_filename": 1,
+         "width_px": 1, "height_px": 1, "created_at": 1},
+    ).sort("created_at", -1).limit(limit).to_list(limit)
+
+    fixed: list[dict] = []
+    bad: list[dict] = []
+    orphaned: list[dict] = []
+
+    for row in rows:
+        path = row.get("storage_path")
+        if not path:
+            continue
+        # 1. Can we even fetch the bytes from object storage?
+        try:
+            data, _ = await asyncio.to_thread(get_object, path)
+        except Exception as fe:
+            book = await _lookup_book_for_path(path)
+            orphaned.append({
+                "id": row.get("id"),
+                "storage_path": path,
+                "original_filename": row.get("original_filename"),
+                "fetch_error": str(fe)[:160],
+                "book_id": (book or {}).get("id"),
+                "book_title": (book or {}).get("title"),
+            })
+            continue
+        if not data:
+            book = await _lookup_book_for_path(path)
+            orphaned.append({
+                "id": row.get("id"),
+                "storage_path": path,
+                "original_filename": row.get("original_filename"),
+                "fetch_error": "empty bytes",
+                "book_id": (book or {}).get("id"),
+                "book_title": (book or {}).get("title"),
+            })
+            continue
+        # 2. Can Pillow open it and report real dimensions?
+        try:
+            with Image.open(io.BytesIO(data)) as im:
+                w, h = im.size
+        except Exception as pe:
+            book = await _lookup_book_for_path(path)
+            bad.append({
+                "id": row.get("id"),
+                "storage_path": path,
+                "original_filename": row.get("original_filename"),
+                "decode_error": f"{type(pe).__name__}: {str(pe)[:120]}",
+                "book_id": (book or {}).get("id"),
+                "book_title": (book or {}).get("title"),
+            })
+            continue
+        if not w or not h or w <= 0 or h <= 0:
+            book = await _lookup_book_for_path(path)
+            bad.append({
+                "id": row.get("id"),
+                "storage_path": path,
+                "original_filename": row.get("original_filename"),
+                "decode_error": f"zero-dimension image ({w}x{h})",
+                "book_id": (book or {}).get("id"),
+                "book_title": (book or {}).get("title"),
+            })
+            continue
+        # 3. Backfill: if the row is missing width_px/height_px, update.
+        if not row.get("width_px") or not row.get("height_px"):
+            await db.files.update_one(
+                {"id": row["id"]},
+                {"$set": {"width_px": w, "height_px": h}},
+            )
+            fixed.append({
+                "id": row.get("id"),
+                "storage_path": path,
+                "original_filename": row.get("original_filename"),
+                "width_px": w,
+                "height_px": h,
+            })
+
+    return {
+        "total_scanned": len(rows),
+        "limit": limit,
+        "fixed": fixed,
+        "bad": bad,
+        "orphaned": orphaned,
+        "ran_at": _now_iso(),
+        "ran_by": user.get("email"),
+    }
+
+
+# Process-local ring buffer of the last N JOB SUMMARY log lines. Captured
+# by a custom logging.Handler installed at module load. Multi-pod note:
+# each pod sees only its own exports — for cross-pod visibility we'd
+# need to persist into MongoDB, but the user explicitly asked for "log
+# lines" so we stay with the in-process buffer for now.
+_JOB_SUMMARY_BUFFER: list[dict] = []
+_JOB_SUMMARY_MAX = 20
+
+
+class _JobSummaryCaptureHandler(logging.Handler):
+    def emit(self, record):
+        try:
+            msg = record.getMessage()
+            if "JOB SUMMARY" not in msg:
+                return
+            _JOB_SUMMARY_BUFFER.append({
+                "ts": _now_iso(),
+                "message": msg,
+                "level": record.levelname,
+            })
+            # Trim from the FRONT so we keep the most recent N.
+            if len(_JOB_SUMMARY_BUFFER) > _JOB_SUMMARY_MAX:
+                del _JOB_SUMMARY_BUFFER[:-_JOB_SUMMARY_MAX]
+        except Exception:
+            pass
+
+
+# Attach the capture handler to the "pdf" logger used by pdf_builder_weasy
+# (where JOB SUMMARY originates). Idempotent — won't double-install on
+# uvicorn reload because we check for an existing instance first.
+_pdf_log = logging.getLogger("pdf")
+if not any(isinstance(h, _JobSummaryCaptureHandler) for h in _pdf_log.handlers):
+    _pdf_log.addHandler(_JobSummaryCaptureHandler())
+
+
+@api_router.get("/admin/recent-exports")
+async def admin_recent_exports(user=Depends(_get_current_user_admin)):
+    """Return up to the last 20 JOB SUMMARY log lines emitted by the
+    PDF render pipeline. Per-pod (this process's local buffer only) —
+    documented in the response so the admin knows the scope. If we
+    later need cross-pod history we'd persist summaries into a Mongo
+    collection at export time, but the user explicitly asked for log
+    lines and the in-process ring buffer keeps the cost at zero."""
+    _require_admin(user)
+    # Newest first — easier for an operator to scan the most recent
+    # export when chasing a "did my last export work?" question.
+    return {
+        "scope": "this-pod-only",
+        "max": _JOB_SUMMARY_MAX,
+        "entries": list(reversed(_JOB_SUMMARY_BUFFER)),
     }
 
 

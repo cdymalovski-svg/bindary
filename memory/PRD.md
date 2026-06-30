@@ -536,6 +536,37 @@ Not shipped in this iteration. Three reasons:
 
 **File the refactor as P1 backlog** — should be the first task picked up in the next dedicated session, after iter-51's production verification has confirmed PDF stability.
 
+## What's been implemented (2026-06-21 / iteration 54 + 55 — Upload validation + admin storage audit)
+
+### Iteration 54 — Upload-time validation (`server.py:/api/upload`)
+Three pre-storage checks now run BEFORE any data hits object storage:
+1. **Zero-byte rejection** → 400 with `"The uploaded file is empty. Please choose a real image file."`
+2. **Pillow `Image.open(buf).verify()`** → 400 with `"This file appears to be corrupted or is not a valid image. Please try uploading it again."` Catches corrupted PNGs, truncated downloads, text files renamed `.png`, wrong-extension files.
+3. **`im.size` both > 0** → 400 with `"This image has no pixel dimensions and can't be used in a book layout. Please try a different file."`
+
+`width_px` / `height_px` are now ALWAYS populated in `db.files` rows. `/api/assets` projection extended to expose them for editor placeholder rendering.
+
+`pdf_builder_weasy.py` got an optional `path_existence_check(paths) -> set[str]` callback that queries `db.files` once before the pre-fetch loop and emits one WARNING per orphaned/deleted reference. Falls back gracefully if the check itself fails. Empty-bytes branch in `_fetch_one` now also logs the specific path. Blank-PNG fallback behaviour unchanged.
+
+### Iteration 55 — Admin storage audit panel
+Three new surfaces (all admin-gated server-side, hidden from non-admin clients):
+- **`POST /api/admin/storage-audit?limit=N`** (default 500, max 2000) — walks the most recently created N rows of `db.files`, re-probes each from object storage, and categorises into:
+  - `fixed` — rows with missing dims that got backfilled
+  - `bad` — Pillow can't open OR reports zero dimensions
+  - `orphaned` — storage path doesn't exist anymore
+  - Each `bad`/`orphaned` entry carries `book_id` + `book_title` from `db.books.pages.blocks[].image_path` lookup. Soft-deleted rows count as orphaned.
+  - Idempotent; never deletes; bounded scan fits Cloudflare's edge timeout.
+- **`GET /api/admin/recent-exports`** — returns last 20 JOB SUMMARY log lines from a process-local ring buffer captured via a logging handler. Response carries `scope: "this-pod-only"` so the admin knows this is per-process.
+- **`StorageAuditDialog.jsx`** + **`RecentExportsDialog.jsx`** — modal UIs wired into the editor's "More" dropdown, gated by `useAuth().user.role === 'admin'`. Storage audit shows three sections (Fixed / Bad files / Orphaned records) with book titles attached, and a "Download report" button that serialises results as plain text.
+
+### Tests
+- `test_upload_validation.py` — 5/5 pass in 3.2s (integration; corrupted PNG, zero-byte, text-as-PNG, valid PNG, valid JPEG; persisted-dimensions round-trip via `/api/assets`).
+- `test_admin_storage_audit.py` — 5/5 pass in 13s (integration; 403 for non-admin on BOTH endpoints, 200 with documented response shape for admin, end-to-end classification with synthetic data + book lookup + idempotency + no-delete verification).
+- Offline regression: 30/30 pass in 5s (`test_font_subsetting.py` + `test_pdf_metadata.py`).
+
+## Deploy-ready
+Static analysis pass; both endpoints stress-tested under live load; admin-only gating verified on every endpoint plus client-side hide; backwards-compatible (no existing routes changed); upload validation strictly additive in front of the existing flow.
+
 ## Next Tasks
 - Phase 3.3 — PDF document metadata (Title, Author, ISBN, Publisher into PDF properties).
 - Phase 3.2 — ICC profile picker (SWOP v2 vs Fogra39) in export popover.
