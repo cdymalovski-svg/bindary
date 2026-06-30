@@ -1448,6 +1448,10 @@ export default function Editor() {
       const fallback = `${(book.title || 'book').replace(/[^a-z0-9-_]+/gi, '_')}.pdf`;
       const downloadName = serverFilename || fallback;
       const url = URL.createObjectURL(blob);
+      // Tracks whether we successfully invoked iframe.contentWindow.print().
+      // If false (Safari blocked us, or hard timeout opened a new tab),
+      // the success toast tells the user to press Cmd/Ctrl+P themselves.
+      let printIframeWorked = false;
       if (printAfter) {
         // Hidden iframe → browser PDF viewer renders the blob → we call
         // .print() once it's loaded so the user lands directly on the
@@ -1474,6 +1478,7 @@ export default function Editor() {
               iframe.contentWindow.focus();
               iframe.contentWindow.print();
               printed = true;
+              printIframeWorked = true;
             } catch {
               window.open(url, '_blank', 'noopener,noreferrer');
             }
@@ -1532,7 +1537,9 @@ export default function Editor() {
       toast.dismiss(toastId);
       toast.success(
         printAfter
-          ? `PDF ready in ${secs}s — opening printer…`
+          ? (printIframeWorked
+              ? `PDF ready in ${secs}s — opening printer…`
+              : `PDF ready in ${secs}s — opened in new tab, press Cmd/Ctrl+P to print`)
           : previewInTab
             ? `PDF export complete in ${secs}s — opened in new tab`
             : `PDF export complete in ${secs}s`,
