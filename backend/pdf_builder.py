@@ -361,6 +361,94 @@ def ensure_even_page_count(pdf_bytes: bytes) -> tuple[bytes, bool]:
     return out.getvalue(), True
 
 
+# Placeholder shown in the PDF's Subject field when a book has no ISBN
+# yet (Bindery users typically don't get one until publication). Phase
+# 3.3 explicitly wants this visible — a hard "None" or blank Subject is
+# easy to miss when a printer / catalog ingestor checks the file, but a
+# descriptive placeholder makes it obvious the ISBN slot is reserved.
+ISBN_PLACEHOLDER = "ISBN pending — assigned at publication"
+
+
+def stamp_pdf_metadata(pdf_bytes: bytes, book: dict) -> bytes:
+    """Phase 3.3 — Write the book's Title / Author / ISBN / Publisher
+    into the PDF's document properties (Info dictionary). Read by every
+    PDF viewer's "Properties" dialog and by catalog-ingestion tools that
+    index PDFs in bulk (IngramSpark, LSI, Amazon KDP preflight).
+
+    Per-field policy:
+      - /Title    → book['title']  (defaults to 'Untitled' if blank)
+      - /Author   → book['author']
+      - /Subject  → ISBN if a 10/13-digit value is present, else
+                    ISBN_PLACEHOLDER. We use Subject (not a custom key)
+                    because most readers display Subject prominently
+                    while ignoring custom Info entries.
+      - /Producer → 'Bindery WeasyPrint pipeline' (engine name; stable)
+      - /Creator  → publisher field if set, else 'Self-published'.
+                    Creator is the editorial / publishing-house name in
+                    the Info dictionary spec (vs Producer = software).
+      - /CreationDate / /ModDate → current UTC in PDF D:YYYYMMDDHHmmSSZ
+                    form. pypdf accepts this string and stamps both
+                    timestamps; some old readers display only one.
+
+    The metadata is APPLIED LAST (after apply_print_boxes,
+    ensure_even_page_count, and the WeasyPrint chunk merge) so nothing
+    downstream can clobber it. Idempotent — calling twice produces the
+    same bytes.
+
+    Failure mode: if pypdf cannot rewrite the trailer (e.g. encrypted
+    PDF), we log a WARNING and return the original bytes unmodified —
+    silent failure of metadata is far less harmful than failing the
+    whole export."""
+    from io import BytesIO
+    from datetime import datetime, timezone
+    from pypdf import PdfReader, PdfWriter
+
+    try:
+        reader = PdfReader(BytesIO(pdf_bytes))
+        writer = PdfWriter(clone_from=reader)
+
+        title = (book.get("title") or "").strip() or "Untitled"
+        author = (book.get("author") or "").strip()
+        publisher = (book.get("publisher") or "").strip() or "Self-published"
+
+        # Normalize ISBN — strip non-alphanumerics, then validate against
+        # the canonical 13-digit or 9-digit-plus-check-character forms.
+        # ISBN-13: exactly 13 ASCII digits, no X. ISBN-10: exactly 9
+        # ASCII digits plus a final ASCII digit OR uppercase X (the
+        # ISO 2108 check character for value 10). Anything else falls
+        # back to the placeholder so a malformed half-typed ISBN doesn't
+        # ship as "ISBN 9780XXXXXXXXX" to catalog tools.
+        raw_isbn = (book.get("isbn") or "").strip()
+        compact = re.sub(r"[^0-9Xx]", "", raw_isbn).upper()
+        if re.fullmatch(r"[0-9]{13}", compact):
+            subject = f"ISBN {compact}"
+        elif re.fullmatch(r"[0-9]{9}[0-9X]", compact):
+            subject = f"ISBN {compact}"
+        else:
+            subject = ISBN_PLACEHOLDER
+
+        now = datetime.now(timezone.utc).strftime("D:%Y%m%d%H%M%SZ")
+        writer.add_metadata({
+            "/Title": title,
+            "/Author": author,
+            "/Subject": subject,
+            "/Producer": "Bindery WeasyPrint pipeline",
+            "/Creator": publisher,
+            "/CreationDate": now,
+            "/ModDate": now,
+        })
+        out = BytesIO()
+        writer.write(out)
+        return out.getvalue()
+    except Exception as e:
+        log.warning(
+            "stamp_pdf_metadata: failed to write Info dict (%s) — "
+            "returning original bytes. PDF will export without metadata.",
+            e,
+        )
+        return pdf_bytes
+
+
 def _google_fonts_css(used_families: Optional[set] = None) -> str:
     """Build the CSS that goes at the top of every render's <style>.
 

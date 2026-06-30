@@ -652,6 +652,14 @@ async def build_book_pdf(
         # miss otherwise. When zero, omit so the line stays scannable.
         f" {sorted(missing_font_families)}" if missing_font_families else "",
     )
+    # Phase 3.3 — stamp Info dict (Title/Author/ISBN/Publisher) AFTER
+    # all upstream PDF rewrites have settled. Doing this last guarantees
+    # no downstream step can clobber the metadata.  Idempotent and
+    # failure-tolerant (returns original bytes if pypdf can't rewrite).
+    try:
+        pdf_bytes = _pb.stamp_pdf_metadata(pdf_bytes, book)
+    except Exception as e:
+        log.warning("WeasyPrint: stamp_pdf_metadata failed: %s", e)
     _emit("done")
     return pdf_bytes
 
@@ -720,5 +728,12 @@ async def build_cover_spread_pdf(
             await asyncio.wait_for(hb_task, timeout=2.0)
         except Exception:
             hb_task.cancel()
+    # Phase 3.3 — same Info-dict stamping as the interior. Catalog
+    # ingestion tools index both files; consistent metadata across
+    # cover + interior avoids one being flagged as orphaned.
+    try:
+        pdf_bytes = _pb.stamp_pdf_metadata(pdf_bytes, book)
+    except Exception as e:
+        log.warning("WeasyPrint: cover stamp_pdf_metadata failed: %s", e)
     _emit("done")
     return pdf_bytes

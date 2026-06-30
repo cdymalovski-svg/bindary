@@ -216,6 +216,7 @@ export default function Editor() {
       title: book.title,
       author: book.author,
       isbn: book.isbn || '',
+      publisher: book.publisher || '',
       page_size: book.page_size,
       page_number_start: book.page_number_start || 1,
       is_chapter_book: !!book.is_chapter_book,
@@ -1640,17 +1641,33 @@ export default function Editor() {
               <Label htmlFor="book-isbn-input" className="text-[11px] uppercase tracking-wider text-ink-mute">
                 ISBN
                 <span className="ml-1.5 normal-case tracking-normal text-ink-mute/70">
-                  — drives IngramSpark filename when set
+                  — leave blank until assigned at publication
                 </span>
               </Label>
               <Input
                 id="book-isbn-input"
                 value={book.isbn || ''}
                 onChange={(e) => setBook({ ...book, isbn: e.target.value })}
-                placeholder="978-0-00-000000-0"
+                placeholder="ISBN pending — assigned at publication"
                 maxLength={17}
                 className="bg-white border-rule rounded-sm text-ink-soft text-sm tabular-nums focus-visible:ring-1 focus-visible:ring-terracotta"
                 data-testid="book-isbn-input"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="book-publisher-input" className="text-[11px] uppercase tracking-wider text-ink-mute">
+                Publisher
+                <span className="ml-1.5 normal-case tracking-normal text-ink-mute/70">
+                  — stamped into PDF properties
+                </span>
+              </Label>
+              <Input
+                id="book-publisher-input"
+                value={book.publisher || ''}
+                onChange={(e) => setBook({ ...book, publisher: e.target.value })}
+                placeholder="Self-published"
+                className="bg-white border-rule rounded-sm text-ink-soft text-sm focus-visible:ring-1 focus-visible:ring-terracotta"
+                data-testid="book-publisher-input"
               />
             </div>
           </PopoverContent>

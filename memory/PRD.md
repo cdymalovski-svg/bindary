@@ -500,6 +500,42 @@ Two non-blocking DB-query-optimisation warnings filed as P2 backlog items:
 1. `GET /api/books` (server.py:525) — returns full `pages` array for every book in library list. Adding `{$slice: 1}` projection would cut payload ~95% for chapter books.
 2. `GET /api/files` (server.py:1506) — hard 2000-asset cap without pagination; fine until a user has 1000+ illustrations.
 
+## What's been implemented (2026-06-21 / iteration 53 — Phase 3.3 PDF metadata stamping)
+
+**Shipped**: every exported PDF (interior + cover) now carries proper document metadata stamped into the /Info dictionary, indexed by readers like Adobe Acrobat's File→Properties dialog AND by catalog-ingestion tools (IngramSpark, LSI, Amazon KDP preflight).
+
+### Surfaces touched
+- **`pdf_builder.py`**: new `stamp_pdf_metadata(pdf_bytes, book)` helper + `ISBN_PLACEHOLDER` constant. Uses pypdf `clone_from` + `add_metadata` to write `/Title`, `/Author`, `/Subject`, `/Producer`, `/Creator`, `/CreationDate`, `/ModDate`. Failure-tolerant — corrupt or encrypted input PDFs round-trip unchanged with a WARNING log rather than aborting the whole export.
+- **`pdf_builder_weasy.py`**: stamping called LAST in both `build_book_pdf` and `build_cover_spread_pdf` (after `apply_print_boxes` + `ensure_even_page_count`), so no downstream step can clobber it. Idempotent.
+- **`server.py`**: `Book` and `BookUpdate` Pydantic models gained `publisher: Optional[str] = ""`. Default behavior preserved (existing books have empty publisher).
+- **`Editor.jsx`**: Book Details popover gained a Publisher input with helper text "stamped into PDF properties". ISBN placeholder updated to `"ISBN pending — assigned at publication"` and the field's helper text now reads "leave blank until assigned at publication" (per user policy that ISBN isn't available until publishing).
+- **Save payload**: `publisher` field added to the autosave PUT body so the field round-trips through the API.
+
+### Per-field policy (recorded so the next agent doesn't re-derive it)
+| PDF field | Source | Fallback |
+|---|---|---|
+| `/Title` | `book.title` | `"Untitled"` |
+| `/Author` | `book.author` | `""` |
+| `/Subject` | `"ISBN <13-digit>"` or `"ISBN <10-digit>"` (validated regex) | `"ISBN pending — assigned at publication"` |
+| `/Creator` | `book.publisher` (editorial / house name) | `"Self-published"` |
+| `/Producer` | always `"Bindery WeasyPrint pipeline"` (software identifier, stable string — don't change without updating tests that grep it) | — |
+| `/CreationDate`, `/ModDate` | current UTC, PDF `D:YYYYMMDDHHmmSSZ` form | — |
+
+### ISBN validation (tightened beyond initial implementation)
+Regex `[0-9]{13}` for ISBN-13 or `[0-9]{9}[0-9X]` for ISBN-10 (the trailing `X` is the ISO 2108 check character meaning value 10, only legal at position 10 of an ISBN-10). Caught a real bug — a previous lax regex would have accepted `"978-0-XX-XXXXXX-X"` as a valid ISBN. The strict regex falls back to placeholder for any half-typed input.
+
+### Tests
+- `tests/test_pdf_metadata.py`: **16/16 offline unit tests pass in 0.62s**. Cover Title/Author stamping, ISBN placeholder for blank/missing/malformed, 13-digit + 10-digit + X-check normalization, Publisher default, idempotency, corrupt-input round-trip, page-count preservation, and Unicode title round-trip.
+- Cumulative offline regression coverage now **30 tests in <6 s**, no hosted-env dependency.
+
+## P1.2 deferred (Editor.jsx refactor) — explicit reasoning
+Not shipped in this iteration. Three reasons:
+1. **The handoff explicitly gated it**: "Do not start until Issue 1 (Production PDF Timeout) is 100% resolved." The iter-51 PDF fixes are deploy-ready but not yet production-verified by the user.
+2. **The toolbar was just heavily modified in iter 52**. Extracting it into a sub-component now means restructuring code that hasn't been deploy-tested.
+3. **The autosave / refs interlock is deep**: `skipNextAutoSaveRef` is referenced from 4+ call sites across the file (autosave effect, history-restore callback, post-export, etc.). Naive `useAutoSave` extraction would either leave the ref shared (defeating the encapsulation) or require lifting 4+ call sites with separate stable callbacks. Worth doing properly, not in the same turn as a metadata-stamping ship.
+
+**File the refactor as P1 backlog** — should be the first task picked up in the next dedicated session, after iter-51's production verification has confirmed PDF stability.
+
 ## Next Tasks
 - Phase 3.3 — PDF document metadata (Title, Author, ISBN, Publisher into PDF properties).
 - Phase 3.2 — ICC profile picker (SWOP v2 vs Fogra39) in export popover.

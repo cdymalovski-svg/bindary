@@ -161,6 +161,11 @@ class Book(BaseModel):
     # the 13-digit form. Optional — if blank, exports fall back to the
     # title-slug naming we've always used.
     isbn: Optional[str] = ""
+    # Publisher name stamped into the exported PDF's document properties
+    # (Phase 3.3 metadata). Optional — books without a publisher get
+    # "Self-published" as the default, which is the truthful answer for
+    # most Bindery users until they sign with a house.
+    publisher: Optional[str] = ""
     page_size: str = "a4"  # a4 | letter | square | book6x9
     pages: List[Page] = []
     page_number_start: int = 1  # 1-based; pages before this show no number; back cover always hidden
@@ -181,6 +186,7 @@ class BookUpdate(BaseModel):
     title: Optional[str] = None
     author: Optional[str] = None
     isbn: Optional[str] = None
+    publisher: Optional[str] = None
     page_size: Optional[str] = None
     page_number_start: Optional[int] = None
     is_chapter_book: Optional[bool] = None
