@@ -213,11 +213,25 @@ export default function usePdfExport({ book, saveBook }) {
       // genuine stall (no stage change for N minutes) triggers the
       // timeout error. This replaces the old wall-clock-from-start
       // budget which falsely killed big art-heavy books at 10 min.
-      // 6 min ceiling: pre-fetch of a single oversized PNG (e.g.
-      // 12000×12000) at 600 DPI can take ~1 min to downscale; we want
-      // headroom above any legitimate single-step duration so a
-      // genuinely slow operation still completes.
-      const STAGE_IDLE_DEADLINE_MS = 360_000; // 6 min without ANY stage change
+      //
+      // The DEADLINE ITSELF scales with book size: individual page
+      // renders can take 2–3 s of layout work under WeasyPrint's
+      // per-page CSS/font parsing. On very large books, no chunk
+      // boundary emits a NEW stage string for many seconds. A fixed
+      // 6-min ceiling was tripping false timeouts on 60+ page books
+      // where the backend was still legitimately rendering.
+      // Formula: base 6 min + 3 s per page in the export range,
+      // clamped to 20 min so a truly stuck job still fails eventually.
+      const BASE_IDLE_MS = 360_000;        // 6 min — floor for tiny books
+      const PER_PAGE_MS = 3_000;           // 3 s per page — matches worst-case p/page render
+      const MAX_IDLE_MS = 1_200_000;       // 20 min — hard cap
+      const pagesInExport = range
+        ? Math.max(1, (range.end - range.start + 1))
+        : Math.max(1, (book?.pages?.length) || 1);
+      const STAGE_IDLE_DEADLINE_MS = Math.min(
+        MAX_IDLE_MS,
+        BASE_IDLE_MS + pagesInExport * PER_PAGE_MS,
+      );
       let stageDeadline = Date.now() + STAGE_IDLE_DEADLINE_MS;
       let prevStage = '';
       while (Date.now() < stageDeadline) {
@@ -428,9 +442,111 @@ export default function usePdfExport({ book, saveBook }) {
       const friendly = isNetwork
         ? 'PDF export failed: couldn\'t reach the PDF service. Check your connection and try again.'
         : `PDF export failed: ${raw.slice(0, 200)}`;
+      // If we timed out ON THE FRONTEND (idle deadline exceeded) but a
+      // real job_id exists on the backend, the render may STILL be in
+      // progress or already complete — we just stopped listening. Offer
+      // a one-click "Check again" that re-polls the job. If ready, we
+      // deliver the file immediately; if still running, we tell the
+      // user to wait; if truly failed, we surface the backend's real
+      // error message. Only offered for TIMEOUT errors — for network /
+      // build errors, a retry from the toolbar is the right recovery.
+      const isTimeout = /^PDF timed out/i.test(raw);
+      const canRecover = isTimeout && !!cancelState.jobId;
+      const recoveryAction = canRecover
+        ? {
+            label: 'Check again',
+            onClick: async () => {
+              const recheckId = 'pdf-export-recheck';
+              toast.loading('Checking job status…', { id: recheckId });
+              try {
+                const s = await fetch(
+                  `${BASE}/api/books/${book.id}/pdf-jobs/${cancelState.jobId}`,
+                  { headers: authHeaders },
+                );
+                if (s.status === 404) {
+                  toast.dismiss(recheckId);
+                  // Job doc gone — TTL'd out or already downloaded.
+                  // Tell the user honestly rather than pretending.
+                  toast.error(
+                    'Job no longer available on the server — please re-export.',
+                    { duration: 10_000 },
+                  );
+                  return;
+                }
+                if (!s.ok) {
+                  toast.dismiss(recheckId);
+                  toast.error(`Recheck failed (HTTP ${s.status})`);
+                  return;
+                }
+                const sb = await s.json();
+                if (sb.status === 'ready') {
+                  // Deliver via a plain download <a> click — the user
+                  // already lost the toast's fancy print/preview
+                  // routing when they gave up on the export, so a
+                  // straight download is the least-surprising recovery.
+                  const dl = await fetch(
+                    `${BASE}/api/books/${book.id}/pdf-jobs/${cancelState.jobId}/download`,
+                    { headers: authHeaders },
+                  );
+                  if (!dl.ok) {
+                    toast.dismiss(recheckId);
+                    toast.error(`Download failed (HTTP ${dl.status})`);
+                    return;
+                  }
+                  const blob = await dl.blob();
+                  const fallback = `${(book.title || 'book').replace(/[^a-z0-9-_]+/gi, '_')}.pdf`;
+                  const downloadName = sb.filename || fallback;
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = downloadName;
+                  document.body.appendChild(a);
+                  a.click();
+                  a.remove();
+                  URL.revokeObjectURL(url);
+                  toast.dismiss(recheckId);
+                  // Dismiss the old timeout error too — it's stale now
+                  // that we've recovered the file the user was waiting
+                  // for.
+                  toast.dismiss(toastId);
+                  toast.success(
+                    `Recovered: ${downloadName} (${(blob.size / 1024 / 1024).toFixed(2)} MB)`,
+                    { duration: Infinity, closeButton: true },
+                  );
+                  setExportsBump((n) => n + 1);
+                  return;
+                }
+                if (sb.status === 'failed') {
+                  toast.dismiss(recheckId);
+                  const detail = sb.error || 'PDF build failed';
+                  toast.error(`Job failed on the server: ${detail}`, {
+                    duration: Infinity, closeButton: true,
+                  });
+                  return;
+                }
+                // status === 'pending' — still working. Tell the user
+                // where the backend is now (fresh stage). Keep the
+                // Check-again button available.
+                toast.dismiss(recheckId);
+                const nowStage = sb.stage || 'working';
+                toast.message(
+                  `Still rendering (${nowStage}). Try Check again in ~30 s.`,
+                  { duration: 8000 },
+                );
+              } catch (recheckErr) {
+                toast.dismiss(recheckId);
+                toast.error(`Recheck error: ${recheckErr?.message || 'unknown'}`);
+              }
+            },
+          }
+        : undefined;
       // Errors and cancellations stay until dismissed so the user sees
       // them even after switching tabs / scrolling away.
-      toast.error(friendly, { duration: Infinity, closeButton: true });
+      toast.error(friendly, {
+        duration: Infinity,
+        closeButton: true,
+        ...(recoveryAction ? { action: recoveryAction } : {}),
+      });
     } finally {
       setExporting(false);
     }

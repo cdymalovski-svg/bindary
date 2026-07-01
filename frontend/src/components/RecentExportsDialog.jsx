@@ -63,7 +63,12 @@ export default function RecentExportsDialog({ open, onOpenChange }) {
       const token = (() => {
         try { return localStorage.getItem('bindery_token'); } catch { return null; }
       })();
+      // credentials: 'include' sends the httpOnly `access_token` cookie
+      // as a fallback when localStorage happens to be empty (e.g. after
+      // a browser session-storage wipe or a cookie-only auth flow).
+      // The backend accepts EITHER path via _extract_token in auth.py.
       const r = await fetch(`${BASE}/api/admin/recent-exports`, {
+        credentials: 'include',
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       if (!r.ok) {
