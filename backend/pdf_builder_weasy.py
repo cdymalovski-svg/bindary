@@ -232,6 +232,80 @@ def _maybe_downscale(raw: bytes, ctype: str, max_dim: int, quality: int) -> tupl
     return buf.getvalue(), "image/jpeg"
 
 
+def _merge_pdfs_disk(chunk_pdfs: list[bytes]) -> bytes:
+    """Merge a list of rendered chunk PDF byte blobs into a single PDF
+    on disk using pikepdf/libqpdf. Same disk-spool pattern as
+    `pdf_builder.apply_print_boxes`:
+
+      1. Spool each chunk to its own temp file, POPping from the input
+         list so each blob is eligible for GC as soon as it hits disk
+         (avoids holding both the in-memory copy AND the disk copy at
+         once — critical for 60+ page art-heavy books).
+      2. Open the first temp file with pikepdf as the base; iterate the
+         remaining paths and `base.pages.extend(extra.pages)`, which
+         deep-copies each page's indirect objects into the base so
+         closing the source is safe.
+      3. Save merged output to a second temp file, read bytes back.
+      4. `try/finally` guarantees every temp file is unlinked — even
+         if pikepdf raises mid-merge — so a failed export can never
+         leak 100+ MB of temp data.
+
+    Peak Python heap ~1× the largest single chunk (vs the previous
+    pypdf pattern which held every chunk's bytes in the caller's list
+    PLUS a full cloned page tree PLUS the serialised output — roughly
+    3-5× the merged file size). MUTATES `chunk_pdfs` (empties it) to
+    release each blob's reference as we go; the caller in
+    `build_book_pdf` doesn't re-use the list after the merge."""
+    import pikepdf
+
+    # Fast path: single-chunk export doesn't need a merge at all.
+    if len(chunk_pdfs) == 1:
+        return chunk_pdfs[0]
+
+    temp_paths: list[str] = []
+    out_path: Optional[str] = None
+    try:
+        # Spool each chunk to disk, popping so each blob's memory can be
+        # reclaimed before we start opening PDFs with pikepdf.
+        while chunk_pdfs:
+            blob = chunk_pdfs.pop(0)
+            fd, path = tempfile.mkstemp(prefix="merge_chunk_", suffix=".pdf")
+            with os.fdopen(fd, "wb") as f:
+                f.write(blob)
+            temp_paths.append(path)
+            del blob  # release the bytes reference before the next iteration
+
+        # Merge via pikepdf: open first as base, extend with pages from
+        # each subsequent chunk. `pages.extend` deep-copies referenced
+        # objects into `base`, so closing the source Pdf is safe.
+        with pikepdf.open(temp_paths[0]) as base:
+            for extra_path in temp_paths[1:]:
+                with pikepdf.open(extra_path) as extra:
+                    base.pages.extend(extra.pages)
+            out_fd, out_path = tempfile.mkstemp(prefix="merge_out_", suffix=".pdf")
+            os.close(out_fd)
+            base.save(out_path)
+
+        with open(out_path, "rb") as f:
+            return f.read()
+    finally:
+        # Best-effort cleanup — every temp file MUST be unlinked
+        # regardless of success/failure. A mid-merge exception must not
+        # leave 100 MB of stale chunk files behind.
+        for p in temp_paths:
+            try:
+                if os.path.exists(p):
+                    os.unlink(p)
+            except OSError:
+                pass
+        if out_path:
+            try:
+                if os.path.exists(out_path):
+                    os.unlink(out_path)
+            except OSError:
+                pass
+
+
 async def build_book_pdf(
     book: dict,
     get_image: Callable[[str], tuple[bytes, str]],
@@ -811,20 +885,14 @@ async def build_book_pdf(
             except Exception:
                 hb_task.cancel()
 
-    # Merge chunks. WeasyPrint produces one PDF per chunk; pypdf
-    # concatenates without re-rasterising — fast and lossless.
+    # Merge chunks. WeasyPrint produces one PDF per chunk; pikepdf
+    # concatenates on disk without re-rasterising — fast, lossless, and
+    # peak Python heap stays ~1× the largest chunk. See
+    # `_merge_pdfs_disk` for the disk-spool implementation notes.
+    # `_merge_pdfs_disk` mutates chunk_pdfs (empties it) so each blob's
+    # bytes are eligible for GC as soon as they land on disk.
     _emit("merging chunks")
-    if len(chunk_pdfs) == 1:
-        pdf_bytes = chunk_pdfs[0]
-    else:
-        from pypdf import PdfReader, PdfWriter
-        writer = PdfWriter()
-        for blob in chunk_pdfs:
-            for pg in PdfReader(io.BytesIO(blob)).pages:
-                writer.add_page(pg)
-        out_buf = io.BytesIO()
-        writer.write(out_buf)
-        pdf_bytes = out_buf.getvalue()
+    pdf_bytes = _merge_pdfs_disk(chunk_pdfs)
 
     # Stamp IngramSpark print boxes (MediaBox / TrimBox / BleedBox) the
     # same way the Chromium pipeline does. Then auto-pad to even page

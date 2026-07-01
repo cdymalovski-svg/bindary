@@ -877,3 +877,23 @@ Per-page:
 ### render_timings UnboundLocalError — status
 - Investigated per user Q3. Fix already shipped in preview code (`server.py:943` initializes `render_timings: dict = {}` at the top of the try-block, BEFORE all 3 `_emit_job_summary` call sites at 1065/1073/1078, BEFORE the cover_spread/interior branch at 945, and the outer `except Exception` handler at 1111 does not reference it). Only `server.py` references `render_timings` — grepped every `.py` file. Job `a7a31fed` failing with this error means production was running an older build; will be resolved by the next redeploy.
 
+
+## What's been implemented (2026-02 / iteration 24 — pikepdf merge refactor)
+- **Extended the disk-spool pattern to the chunk-merge step.** `pdf_builder_weasy.build_book_pdf` previously merged N rendered chunks by:
+  1. Holding every chunk's raw bytes in the `chunk_pdfs` Python list.
+  2. Iterating with pypdf: `PdfReader(BytesIO(blob))` per chunk → `PdfWriter.add_page(page)` for every page (Python object clone).
+  3. `writer.write(BytesIO())` serialised the whole cloned tree back to bytes.
+  For a 64-page book with 5-10 MB per chunk that's ~50-100 MB of raw bytes AND another 50-100 MB of pypdf's Python-object graph AND the serialised output all live at once = ~200-300 MB peak Python heap.
+- **New `_merge_pdfs_disk(chunk_pdfs: list[bytes]) -> bytes` helper** in `pdf_builder_weasy.py`:
+  1. Pop-and-spool each chunk to its own temp file (`merge_chunk_*.pdf`); popping releases the bytes reference before the next iteration so peak in-memory chunk count stays at 1.
+  2. `pikepdf.open(first_path)` as base; iterate remaining paths and `base.pages.extend(extra.pages)` — pikepdf deep-copies referenced objects into `base` so closing the source `Pdf` is safe.
+  3. `base.save(out_path)` → read bytes back.
+  4. `try/finally` unconditionally unlinks every temp file (chunk + output) even if pikepdf raises mid-merge.
+- **Peak Python heap** during merge is now ~1× the largest single chunk (vs the previous ~3-5× of the merged file size). libqpdf's C++ layer handles the page trees natively — no Python-object clone.
+- **Regression coverage** (`/app/backend/tests/test_merge_pdfs_disk_regression.py`, 11 tests):
+  * Merge parity vs old pypdf implementation — page count + MediaBox to 4dp match for `chunk_shapes ∈ [1], [5], [1,1], [3,3], [1,5,1,5,1,5], [1]×32, [1]×64`.
+  * List-mutation contract — input `chunk_pdfs` is emptied after merge (fast path leaves single-blob list untouched).
+  * Temp-file cleanup — no `merge_chunk_*` or `merge_out_*` orphans in `/tmp` after either success or a forced pikepdf exception.
+- **Test status**: 52/52 pass across merge regression + stamping regression + IngramSpark Phase 1 + hard-kill + full PDF job flow.
+- **No other code changed** — the surrounding chunk-render loop, stamping step, and PDF/X pipeline are untouched.
+
