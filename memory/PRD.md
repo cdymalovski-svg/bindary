@@ -797,3 +797,43 @@ Small frontend for the iteration-19 `admin_book_diagnose` endpoint so the operat
 - Optional: seed a non-admin user for explicit E2E coverage of guard boundaries.
 - Phase 2 Editor.jsx refactor still queued.
 
+
+## 2026-07-01 — Iteration 21: Diagnostic Endpoint Extension (Investigation Only)
+User reported page 21 of prod book `361de655-b244-4f0a-b7ed-684254f04352` (text-only, single block) hangs WeasyPrint. Investigation-only iteration — no render code changed.
+
+### Endpoint extension: `GET /api/admin/book-diagnose/{book_id}`
+Added optional query param `include_text_content=true` (default false). When true, text blocks include:
+- `html` (truncated at 20 KB)
+- `html_truncated` (bool)
+- `font_family`, `font_size`, `text_align`, `color`, `background_color`, `text_role`, `is_chapter`, `is_toc`
+
+Response now also includes at the top level:
+- `cached_font_families` (list of 27 Google Fonts families known to `fonts_cache.GOOGLE_FONTS_URL`)
+- `book_text_presets` (from `db.books.text_presets`)
+- Echo of `include_text_content` flag
+
+Per-page:
+- `background_color`, `full_bleed`, `show_page_number`, `page_number_font`, `page_number_size`
+- `fonts_referenced` — sorted list of every font_family value on the page + page_number_font if enabled
+- `fonts_missing_from_cache` — the delta against `cached_font_families` (WeasyPrint fallback candidates)
+
+### Investigation findings written to prior message
+- **Q1-Q3**: cannot answer from preview (book only in prod). The endpoint extension above lets the operator pull page 21/20/22 content in one call.
+- **Q5** (confirmed): `asyncio.wait_for(asyncio.to_thread(_render_chunk_sync, ...), timeout=240)` does NOT kill the underlying thread. Python threads cannot be forcibly cancelled from outside — the `write_pdf()` call keeps consuming CPU + memory after the awaiter times out. This is a latent issue; the appropriate fix is `multiprocessing.Process` with `.terminate()` (Q4 territory, pending user green-light).
+
+### Testing (iteration 21 report)
+- **10/10 pytest tests pass** in `/app/backend/tests/test_book_diagnose_text_content.py`.
+- Truncation math verified: 25 KB input → 20 KB html + html_truncated=true + text_length_chars=25000 (unchanged).
+- Read-only invariant preserved (book.updated_at unchanged after 2 diagnose calls with include_text_content=true).
+- Regression: old consumers (BookDiagnoseDialog frontend) unaffected — the four English translations use `type/file_record/probe/geom` which are unchanged.
+- Code-review nit (non-blocking): `_CACHED_FAMILIES` is a hand-maintained mirror of `fonts_cache.GOOGLE_FONTS_URL`. Currently 27/27 match; a future edit that adds a family in one place without the other would silently produce false-positive missing-fonts entries. Recommend deriving the set at import time from the URL string.
+
+### Not changed
+- Render pipeline, WeasyPrint config, all timeout values, download endpoint, upload endpoint, CORS config.
+
+## Next Tasks
+- Operator: hit the new endpoint on prod for pages 20/21/22 of the failing book with `include_text_content=true`. Report back the JSON so we can decide on Q4/Q5 fixes.
+- Pending Q4 green-light: replace `asyncio.to_thread(_render_chunk_sync, ...)` with a `multiprocessing.Process` + `.terminate()` pattern that reclaims memory + CPU on hang. Log the offending page's full block content on timeout.
+- Phase 2 Editor.jsx refactor still queued.
+- Derive `_CACHED_FAMILIES` from `fonts_cache.GOOGLE_FONTS_URL` at import time (2-line drift-elimination fix).
+
