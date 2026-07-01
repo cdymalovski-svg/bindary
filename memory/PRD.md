@@ -758,3 +758,42 @@ Root cause of user's failed 64-page prod job (`361de655-b244-4f0a-b7ed-684254f04
 - Phase 2 Editor.jsx refactor still queued.
 - Convert RecentExportsDialog auto-load to useEffect (cleanup).
 
+
+## 2026-07-01 — Iteration 20: Diagnose-Page Frontend
+Small frontend for the iteration-19 `admin_book_diagnose` endpoint so the operator doesn't need to run curl.
+
+### New — `BookDiagnoseDialog.jsx`
+- Admin-only "Diagnose page…" item in the Editor's More dropdown (`data-testid=more-menu-book-diagnose`).
+- Modal with two fields:
+  - **Book ID** — prefilled with the currently loaded book's id.
+  - **Page number (1-based)** — prefilled with `activePageIndex + 1`.
+- "Run diagnostic" button calls `GET /api/admin/book-diagnose/{book_id}?page_no=N&probe_bytes=true` via the shared axios `api` client.
+- Four plain-English translations exported as the pure named function `diagnose(pageReport)` for testability:
+  1. `probe.decode_ok === false` → *"This image appears corrupted. Delete the image block on this page and re-upload the file."*
+  2. `file_record == null` → *"No file record found. This image is orphaned — delete the block and re-upload."*
+  3. `width_px == 0` or missing → *"This image has no stored dimensions. Delete the block and re-upload."*
+  4. All clean → *"Page looks healthy. The hang may be environmental — try exporting just this page range."*
+- Reachability probe (`reachable=false`) and zero-byte size are also handled explicitly.
+- Raw response JSON is available in a collapsed `<details>` for power users.
+
+### Editor.jsx wiring
+- New `bookDiagnoseOpen` state.
+- Menu item added to the admin-only block in the More dropdown.
+- Dialog mounted inside the `{isAdmin && ...}` block with `defaultBookId={book?.id}` and `defaultPageNo={activePageIndex + 1}`.
+
+### Testing (iteration 20 report)
+- **100% pass on all executed checks.**
+- All four translation branches verified via Playwright `page.route()` interception with canned JSON payloads.
+- Prefill verified: 1 → 3 transition when navigating pages before opening the dialog.
+- Read-only invariant: `book.updated_at` unchanged after 3 repeated diagnostic runs.
+- Zero console errors, zero page errors.
+- Testing agent code-review: pure translator separation is clean, priority ordering matches the WeasyPrint-hang triage rules, admin-only guard is defense-in-depth (both menu + mount guarded; backend also 403s non-admins).
+
+### Not verified
+- Non-admin visibility: no non-admin account seeded in the environment. Guard is defense-in-depth (menu item + mount + backend all guarded), so functional protection is intact.
+
+## Next Tasks
+- Operator: use the new "Diagnose page…" menu on production against `361de655-b244-4f0a-b7ed-684254f04352` page 21. Whatever the diagnosis says, act on it, then re-export.
+- Optional: seed a non-admin user for explicit E2E coverage of guard boundaries.
+- Phase 2 Editor.jsx refactor still queued.
+
