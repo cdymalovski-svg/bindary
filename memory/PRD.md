@@ -837,3 +837,18 @@ Per-page:
 - Phase 2 Editor.jsx refactor still queued.
 - Derive `_CACHED_FAMILIES` from `fonts_cache.GOOGLE_FONTS_URL` at import time (2-line drift-elimination fix).
 
+
+## What's been implemented (2026-02 / iteration 22 — Multiprocessing hard-kill VERIFIED)
+- **Verified**: the iteration-21-pending `multiprocessing.Process` + `.terminate()` swap in `pdf_builder_weasy.py` works end-to-end. All 5 criteria the user asked to confirm are green:
+  1. **Happy-path unchanged** — 23/23 existing PDF export tests pass (`test_pdf_export.py`, `test_pdf_export_jobs.py`, `test_pdf_export_timeouts.py`).
+  2. **60s hard-kill fires on hang** — new `test_pdf_hard_kill.py` injects a `time.sleep(90)` into WeasyPrint's `write_pdf` (via a module-level `_ConditionalSleepingHTML` shim + monkey-patched `_PAGE_PROCESS_TIMEOUT_S=3.0`). The subprocess is `SIGTERM`ed within the shortened budget, blank placeholder substituted, whole call returns a valid PDF in <30s.
+  3. **WARNING log** — asserted the emitted warning line includes both `page N` AND the block content dump (`html='<p>HANG_MARKER_XYZ</p>'`, `font=...`, `size=...`, `role=...`). Operator can pinpoint the pathological block from the log alone.
+  4. **No zombie processes** — two-layer check: `multiprocessing.active_children()` diff is empty AND `/proc/*` scan shows no `Z`-state children parented to the parent PID after the kill.
+  5. **Frontend include_text_content + missing-fonts amber banner** — testing-agent-v3 fork verified against the live preview URL (report `/app/test_reports/iteration_22.json`, 11/11 UI steps green): checkbox default-ON, ON sends `include_text_content=true`, OFF omits the param (via `...(x ? { key: true } : {})` spread), and mocked `fonts_missing_from_cache=['Comic Sans MS','Weird Font']` renders the amber banner with `data-testid=book-diagnose-missing-fonts`.
+
+### Files added
+- `/app/backend/tests/test_pdf_hard_kill.py` (3 tests, ~15s wall-clock)
+
+### Ready for prod redeploy
+- User must redeploy `bindery.au` to pick up the multiprocessing swap. Once redeployed, re-attempt the page-21 export on the failing book. Any subsequent hang will show a specific WARNING in the pod logs identifying the runaway page + block, and the export will complete with a `[page could not be rendered]` placeholder rather than timing out the whole job.
+
