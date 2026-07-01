@@ -690,3 +690,35 @@ Static analysis pass; both endpoints stress-tested under live load; admin-only g
 - Consider awaiting the Mongo `summary` write instead of fire-and-forget for stronger delivery guarantees (or log on failure). Currently swallowed; log line in supervisor is the fallback authoritative record.
 - Longer term: Phase 2 refactor of Editor.jsx (PageSidebar + EditorToolbar) if user wants.
 
+
+## 2026-07-01 — Iteration 18: Frontend Timeout Fixes
+**Root cause of user's 41/64-page "fail"**: frontend idle deadline was a fixed 6 min; a 64-page render at 2-3 s/page has stage-string gaps longer than 6 min between chunk boundaries, so the frontend gave up while the backend was still rendering.
+
+### Fix 1 — Dynamic idle deadline in `usePdfExport.jsx`
+- Formula: `min(20 min, 6 min + pages × 3 s)`.
+- Constants: `BASE_IDLE_MS=360_000`, `PER_PAGE_MS=3_000`, `MAX_IDLE_MS=1_200_000`.
+- 32-page book → 7.6 min ceiling; 64-page → 9.2 min; 120-page → 12 min; anything ≥300 pages → capped at 20 min.
+- Verified bit-for-bit in-browser by testing agent.
+
+### Fix 2 — "Check again" recovery button
+- Timeout error toasts now include a Sonner action button labelled **"Check again"** — offered only when `isTimeout && cancelState.jobId` (irrelevant for network / build failures).
+- On click, re-polls `/api/books/{id}/pdf-jobs/{job_id}` ONE time:
+  - `status: ready` → downloads via anchor click, dismisses the old error toast, shows success + bumps `exportsBump`.
+  - `status: failed` → surfaces the backend's real `error` field.
+  - `status: pending` → toast: "Still rendering ({stage}). Try Check again in ~30 s."
+  - `404` (job TTL'd out) → "Job no longer available on the server — please re-export."
+
+### Fix 3 — Recent Exports 401 (cookie fallback)
+- `RecentExportsDialog` fetch now sends both `Authorization: Bearer ...` (from localStorage) AND `credentials: 'include'` (httpOnly cookie fallback).
+- Backend `_extract_token` accepts either path (cookie preferred).
+- Verified LIVE: with localStorage cleared, the fetch still returns 200 via cookie.
+
+### Not changed
+- Backend rendering pipeline, CHUNK_SIZE, WeasyPrint config, all timeout values (server-side upload timeout stays at 120 s; asyncio deadlines unchanged).
+
+## Next Tasks
+- Redeploy to production; the next 41/64-style "fail" should now either (a) complete cleanly with the 9.2 min ceiling, or (b) recover via the Check again button.
+- Consider extracting the recovery block in `usePdfExport.jsx` into `buildRecoveryAction(...)` for testability — flagged by testing agent.
+- Convert `RecentExportsDialog` auto-load from side-effect-in-render to `useEffect(() => { if (open) load(); }, [open])` — cleaner React idiom, non-blocking.
+- Phase 2 Editor.jsx refactor (PageSidebar + EditorToolbar) — still queued from prior session.
+
