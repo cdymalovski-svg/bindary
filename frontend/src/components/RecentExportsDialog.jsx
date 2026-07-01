@@ -21,6 +21,7 @@
  *   visibility works without a centralised log aggregator.
  */
 import { useState } from 'react';
+import { api } from '@/lib/api';
 import {
   Dialog,
   DialogContent,
@@ -59,26 +60,22 @@ export default function RecentExportsDialog({ open, onOpenChange }) {
     setLoading(true);
     setError(null);
     try {
-      const BASE = process.env.REACT_APP_BACKEND_URL;
-      const token = (() => {
-        try { return localStorage.getItem('bindery_token'); } catch { return null; }
-      })();
-      // credentials: 'include' sends the httpOnly `access_token` cookie
-      // as a fallback when localStorage happens to be empty (e.g. after
-      // a browser session-storage wipe or a cookie-only auth flow).
-      // The backend accepts EITHER path via _extract_token in auth.py.
-      const r = await fetch(`${BASE}/api/admin/recent-exports`, {
-        credentials: 'include',
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      });
-      if (!r.ok) {
-        if (r.status === 403) setError('Admin access required.');
-        else setError(`Request failed (HTTP ${r.status}).`);
-        return;
-      }
-      setData(await r.json());
+      // Use the shared axios `api` client — its request interceptor
+      // guarantees `Authorization: Bearer {token}` from localStorage on
+      // every outbound call, matching the SAME pattern every other
+      // authenticated request in the app uses. The prior implementation
+      // was raw `fetch` + `credentials: 'include'`; the credentials mode
+      // was cargo-culted and caused a production-only 401 (the fetch
+      // header wasn't reaching the backend the way the interceptor's
+      // header does). Switching to axios eliminates the divergence.
+      const r = await api.get('/admin/recent-exports');
+      setData(r.data);
     } catch (e) {
-      setError(`Network error: ${e.message}`);
+      const status = e?.response?.status;
+      if (status === 403) setError('Admin access required.');
+      else if (status === 401) setError('Not authenticated — please sign in again.');
+      else if (status) setError(`Request failed (HTTP ${status}).`);
+      else setError(`Network error: ${e.message}`);
     } finally {
       setLoading(false);
     }

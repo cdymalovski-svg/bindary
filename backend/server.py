@@ -933,6 +933,15 @@ async def _run_pdf_job(
             from pdf_builder_weasy import build_cover_spread_pdf as _build_cover_pdf
             _on_stage(f"engine: weasyprint")
 
+        # Captured RENDER-side timings dict — populated by the summary
+        # callback from `_build_book_pdf` (interior path only; cover
+        # spreads leave it empty and the JOB SUMMARY log line reports
+        # render fields as "n/a"). Defined here at the top of the
+        # try-block so BOTH the cover-spread and interior branches can
+        # safely reference it in the upload try/except below without
+        # triggering "cannot access local variable 'render_timings'".
+        render_timings: dict = {}
+
         if cover_spread:
             # Cover spread overrides any range — by definition it builds
             # the cover ONLY, using pages[0] and pages[-1].
@@ -964,11 +973,10 @@ async def _run_pdf_job(
             # Capture the RENDER-side timings dict so we can emit the
             # authoritative JOB SUMMARY line AFTER the upload step
             # completes (or fails) — upload duration is the only piece
-            # that's invisible to the render pipeline. See the try/finally
-            # around the put_object call below for where the final log
-            # line is composed and persisted onto pdf_jobs.summary.
-            render_timings: dict = {}
-
+            # that's invisible to the render pipeline. The dict itself
+            # is defined at the top of this try-block so the cover
+            # spread branch can also reference it in the shared upload
+            # error handler below.
             def _on_summary(timings: dict) -> None:
                 render_timings.update(timings or {})
 
@@ -1997,6 +2005,158 @@ async def admin_recent_exports(user=Depends(_get_current_user_admin)):
                     j[k] = str(v)
         entries.append(j)
     return {"scope": "cluster-wide", "max": 20, "entries": entries}
+
+
+@api_router.get("/admin/book-diagnose/{book_id}")
+async def admin_book_diagnose(
+    book_id: str,
+    page_no: Optional[int] = None,
+    probe_bytes: bool = False,
+    user=Depends(_get_current_user_admin),
+):
+    """Read-only per-page inspector for a book — used to pin down which
+    page/image causes WeasyPrint to hang. Zero side effects; no renders
+    kicked off. Returns block layout, db.files metadata, and (optionally)
+    a live byte-probe of each image referenced.
+
+    Query params:
+      * `page_no`     — restrict output to a single page number (1-based).
+                        Otherwise returns every page.
+      * `probe_bytes` — when `true`, fetches each image from object
+                        storage and runs `Pillow.Image.open(io).verify()`.
+                        Returns `reachable`, `byte_count`, `decode_ok`,
+                        and — when Pillow can decode — the ACTUAL
+                        (post-open) width/height. Slow on large books:
+                        one HTTP roundtrip per image. Off by default.
+
+    Failure modes surfaced:
+      * `file_record: null`     — path not in db.files (orphan)
+      * `size == 0`             — placeholder/failed-upload record
+      * `width_px/height_px 0`  — legacy pre-validation upload
+      * `probe.decode_ok=false` — Pillow couldn't parse the bytes
+                                  (this is the WeasyPrint-hang smoking gun:
+                                  Pillow verify passes but decode chokes,
+                                  or the image is technically valid but
+                                  triggers a bug in cairo/pango down the
+                                  chain).
+
+    Reads `book`, `db.files`, and optionally object-storage bytes.
+    Writes NOTHING."""
+    _require_admin(user)
+    book = await db.books.find_one({"id": book_id}, {"_id": 0})
+    if not book:
+        raise HTTPException(404, f"Book {book_id} not found")
+
+    from PIL import Image as _PILImage
+    import io as _io
+
+    pages = book.get("pages") or []
+    all_image_paths: set[str] = set()
+    for pg in pages:
+        for blk in (pg.get("blocks") or []):
+            if blk.get("type") == "image" and blk.get("image_path"):
+                all_image_paths.add(blk["image_path"])
+        # Page-level backgrounds too — some templates use these instead
+        # of full-page image blocks.
+        for k in ("background_image_path", "cover_image_path"):
+            v = pg.get(k)
+            if isinstance(v, str) and v:
+                all_image_paths.add(v)
+
+    files_by_path: dict[str, dict] = {}
+    if all_image_paths:
+        async for f in db.files.find(
+            {"storage_path": {"$in": list(all_image_paths)}},
+            {"_id": 0, "id": 1, "storage_path": 1, "original_filename": 1,
+             "size": 1, "content_type": 1, "width_px": 1, "height_px": 1,
+             "is_deleted": 1},
+        ):
+            files_by_path[f["storage_path"]] = f
+
+    async def _probe(storage_path: str) -> dict:
+        """Fetch bytes and run Pillow.verify + Image.open dimensions.
+        Isolated per-image so one bad file doesn't nuke the whole scan."""
+        out = {"reachable": False, "byte_count": None,
+               "decode_ok": False, "decode_error": None,
+               "actual_width": None, "actual_height": None}
+        try:
+            data, _ = await asyncio.to_thread(get_object, storage_path)
+        except Exception as fe:
+            out["decode_error"] = f"fetch: {type(fe).__name__}: {str(fe)[:120]}"
+            return out
+        if not data:
+            out["decode_error"] = "fetch: empty bytes"
+            return out
+        out["reachable"] = True
+        out["byte_count"] = len(data)
+        try:
+            with _PILImage.open(_io.BytesIO(data)) as im:
+                # verify() throws if the image is malformed. It does NOT
+                # attempt a full decode — but a decoder that returns
+                # "OK" from verify() and then hangs on full decode is
+                # exactly the WeasyPrint failure mode we're hunting.
+                im.verify()
+            # Re-open (verify() consumes the file object) to grab dims.
+            with _PILImage.open(_io.BytesIO(data)) as im:
+                out["actual_width"], out["actual_height"] = im.size
+                out["decode_ok"] = True
+        except Exception as pe:
+            out["decode_error"] = f"decode: {type(pe).__name__}: {str(pe)[:180]}"
+        return out
+
+    report_pages = []
+    for idx, pg in enumerate(pages):
+        pno = idx + 1  # 1-based to match user-facing numbering
+        if page_no is not None and pno != page_no:
+            continue
+
+        page_report = {
+            "page_no": pno,
+            "block_count": len(pg.get("blocks") or []),
+            "background_image_path": pg.get("background_image_path"),
+            "blocks": [],
+        }
+        for blk in (pg.get("blocks") or []):
+            b_out = {
+                "type": blk.get("type"),
+                "geom": {
+                    "x": blk.get("x"),
+                    "y": blk.get("y"),
+                    "width": blk.get("width"),
+                    "height": blk.get("height"),
+                },
+            }
+            if blk.get("type") == "image":
+                sp = blk.get("image_path")
+                b_out["storage_path"] = sp
+                rec = files_by_path.get(sp) if sp else None
+                b_out["file_record"] = rec  # None if orphan
+                if probe_bytes and sp:
+                    b_out["probe"] = await _probe(sp)
+            elif blk.get("type") == "text":
+                # Rough text-length signal — useful to spot a page with
+                # a runaway text block that might trigger a WeasyPrint
+                # layout edge case.
+                text = blk.get("text") or blk.get("html") or ""
+                b_out["text_length_chars"] = len(text)
+            page_report["blocks"].append(b_out)
+        # Probe page-level background too if requested.
+        bg_path = pg.get("background_image_path")
+        if bg_path:
+            bg_rec = files_by_path.get(bg_path)
+            page_report["background_file_record"] = bg_rec
+            if probe_bytes:
+                page_report["background_probe"] = await _probe(bg_path)
+        report_pages.append(page_report)
+
+    return {
+        "book_id": book_id,
+        "title": book.get("title"),
+        "total_pages": len(pages),
+        "probed_bytes": bool(probe_bytes),
+        "requested_page_no": page_no,
+        "pages": report_pages,
+    }
 
 
 @api_router.post("/admin/purge-empty-files")
