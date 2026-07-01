@@ -31,7 +31,8 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Loader2, AlertCircle, CheckCircle2, FileQuestion } from 'lucide-react';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Loader2, AlertCircle, AlertTriangle, CheckCircle2 } from 'lucide-react';
 
 /**
  * Translate the endpoint's page report into a UI-ready diagnosis.
@@ -136,18 +137,23 @@ export default function BookDiagnoseDialog({
 }) {
   const [bookId, setBookId] = useState(defaultBookId);
   const [pageNo, setPageNo] = useState(String(defaultPageNo || 1));
+  const [includeTextContent, setIncludeTextContent] = useState(true);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
+  // Text-length signal for the requested page and its two neighbours
+  // (page-1 and page+1) — lets the operator see instantly whether a
+  // hanging page has a runaway text block relative to its neighbours.
+  // Fetched with include_text_content=false (metadata only) so this
+  // stays cheap even on huge books.
+  const [neighbours, setNeighbours] = useState(null); // {prev:{no,chars}, next:{no,chars}}
   const [error, setError] = useState(null);
 
-  // Re-sync defaults when the dialog opens against a fresh book/page.
-  // Only overwrites when the field currently matches the previous
-  // default so a user who typed a custom value isn't clobbered.
   useEffect(() => {
     if (open) {
       setBookId(defaultBookId);
       setPageNo(String(defaultPageNo || 1));
       setResult(null);
+      setNeighbours(null);
       setError(null);
     }
   }, [open, defaultBookId, defaultPageNo]);
@@ -155,14 +161,46 @@ export default function BookDiagnoseDialog({
   const run = async () => {
     setLoading(true);
     setResult(null);
+    setNeighbours(null);
     setError(null);
     try {
       const n = Math.max(1, parseInt(pageNo, 10) || 1);
+      const params = {
+        page_no: n,
+        probe_bytes: true,
+        ...(includeTextContent ? { include_text_content: true } : {}),
+      };
       const r = await api.get(
         `/admin/book-diagnose/${encodeURIComponent(bookId)}`,
-        { params: { page_no: n, probe_bytes: true } },
+        { params },
       );
       setResult(r.data);
+
+      // Fire off two lightweight metadata-only requests for the
+      // neighbour pages so the operator sees a text-length comparison
+      // without extra typing. Silent on failure — this is a nice-to-
+      // have, not the diagnosis.
+      const total = r.data?.total_pages || 0;
+      const jobs = [];
+      if (n > 1) jobs.push([n - 1, 'prev']);
+      if (n < total) jobs.push([n + 1, 'next']);
+      const results = {};
+      await Promise.all(jobs.map(async ([pn, key]) => {
+        try {
+          const nr = await api.get(
+            `/admin/book-diagnose/${encodeURIComponent(bookId)}`,
+            { params: { page_no: pn, probe_bytes: false, include_text_content: false } },
+          );
+          const pg = nr.data?.pages?.[0];
+          if (pg) {
+            const chars = (pg.blocks || [])
+              .filter((b) => b.type === 'text')
+              .reduce((sum, b) => sum + (b.text_length_chars || 0), 0);
+            results[key] = { no: pn, chars, fonts_missing: pg.fonts_missing_from_cache || [] };
+          }
+        } catch { /* silent */ }
+      }));
+      setNeighbours(results);
     } catch (e) {
       const status = e?.response?.status;
       if (status === 401) setError('Not authenticated — sign in again.');
@@ -217,6 +255,22 @@ export default function BookDiagnoseDialog({
               className="w-32 font-mono text-sm rounded-sm border-rule"
             />
           </div>
+          {/* Include-text-content toggle. Default ON — the operator
+              usually wants the full evidence when triaging a hang.
+              Turning it OFF is a lightweight metadata scan (no HTML
+              payload, no font capture), useful for scanning a book
+              quickly without transferring page-worth of prose. */}
+          <label
+            className="flex items-center gap-2 text-sm text-ink-soft cursor-pointer select-none"
+            data-testid="book-diagnose-include-text-label"
+          >
+            <Checkbox
+              checked={includeTextContent}
+              onCheckedChange={(v) => setIncludeTextContent(v === true)}
+              data-testid="book-diagnose-include-text"
+            />
+            <span>Include text content (fonts, HTML, character count)</span>
+          </label>
           <Button
             onClick={run}
             disabled={loading || !bookId || !pageNo}
@@ -239,6 +293,73 @@ export default function BookDiagnoseDialog({
           >
             {error}
           </div>
+        )}
+
+        {result && (
+          <>
+            {/* Missing-fonts warning — amber banner rendered ABOVE the
+                main diagnosis so it's the first thing the operator sees.
+                A font referenced by a block but not in the local cache
+                forces WeasyPrint through fontconfig's system chain,
+                which is where several observed hangs have originated. */}
+            {(pageReport?.fonts_missing_from_cache || []).length > 0 && (
+              <div
+                className="mt-2 rounded-sm border border-amber-500/40 bg-amber-50 px-3 py-2"
+                data-testid="book-diagnose-missing-fonts"
+              >
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="w-5 h-5 text-amber-700 shrink-0 mt-0.5" />
+                  <div className="text-sm text-amber-900">
+                    <div className="font-serif text-base">
+                      Warning: these fonts are not in the cache and may cause a render hang:
+                    </div>
+                    <div className="mt-1 font-mono text-xs">
+                      {(pageReport.fonts_missing_from_cache || []).join(', ')}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Text-length comparison across page-1 / page / page+1 —
+                lets the operator see instantly whether the target page
+                has a runaway text block relative to its neighbours. */}
+            {(neighbours && (neighbours.prev || neighbours.next)) && (
+              <div
+                className="mt-2 rounded-sm border border-rule/60 bg-paper-soft px-3 py-2"
+                data-testid="book-diagnose-neighbours"
+              >
+                <div className="text-xs text-ink-mute mb-1">Text length comparison (chars):</div>
+                <div className="flex gap-4 text-sm font-mono">
+                  {neighbours.prev && (
+                    <div>
+                      <span className="text-ink-mute">Page {neighbours.prev.no}:</span>{' '}
+                      <span className="text-ink" data-testid="book-diagnose-neighbour-prev">
+                        {neighbours.prev.chars.toLocaleString()}
+                      </span>
+                    </div>
+                  )}
+                  <div className="font-semibold">
+                    <span className="text-ink-mute">Page {pageReport?.page_no}:</span>{' '}
+                    <span className="text-ink" data-testid="book-diagnose-neighbour-this">
+                      {((pageReport?.blocks || [])
+                        .filter((b) => b.type === 'text')
+                        .reduce((s, b) => s + (b.text_length_chars || 0), 0))
+                        .toLocaleString()}
+                    </span>
+                  </div>
+                  {neighbours.next && (
+                    <div>
+                      <span className="text-ink-mute">Page {neighbours.next.no}:</span>{' '}
+                      <span className="text-ink" data-testid="book-diagnose-neighbour-next">
+                        {neighbours.next.chars.toLocaleString()}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </>
         )}
 
         {diagnosis && (

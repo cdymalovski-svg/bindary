@@ -25,6 +25,9 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import multiprocessing as _mp
+import os
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FuturesTimeout
 from typing import Callable, Optional
@@ -32,6 +35,24 @@ from typing import Callable, Optional
 from weasyprint import HTML, CSS  # noqa: F401  CSS reserved for future per-export overrides
 
 import pdf_builder as _pb
+
+# Explicit `fork` context so the child subprocess INHERITS the parent's
+# memory (WeasyPrint fonts, pdf_builder module, url_fetcher closure)
+# without needing to pickle any of it. On Linux (production runtime)
+# fork is the default; forcing the context makes the semantics explicit
+# and portable across future Python releases where the default may
+# change. spawn/forkserver would require the render callable + all its
+# captured state to be picklable — an enormous refactor that gives us
+# no additional safety, since the child only calls a single CPU-bound
+# render function and exits.
+_FORK_CTX = _mp.get_context("fork")
+
+# Hard per-page render deadline enforced by killing the render
+# subprocess. Chosen so a legitimately slow page (multi-second layout
+# on a huge SVG, e.g.) still completes, but a truly hung page is
+# terminated within a minute rather than accumulating a zombie thread
+# for the remaining ~10 minutes of the outer asyncio deadline.
+_PAGE_PROCESS_TIMEOUT_S = 60.0
 
 # Dedicated executor for image fetches inside WeasyPrint's `url_fetcher`.
 # We call it from a SYNC context (WeasyPrint runs in `asyncio.to_thread`),
@@ -482,6 +503,164 @@ async def build_book_pdf(
         doc.write_pdf(target=out, presentational_hints=False)
         return out.getvalue()
 
+    def _dump_page_blocks_for_log(chunk_start: int) -> str:
+        """Best-effort compact summary of a page's blocks for the WARNING
+        log line when we hard-kill a render subprocess. Truncates each
+        text block's HTML to 500 chars — enough to spot the pathological
+        content without flooding the log. Never raises.
+        """
+        try:
+            page = (book.get("pages") or [])[chunk_start]
+        except Exception:
+            return f"(page {chunk_start + 1} not found in book)"
+        parts: list[str] = []
+        parts.append(f"page_bg={page.get('background_color')!r}")
+        parts.append(f"full_bleed={page.get('full_bleed')}")
+        for i, blk in enumerate(page.get("blocks") or []):
+            t = blk.get("type") or "unknown"
+            if t == "text":
+                html = (blk.get("html") or blk.get("text") or "")
+                parts.append(
+                    f"blk{i}[text font={blk.get('font_family')!r} "
+                    f"size={blk.get('font_size')} chars={len(html)} "
+                    f"role={blk.get('text_role')!r} html={html[:500]!r}]"
+                )
+            elif t == "image":
+                parts.append(
+                    f"blk{i}[image path={blk.get('image_path')!r} "
+                    f"geom={blk.get('width')}x{blk.get('height')}]"
+                )
+            else:
+                parts.append(f"blk{i}[{t} keys={sorted(blk.keys())}]")
+        return " | ".join(parts)
+
+    def _render_chunk_in_subprocess(chunk_start: int, chunk_end: int, out_path: str) -> None:
+        """Runs in the FORKED CHILD process. Writes the resulting PDF
+        bytes to `out_path`. On failure, writes the error to
+        `out_path + '.err'` and exits with code 2 so the parent can
+        differentiate a hard render error from a hang (which manifests
+        as us being killed with SIGTERM/SIGKILL — no exit code).
+
+        Runs under fork(), so ALL closures from the parent's
+        build_book_pdf scope are inherited natively — no pickling."""
+        try:
+            pdf = _render_chunk_sync(chunk_start, chunk_end)
+            with open(out_path, "wb") as f:
+                f.write(pdf)
+        except Exception as e:  # pragma: no cover — child exit path
+            try:
+                with open(out_path + ".err", "w") as f:
+                    f.write(f"{type(e).__name__}: {str(e)[:2000]}")
+            except Exception:
+                pass
+            os._exit(2)
+        os._exit(0)
+
+    async def _render_chunk_via_subprocess(chunk_start: int, chunk_end: int) -> bytes:
+        """Fork a child process to run `_render_chunk_sync`. Hard-kill
+        the child if it exceeds `_PAGE_PROCESS_TIMEOUT_S` (60 s) — this
+        is what actually reclaims the CPU + memory a hung `write_pdf()`
+        is holding, since Python cannot cancel a running thread.
+
+        Returns the rendered PDF bytes on success.
+        Raises asyncio.TimeoutError on hard-kill so the existing
+        placeholder-fallback code path (unchanged) picks up.
+        Raises RuntimeError on any other subprocess failure — same
+        placeholder path handles it too.
+        """
+        fd, out_path = tempfile.mkstemp(prefix=f"wp_chunk_{chunk_start}_", suffix=".pdf")
+        os.close(fd)  # child will open/write it
+        err_path = out_path + ".err"
+        # Best-effort cleanup — remove pre-existing artefacts that would
+        # otherwise leak between retries.
+        for p in (out_path, err_path):
+            try:
+                if os.path.exists(p) and p != out_path:
+                    os.unlink(p)
+            except Exception:
+                pass
+
+        proc = _FORK_CTX.Process(
+            target=_render_chunk_in_subprocess,
+            args=(chunk_start, chunk_end, out_path),
+        )
+        run_t0 = time.monotonic()
+        proc.start()
+        try:
+            # Wait up to _PAGE_PROCESS_TIMEOUT_S for the child to finish.
+            # `proc.join(timeout)` blocks the calling thread — we wrap it
+            # in `asyncio.to_thread` so the event loop stays responsive
+            # (heartbeat + polling can still fire). If the outer wait_for
+            # ever fires while we're inside this await, cancellation
+            # propagates and the `finally` below kills the process.
+            await asyncio.to_thread(proc.join, _PAGE_PROCESS_TIMEOUT_S)
+
+            if proc.is_alive():
+                # Hard kill. First SIGTERM (graceful), give WeasyPrint a
+                # moment to unwind (usually can't — it's in native code —
+                # but polite), then SIGKILL.
+                elapsed = time.monotonic() - run_t0
+                dump = _dump_page_blocks_for_log(chunk_start)
+                log.warning(
+                    "WeasyPrint: page %d killed after %.1fs hang (SIGTERM). "
+                    "Block content: %s",
+                    chunk_start + 1, elapsed, dump,
+                )
+                proc.terminate()
+                await asyncio.to_thread(proc.join, 5.0)
+                if proc.is_alive():
+                    log.warning(
+                        "WeasyPrint: page %d did not respond to SIGTERM, "
+                        "escalating to SIGKILL", chunk_start + 1,
+                    )
+                    proc.kill()
+                    await asyncio.to_thread(proc.join, 2.0)
+                # Signal the outer caller so the existing blank-page
+                # placeholder fallback fires — identical behaviour to
+                # the old asyncio.TimeoutError code path.
+                raise asyncio.TimeoutError()
+
+            # Non-zero exit code from the child means an unhandled
+            # exception during render — try to read the .err sidecar
+            # for the traceback, then raise so the outer catch does
+            # the same placeholder path.
+            if proc.exitcode != 0:
+                err_msg = f"exit {proc.exitcode}"
+                try:
+                    if os.path.exists(err_path):
+                        with open(err_path) as f:
+                            err_msg = f.read().strip() or err_msg
+                except Exception:
+                    pass
+                raise RuntimeError(
+                    f"page {chunk_start + 1} render subprocess failed: {err_msg}"
+                )
+
+            # Happy path — read bytes back and return.
+            with open(out_path, "rb") as f:
+                return f.read()
+        finally:
+            # Belt-and-braces cleanup so a crash mid-way doesn't leave
+            # zombie processes or stale temp files behind.
+            if proc.is_alive():
+                try:
+                    proc.kill()
+                    proc.join(2.0)
+                except Exception:
+                    pass
+            for p in (out_path, err_path):
+                try:
+                    if os.path.exists(p):
+                        os.unlink(p)
+                except Exception:
+                    pass
+            # `proc.close()` releases the underlying resources; only
+            # valid to call once the process has terminated.
+            try:
+                proc.close()
+            except Exception:
+                pass
+
     def _render_blank_page_sync(chunk_start: int, chunk_end: int) -> bytes:
         """Last-resort fallback — render the page-range with all images
         and content stripped, just the page geometry. Used only when a
@@ -544,14 +723,21 @@ async def build_book_pdf(
                     pass
 
         hb_task = asyncio.create_task(_heartbeat())
-        # Per-page budget — 240s is enormous (typical page renders in
-        # 5-15s) but it gives even a worst-case pod (cold CPU, full-bleed
-        # 600-DPI illustration) plenty of headroom before we declare the
-        # page pathological. With CHUNK_SIZE=1 we lose only that one page
-        # to a blank placeholder; the rest of the book renders normally.
+        # Per-page budget:
+        #   - INNER 60s hard timeout enforced by killing the render
+        #     subprocess (SIGTERM → SIGKILL). This is the real
+        #     protection: Python cannot cancel a hung `write_pdf()`
+        #     thread from the outside; only a whole-process kill
+        #     reclaims the CPU + memory a runaway render is holding.
+        #   - OUTER 240s asyncio deadline as a defensive safety net in
+        #     case the subprocess-lifecycle await path itself stalls
+        #     (extremely unlikely, but the cost is trivial).
+        # On timeout we substitute the pre-existing blank-placeholder
+        # page and continue with the next page — same UX as before,
+        # but now the zombie thread is genuinely gone.
         try:
             chunk_bytes = await asyncio.wait_for(
-                asyncio.to_thread(_render_chunk_sync, cs, ce),
+                _render_chunk_via_subprocess(cs, ce),
                 timeout=240.0,
             )
             chunk_pdfs.append(chunk_bytes)
