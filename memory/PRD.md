@@ -722,3 +722,39 @@ Static analysis pass; both endpoints stress-tested under live load; admin-only g
 - Convert `RecentExportsDialog` auto-load from side-effect-in-render to `useEffect(() => { if (open) load(); }, [open])` — cleaner React idiom, non-blocking.
 - Phase 2 Editor.jsx refactor (PageSidebar + EditorToolbar) — still queued from prior session.
 
+
+## 2026-07-01 — Iteration 19: Three Production Bugs From /api/pdf-health Forensics
+Root cause of user's failed 64-page prod job (`361de655-b244-4f0a-b7ed-684254f04352` "The Treasure Map of Money Mountain"): a cover-spread bug + a suspected page-21 WeasyPrint hang + a Recent-Exports 401 that iteration 18's fix didn't fully close.
+
+### Bug 1 — `render_timings` UnboundLocalError on cover-spread path
+- `render_timings: dict = {}` was defined only inside the `else` branch of `if cover_spread:` in `server.py:_run_pdf_job`.
+- Cover-spread exports (or any path skipping the else branch) hit the shared `_emit_job_summary(..., render_timings, ...)` call with the name never bound in that frame → UnboundLocalError.
+- Fix: hoisted `render_timings = {}` above the `if cover_spread:` branch so both paths share a live binding. Removed the duplicate in-else definition.
+- Verified live: cover-spread POST job → status=ready; JOB SUMMARY log line: `total=n/a | prefetch=n/a | render=n/a | upload=0.68s | pages=n/a` (n/a render fields expected — cover spread doesn't emit render timings).
+
+### Bug 2 — New diagnostic endpoint for the page-21 WeasyPrint hang
+- `GET /api/admin/book-diagnose/{book_id}?page_no=N&probe_bytes=bool` — read-only admin endpoint.
+- Returns per-page block layout + db.files metadata. With `probe_bytes=true`, fetches each image from object storage and runs Pillow verify+decode, returning `reachable / byte_count / decode_ok / decode_error / actual_width / actual_height`.
+- Zero side effects (proven: `book.updated_at` unchanged after 3 repeated calls; no render triggered; no writes).
+- Purpose: the user's failing production book doesn't exist in preview. This endpoint lets the operator inspect it themselves and pinpoint the page-21 problem.
+
+### Bug 3 — Recent Exports 401 (real fix, this time)
+- Iteration 18's `credentials:'include'` fix was cargo-cult — it made preview happy but didn't reach production because production uses JWT in localStorage, not cookies.
+- Real bug: `RecentExportsDialog` was the ONE component using raw `fetch()` instead of the shared axios `api` client whose interceptor injects the Bearer header.
+- Fix: switched to `api.get('/admin/recent-exports')`. Same pattern as every other authenticated call.
+- Verified LIVE via network capture: outbound request now carries `Authorization: Bearer …`, no cookie header (credentials mode correctly removed).
+
+### Testing (iteration 19 report)
+- **7/7 backend tests pass**. Bug 3 verified end-to-end via live browser network capture. Zero regressions.
+- New test file: `/app/backend/tests/test_iteration19_bugs.py`.
+
+### Code-review nits from the testing agent (non-blocking)
+- `admin_book_diagnose` with `probe_bytes=true` on a 300-page book issues 300 sequential storage fetches. For the current diagnostic-only use case that's fine; when scaled, add a semaphore + gather.
+- `RecentExportsDialog` still auto-loads inside render (unchanged since prior iteration). Convert to `useEffect(() => open && load(), [open])` as a cleanup.
+
+## Next Tasks
+- Operator: hit `/api/admin/book-diagnose/361de655-.../page_no=21?probe_bytes=true` on production. The `probe.decode_ok`, `probe.byte_count`, and `file_record.size` fields should identify page 21's failure mode.
+- Once the page-21 root cause is known, decide fix path: (a) instruct user to re-upload the offending image, (b) add a WeasyPrint timeout guard for individual page renders, or (c) both.
+- Phase 2 Editor.jsx refactor still queued.
+- Convert RecentExportsDialog auto-load to useEffect (cleanup).
+
