@@ -1,0 +1,45 @@
+{
+  "summary": "Regression-tested the P1 refactor that extracted onExportPdf + PDF-export state into a new hook usePdfExport, and the debounced autosave effect into useAutoSave. Logged in as admin, opened the seed book (dc988a6f-…) in the Editor, and exercised the export/file-health/cancel flows end-to-end against the public preview URL. Zero console errors and zero pageerrors were emitted during any of the runs — the extracted hooks mount and run cleanly, no 'Rendered fewer/more hooks' or 'Cannot read properties of undefined' from lifecycle re-ordering.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "verified_behaviours": [
+    "Editor.jsx imports usePdfExport and useAutoSave; destructures { onExportPdf, exporting, exportsBump, fileHealthProblems, onFileHealthCancel, onFileHealthProceed } at line 1165 and { skipNextRef: skipNextAutoSaveRef } at line 267. Wiring to FileHealthWarningDialog (line 1648-1651) and ExportPopover (line 1677-1679) uses the destructured hook state — no dangling references to the old inlined state.",
+    "skipNextAutoSaveRef.current = true is still set BEFORE the setBook() calls at line 714 (TOC auto-refresh) and line 1619 (history restore) — so programmatic book mutations continue to suppress the next autosave cycle.",
+    "Hook mount produces 0 console errors and 0 pageerrors on the /editor/<id> route (verified across three separate Playwright sessions).",
+    "Export popover renders the 3 CTAs with correct data-testids: export-whole-book, export-print, preview-in-tab-toggle. export-pdf-button opens the popover, export-popover element is visible after click.",
+    "File-health pre-flight fires when clicking export-whole-book. When routed to return { problems: [...] }, the FileHealthWarningDialog (data-testid='file-health-dialog') opens with both file-health-cancel and file-health-proceed buttons visible.",
+    "file-health-cancel closes the dialog cleanly and DOES NOT start a PDF job (0 POSTs to /api/books/{id}/pdf-jobs observed during the cancel path).",
+    "file-health-proceed closes the dialog and immediately kicks off the PDF job — Sonner custom toast renders 'Building PDF Starting…0s' with the same wording as pre-refactor (verified against iter_15 report). No dialog loop (proceed sets options.__skipHealthCheck=true which bypasses the second pre-flight, exactly as the JSDoc on onFileHealthProceed describes).",
+    "When file-health returns 0 problems (real prod state on the seed book at test time — the previously reported 44 needs_reupload records have been resolved), export skips the dialog entirely and goes straight to Building-PDF. That is the correct advisory behaviour.",
+    "Editor.jsx dropped from 2872 → 2461 lines (411-line reduction) as claimed by the change note; the hook file (~460 lines) contains the same closure verbatim per source review.",
+    "usePdfExport.jsx and useAutoSave.js pass ESLint with no warnings."
+  ],
+  "not_fully_exercised_in_this_iteration_but_verified_by_code_review": [
+    "Cancel button inside the running PDF-export toast — the seed book PDF job completes so quickly with a live backend that the Cancel button vanished before the click could land in one run. The onCancel closure inside usePdfExport (lines 118-133) is byte-identical to the pre-refactor version (still uses the shared cancelState object + POSTs to /pdf-jobs/{id}/cancel with authHeaders), so this is safe by code equivalence.",
+    "Range export — the ExportPopover.jsx onExport call at line 158 still forwards { start, end } as before; the hook destructures range.start/range.end unchanged at line 156.",
+    "Autosave — could not click into a contenteditable text block through Playwright's default selector (the editor uses a nested text-block widget that needs a double-click to activate). Code review of useAutoSave.js confirms: 1.2 s setTimeout, timerRef cleared on every book change, skipNextRef starts true (skips initial load) and is exposed to callers. The debounced saveBook(false) call is called with the SAME arguments as pre-refactor.",
+    "Preview-in-tab download vs new-tab open path — hook lines 357-381 are unchanged from pre-refactor; iter_15 already verified this path (window.open call vs a[download] element) when the same code was inline in Editor.jsx."
+  ],
+  "test_report_links": ["/app/test_reports/iteration_16.json", "/app/test_reports/iteration_15.json"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Refactor quality is good: usePdfExport takes { book, saveBook } — the minimal surface the closure actually needs. No prop-drilling of setBook/setPages/etc. Return shape matches what Editor.jsx destructures 1:1.",
+    "useAutoSave correctly exposes skipNextRef (via `return { skipNextRef }`) so external callers can suppress autosave for programmatic book mutations — this is the ONE non-trivial part of the hook contract and it's wired correctly at Editor.jsx lines 714 and 1619.",
+    "useAutoSave.js is 46 lines and usePdfExport.jsx is 460 lines. Both are single-purpose, well-documented modules — good extraction.",
+    "Editor.jsx is still 2461 lines. Well over the 700-line guideline; the export/autosave extraction is a good first step and there is more room for further reduction (e.g. History dialog, TOC composition, keyboard handlers) but that is out of scope for THIS refactor.",
+    "Nit: useAutoSave.js line 30 comment 'so the very first effect run after load doesn't auto-save' — the initial skipNextRef=true ALSO catches the transient book=null→loaded transition; effect's early return at line 33 (`if (loading || !book) return;`) provides the belt+braces. Correct behaviour, comment could mention the two layers.",
+    "Nit: usePdfExport imports PdfExportToast via '@/components/PdfExportToast' — Editor.jsx no longer needs its own import of PdfExportToast (was previously the only consumer). The old import in Editor.jsx has been correctly removed."
+  ],
+  "updated_files": [],
+  "success_rate": { "backend": "N/A (skipped per request)", "frontend": "100% for tested surface — file-health dialog open/cancel/proceed + toast shape + hook lifecycle" },
+  "test_credentials": "chris@dcsbuilt.com.au / Redcar01 (admin, from /app/memory/test_credentials.md).",
+  "seed_data_creation": "None. Used existing seed book id dc988a6f-5595-4d94-a959-d7e6affecf51.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "The live prod DB no longer has needs_reupload images on the seed book (GET /api/books/dc988a6f.../file-health returns problems:[] as of this test). To exercise the FileHealthWarningDialog in future automated tests, ROUTE-INTERCEPT the /api/books/*/file-health endpoint from Playwright with `await page.route('**/api/books/*/file-health', route)` and return a synthetic { problems:[...] } body — I did this here and it worked cleanly. usePdfExport lives at /app/frontend/src/hooks/usePdfExport.jsx, useAutoSave at /app/frontend/src/hooks/useAutoSave.js. Data-testids exposed by the refactor are unchanged: export-pdf-button, export-popover, export-whole-book, export-print, preview-in-tab-toggle, file-health-dialog, file-health-cancel, file-health-proceed.",
+  "rca of the issue": "N/A — pure refactor, all regressions passed. Extracted hook is a byte-for-byte relocation of the old inline closure; the only new API surface is the return-value destructure and the skipNextRef ref forwarding, both of which are wired correctly in Editor.jsx."
+}
