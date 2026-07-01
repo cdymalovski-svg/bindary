@@ -2012,6 +2012,7 @@ async def admin_book_diagnose(
     book_id: str,
     page_no: Optional[int] = None,
     probe_bytes: bool = False,
+    include_text_content: bool = False,
     user=Depends(_get_current_user_admin),
 ):
     """Read-only per-page inspector for a book — used to pin down which
@@ -2049,6 +2050,20 @@ async def admin_book_diagnose(
 
     from PIL import Image as _PILImage
     import io as _io
+    # Cached Google Fonts families — from fonts_cache.GOOGLE_FONTS_URL.
+    # Anything referenced on a block that is NOT in this set forces
+    # WeasyPrint to fall back to the system serif at render time,
+    # which under some CSS layouts is where hangs have been observed.
+    # Set is derived from the family= query params in GOOGLE_FONTS_URL —
+    # kept in-sync manually because fonts_cache does not expose a helper.
+    _CACHED_FAMILIES = {
+        "Abril Fatface", "Bebas Neue", "Bitter", "Caveat", "Cormorant Garamond",
+        "Crimson Text", "Dancing Script", "DM Sans", "EB Garamond", "Fira Code",
+        "Inconsolata", "Indie Flower", "JetBrains Mono", "Kalam",
+        "Libre Baskerville", "Lobster", "Lora", "Merriweather", "Montserrat",
+        "Nunito", "Outfit", "Pacifico", "Playfair Display", "Poppins",
+        "Raleway", "Sacramento", "Work Sans",
+    }
 
     pages = book.get("pages") or []
     all_image_paths: set[str] = set()
@@ -2114,8 +2129,19 @@ async def admin_book_diagnose(
             "page_no": pno,
             "block_count": len(pg.get("blocks") or []),
             "background_image_path": pg.get("background_image_path"),
+            "background_color": pg.get("background_color"),
+            "full_bleed": pg.get("full_bleed"),
+            "show_page_number": pg.get("show_page_number"),
+            "page_number_font": pg.get("page_number_font"),
+            "page_number_size": pg.get("page_number_size"),
             "blocks": [],
         }
+        # Font-cache cross-reference for THIS page. Collect every
+        # font_family declared on this page (blocks + page number font),
+        # then partition into cached vs missing. Missing families are
+        # the ones forcing WeasyPrint's fallback path.
+        fonts_on_page: set[str] = set()
+
         for blk in (pg.get("blocks") or []):
             b_out = {
                 "type": blk.get("type"),
@@ -2124,6 +2150,7 @@ async def admin_book_diagnose(
                     "y": blk.get("y"),
                     "width": blk.get("width"),
                     "height": blk.get("height"),
+                    "z_index": blk.get("z_index"),
                 },
             }
             if blk.get("type") == "image":
@@ -2137,9 +2164,39 @@ async def admin_book_diagnose(
                 # Rough text-length signal — useful to spot a page with
                 # a runaway text block that might trigger a WeasyPrint
                 # layout edge case.
-                text = blk.get("text") or blk.get("html") or ""
-                b_out["text_length_chars"] = len(text)
+                html = blk.get("html") or blk.get("text") or ""
+                b_out["text_length_chars"] = len(html)
+                b_out["font_family"] = blk.get("font_family")
+                b_out["font_size"] = blk.get("font_size")
+                b_out["text_align"] = blk.get("text_align")
+                b_out["color"] = blk.get("color")
+                b_out["background_color"] = blk.get("background_color")
+                b_out["text_role"] = blk.get("text_role")
+                b_out["is_chapter"] = blk.get("is_chapter")
+                b_out["is_toc"] = blk.get("is_toc")
+                if blk.get("font_family"):
+                    fonts_on_page.add(blk["font_family"])
+                # Full text content — gated so a routine metadata call
+                # doesn't drown the response with page-worth of prose.
+                # When enabled, cap at 20 KB so a runaway 2 MB HTML
+                # blob doesn't bloat the response either — 20 KB is
+                # ~10 pages of dense text, far more than any legit
+                # single block should contain.
+                if include_text_content:
+                    b_out["html"] = html[:20_000]
+                    b_out["html_truncated"] = len(html) > 20_000
             page_report["blocks"].append(b_out)
+
+        # Also count the page-number font if enabled.
+        if pg.get("show_page_number") and pg.get("page_number_font"):
+            fonts_on_page.add(pg["page_number_font"])
+
+        # Font partition — cached vs missing.
+        page_report["fonts_referenced"] = sorted(fonts_on_page)
+        page_report["fonts_missing_from_cache"] = sorted(
+            fonts_on_page - _CACHED_FAMILIES
+        )
+
         # Probe page-level background too if requested.
         bg_path = pg.get("background_image_path")
         if bg_path:
@@ -2154,7 +2211,10 @@ async def admin_book_diagnose(
         "title": book.get("title"),
         "total_pages": len(pages),
         "probed_bytes": bool(probe_bytes),
+        "include_text_content": bool(include_text_content),
         "requested_page_no": page_no,
+        "cached_font_families": sorted(_CACHED_FAMILIES),
+        "book_text_presets": book.get("text_presets"),
         "pages": report_pages,
     }
 

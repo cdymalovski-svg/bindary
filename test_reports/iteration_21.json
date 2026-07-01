@@ -1,0 +1,38 @@
+{
+  "summary": "Backend-only verification of iteration 21 — the new `?include_text_content=true` query param and enriched response shape on GET /api/admin/book-diagnose/{book_id}. 10 pytest tests written, all passing (100%). Validated: (a) default behaviour omits html/html_truncated; (b) include_text_content=true adds them and echoes the flag; (c) 20 KB truncation is exact (25000-char input → html length exactly 20000, html_truncated=true, text_length_chars still 25000 — full length); (d) new top-level keys `cached_font_families` (27 families, sorted, deduped) and `book_text_presets`; (e) new per-page keys background_color, full_bleed, show_page_number, page_number_font, page_number_size, fonts_referenced, fonts_missing_from_cache; (f) Arial + Helvetica surface in fonts_missing_from_cache on a temp book while Belinda page 1 correctly reports []; (g) read-only invariant preserved (book.updated_at unchanged after two diagnose calls with include_text_content=true); (h) regression on old consumers: block.type / block.geom / block.file_record / block.storage_path still present.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_book_diagnose_text_content.py",
+    "/app/test_reports/pytest/iter21_book_diagnose.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "MAINTENANCE RISK (not a bug, worth calling out): _CACHED_FAMILIES at server.py ~line 2059 is a hand-maintained mirror of fonts_cache.GOOGLE_FONTS_URL. Today they match exactly (27/27, verified by regex-extracting family= params and diffing — 0 delta). But there's no CI check binding them; a future edit to fonts_cache.GOOGLE_FONTS_URL without touching server.py would silently produce false-positive `fonts_missing_from_cache` entries. Consider deriving the set at import time from GOOGLE_FONTS_URL via the same regex used in the test, or exposing a `CACHED_FAMILIES` constant from fonts_cache and importing it here. Two-line change, eliminates the drift class entirely.",
+    "GOOD: html slicing uses html[:20_000] then compares len(html) > 20_000 for the truncated flag — off-by-one-safe (20000 chars kept, flag set iff the pre-slice length exceeded the cap). Verified numerically with a 25 KB input producing exactly 20000 chars.",
+    "GOOD: text_length_chars is computed from the UNTRUNCATED html before the cap is applied, so operators still see the true block size even when the payload is truncated for transport. This is the right ordering.",
+    "GOOD: fonts_referenced is built from a set() then sorted() — deterministic ordering across calls, useful for diffing.",
+    "GOOD: page-number font is folded into fonts_on_page only when show_page_number is truthy AND page_number_font is set — avoids reporting a phantom font when page numbers are disabled.",
+    "MINOR: response is missing an explicit content-type/charset check for the html field. Since we truncate on a character (not byte) boundary and Python str indexing is O(1) code-point-based, a multi-byte character mid-boundary is fine, but if the html contains an HTML tag that gets split (e.g. `<p class='...'>` cut mid-attribute) the truncated blob is not valid HTML. Not a bug for a diagnostic endpoint, but worth documenting to any future consumer that html_truncated=true means 'do not render this'."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_book_diagnose_text_content.py"
+  ],
+  "success_rate": {
+    "backend": "100% (10/10 tests passing)",
+    "frontend": "N/A (backend-only per review request)"
+  },
+  "test_credentials": "chris@dcsbuilt.com.au / Redcar01 (admin — read from /app/backend/.env by conftest.py fixture)",
+  "seed_data_creation": "Test creates + deletes one temporary book titled TEST_ArialFont per test session (page 1 has a 25000-char text block using font_family='Arial' and page_number_font='Helvetica' — both intentionally NOT in the 27-family cache set — to verify truncation-exactness and missing-fonts detection). Cleaned up in the temp_book_with_arial fixture teardown. Belinda seed book (dc988a6f-5595-4d94-a959-d7e6affecf51) is used read-only.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "The test file /app/backend/tests/test_book_diagnose_text_content.py is a regression suite for the admin_book_diagnose endpoint response shape. It looks up Belinda by title (not by hard-coded id) so it survives re-seeds. If a future iteration adds a 28th cached font to fonts_cache.GOOGLE_FONTS_URL, TestBookDiagnoseDefault::test_top_level_shape's `len == 27` assertion will need to be bumped — flag this to main agent when editing GOOGLE_FONTS_URL. The suite auto-picks up the admin bearer from conftest.py.",
+  "rca of the issue": "No bug found. Live sanity check confirmed the response shape reported by main agent verbatim: cached_font_families has 27 entries, Belinda page 1 fonts_referenced = [Cormorant Garamond, Playfair Display, Poppins], fonts_missing_from_cache = [], book_text_presets is a dict (Poppins body preset). 20 KB truncation math is exact (25000-char input → 20000-char html + html_truncated=true + text_length_chars=25000)."
+}
