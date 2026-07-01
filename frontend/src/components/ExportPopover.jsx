@@ -163,6 +163,21 @@ export default function ExportPopover({ bookId, totalPages, exporting, onExport,
     onExport(null, { previewInTab, pdfx, dpi });
   };
 
+  // "Export in halves" — practical workaround for very long books (40+
+  // pages) where the final `apply_print_boxes` stamping step is memory-
+  // pressured (loads the whole merged PDF into pypdf twice at peak).
+  // Each half is a smaller job that stamps ~half the pages, staying
+  // well under the pod's per-process memory ceiling. Users get two
+  // ranged PDFs and assemble them externally.
+  const halfSplit = totalPages > 0 ? Math.ceil(totalPages / 2) : 0;
+  const showHalves = totalPages >= 40;
+  const submitHalf = (which /* 'first' | 'second' */) => {
+    setOpen(false);
+    const s = which === 'first' ? 1 : halfSplit + 1;
+    const en = which === 'first' ? halfSplit : totalPages;
+    onExport({ start: s, end: en }, { previewInTab, pdfx, dpi });
+  };
+
   // Print = generate the PDF then open the browser's print dialog with
   // the result. Implemented as a flag on the existing export pipeline so
   // every option (page range future, PDF/X, DPI) flows through one path.
@@ -374,6 +389,46 @@ export default function ExportPopover({ bookId, totalPages, exporting, onExport,
             </div>
           )}
         </form>
+
+        {/* Export in halves — appears only for books ≥40 pages. Splits
+            the export at the midpoint so each job stamps roughly half
+            the pages, avoiding the memory ceiling seen on large books
+            during the final apply_print_boxes step. Users get two
+            ranged PDFs and assemble externally. */}
+        {showHalves && (
+          <div className="px-4 py-3 border-b border-rule" data-testid="export-halves-section">
+            <p className="label-caps text-ink-mute mb-1">Export in halves</p>
+            <p className="text-xs text-ink-mute mb-2 leading-snug">
+              Recommended for very large books. Each half exports as a
+              smaller job that avoids memory pressure during the final
+              stamping step. You&apos;ll get two PDFs to assemble externally.
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              <Button
+                type="button"
+                onClick={() => submitHalf('first')}
+                disabled={exporting}
+                variant="outline"
+                className="w-full border-rule rounded-sm h-10 hover:bg-paper-soft flex flex-col items-center justify-center leading-tight"
+                data-testid="export-half-first"
+              >
+                <span className="text-xs">Pages 1–{halfSplit}</span>
+                <span className="text-[10px] text-ink-mute">first half</span>
+              </Button>
+              <Button
+                type="button"
+                onClick={() => submitHalf('second')}
+                disabled={exporting}
+                variant="outline"
+                className="w-full border-rule rounded-sm h-10 hover:bg-paper-soft flex flex-col items-center justify-center leading-tight"
+                data-testid="export-half-second"
+              >
+                <span className="text-xs">Pages {halfSplit + 1}–{totalPages}</span>
+                <span className="text-[10px] text-ink-mute">second half</span>
+              </Button>
+            </div>
+          </div>
+        )}
 
         {/* Cover spread export — IngramSpark / commercial print layout:
             BACK | SPINE | FRONT on one wide PDF page with the outer-edge
