@@ -64,6 +64,7 @@ import CompliancePanel from '@/components/CompliancePanel';
 import CoverSpreadPreview from '@/components/CoverSpreadPreview';
 import StorageAuditDialog from '@/components/StorageAuditDialog';
 import RecentExportsDialog from '@/components/RecentExportsDialog';
+import BookDiagnoseDialog from '@/components/BookDiagnoseDialog';
 import FileHealthWarningDialog from '@/components/FileHealthWarningDialog';
 import { useAuth } from '@/auth/AuthContext';
 
@@ -161,6 +162,7 @@ export default function Editor() {
   // never modify book/page data.
   const [storageAuditOpen, setStorageAuditOpen] = useState(false);
   const [recentExportsOpen, setRecentExportsOpen] = useState(false);
+  const [bookDiagnoseOpen, setBookDiagnoseOpen] = useState(false);
   const { user: authUser } = useAuth();
   const isAdmin = authUser?.role === 'admin';
   // On window resize, snap drawers to "open" once we cross into lg+. Below
@@ -1602,6 +1604,14 @@ export default function Editor() {
                   <span className="w-4 h-4 text-ink-soft text-center text-xs">≣</span>
                   <span>Recent exports…</span>
                 </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={(e) => { e.preventDefault(); setBookDiagnoseOpen(true); }}
+                  className="rounded-sm cursor-pointer gap-2"
+                  data-testid="more-menu-book-diagnose"
+                >
+                  <span className="w-4 h-4 text-ink-soft text-center text-xs">?</span>
+                  <span>Diagnose page…</span>
+                </DropdownMenuItem>
               </>
             )}
           </DropdownMenuContent>
@@ -1641,6 +1651,12 @@ export default function Editor() {
             <RecentExportsDialog
               open={recentExportsOpen}
               onOpenChange={setRecentExportsOpen}
+            />
+            <BookDiagnoseDialog
+              open={bookDiagnoseOpen}
+              onOpenChange={setBookDiagnoseOpen}
+              defaultBookId={book?.id || ''}
+              defaultPageNo={activePageIndex + 1}
             />
           </>
         )}

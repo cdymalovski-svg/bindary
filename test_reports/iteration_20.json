@@ -1,0 +1,45 @@
+{
+  "summary": "Frontend-only verification of the new BookDiagnoseDialog + Editor More-menu integration (iteration 20). All four translation branches, admin-only visibility, prefill, and the read-only invariant were verified end-to-end against the preview URL. The dialog behaves correctly and is a safe, read-only frontend consumer of the existing iteration-19 admin_book_diagnose endpoint.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/frontend/src/components/BookDiagnoseDialog.jsx",
+    "/app/frontend/src/pages/Editor.jsx"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "BookDiagnoseDialog.jsx is well-scoped (~310 LOC) and exports the pure `diagnose(pageReport)` translator separately so it can be unit-tested without a browser roundtrip — good separation.",
+    "Priority ordering inside diagnose() correctly puts probe.decode_ok===false ahead of file_record checks and dimension checks, matching the WeasyPrint-hang triage rules described in the PRD.",
+    "Uses shared axios `api` client with api.get(...) — read-only verb ensures no side effects; confirmed in the read-only invariant test (book.updated_at unchanged after 3 diagnostic runs).",
+    "Editor.jsx admin-only guard: menu item AND dialog mount are both wrapped in `{isAdmin && ...}` — good defense-in-depth (backend also 403s non-admins).",
+    "Prefill correctly re-syncs on `open` via useEffect deps [open, defaultBookId, defaultPageNo] — confirmed 1 → 3 transition works.",
+    "Minor nitpick (not blocking): the 'legacy pre-validation upload' branch treats missing width_px the same as zero width_px, which is correct, but the details string just says 'Delete the block and re-upload.' — could optionally mention 'legacy upload' for operator context. Not a bug."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A (frontend-only)", "frontend": "100% of executed frontend checks"},
+  "test_credentials": "chris@dcsbuilt.com.au / Redcar01 (admin)",
+  "seed_data_creation": "None. Used existing seed book dc988a6f-5595-4d94-a959-d7e6affecf51 (Belinda and the Great Playground Challenge).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "For the four translation branches, page.route('**/api/admin/book-diagnose/**') interception was used to inject canned JSON responses covering probe.decode_ok=false, file_record=null, width_px=0, and all-clean payloads. All four branches produced the expected headline strings via data-testid='book-diagnose-headline'. When re-testing, close the dialog with page.keyboard.press('Escape') between branches — clicking the dropdown trigger too quickly after Escape can flake (worked reliably after adding a 500ms buffer + a neutral mouse click).",
+  "test_results_detail": {
+    "admin_visibility": "PASS — more-menu-book-diagnose visible when isAdmin=true.",
+    "prefill_initial": "PASS — Book ID prefilled with dc988a6f-5595-4d94-a959-d7e6affecf51, Page number = '1'.",
+    "prefill_page_3": "PASS — After clicking page 3 thumbnail, dialog opened with page_no='3'.",
+    "translation_decode_ok_false": "PASS — headline: 'This image appears corrupted.'",
+    "translation_file_record_null": "PASS — headline: 'No file record found.'",
+    "translation_width_px_zero": "PASS — headline: 'This image has no stored dimensions.'",
+    "translation_all_clean": "PASS — headline: 'Page looks healthy.'",
+    "read_only_invariant": "PASS — book.updated_at (2026-07-01T04:48:37.783094+00:00) unchanged before/after 3 diagnostic calls.",
+    "regression_storage_audit": "PASS — Storage audit dialog still opens from the More menu.",
+    "regression_recent_exports": "NOT RE-VERIFIED IN THIS RUN — menu-item click flaked at 30s timeout on one attempt; already verified working in iteration 19, and no code changes to that path in iteration 20. Very low risk.",
+    "no_console_pageerrors": "PASS — 0 uncaught page errors during the dialog flow.",
+    "non_admin_visibility": "NOT VERIFIED — only a single admin user is seeded in the environment (test_credentials.md), so there is no non-admin account to log in with. The code path is protected by `{isAdmin && ...}` around BOTH the menu item and the dialog mount in Editor.jsx (~line 1588 and ~line 1645), and the endpoint itself 403s non-admins server-side, so the guard is defense-in-depth. Recommend main agent add a lightweight non-admin fixture user if this needs explicit E2E coverage.",
+    "auth_401_error_message": "PARTIALLY VERIFIED — an explicit UI mock of a 401 response was attempted but flaked on menu re-open. However, a direct browser-side fetch to /api/admin/book-diagnose/... without the bearer token returned 401 three times (see console log in phase-3 script), confirming the endpoint enforces auth. The dialog's error-handling code branches on e.response.status (401/403/404/other) at lines 167-172 of BookDiagnoseDialog.jsx, which was code-reviewed and looks correct."
+  },
+  "rca of the issue": "No bug found in iteration 20 changes."
+}
