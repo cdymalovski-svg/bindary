@@ -616,3 +616,33 @@ Static analysis pass; both endpoints stress-tested under live load; admin-only g
 - WeasyPrint FontConfiguration startup registration (last ~1s/page perf gap).
 - Drag-to-reorder pages in the sidebar (P3).
 - Remaining keyboard shortcuts: ⌘D duplicate, ⌘] bring forward, Delete.
+
+## 2026-02-13 — Iteration 16: Editor.jsx Phase-1 Refactor (usePdfExport + useAutoSave)
+**Goal**: Extract PDF-export logic and debounced autosave from `Editor.jsx` (2879 lines → 2461 lines, -418) into single-purpose custom hooks. Zero behaviour change — pure refactor for maintainability.
+
+### New hook modules
+- **`/app/frontend/src/hooks/usePdfExport.jsx`** (460 lines) — encapsulates the entire ~400-line `onExportPdf` flow. Handles: file-health pre-flight, saveBook flush, POST /pdf-jobs, 1.2 s poll loop with per-stage 6-min idle deadline, custom Sonner progress toast with cancel button, print/preview/download decision tree (`printAfter` → hidden iframe + `.print()`, `previewInTab` → new tab, else direct download), and success/error/cancel messaging. Exposes `{ onExportPdf, exporting, exportsBump, fileHealthProblems, onFileHealthCancel, onFileHealthProceed }`. Only depends on `{ book, saveBook }` — minimal surface.
+- **`/app/frontend/src/hooks/useAutoSave.js`** (46 lines) — debounced 1.2 s autosave effect. Skips the first run (freshly loaded book). Returns `{ skipNextRef }` so callers (TOC auto-refresh, history restore) can suppress the next autosave cycle for programmatic `setBook()` calls that aren't user edits.
+
+### Editor.jsx integration
+- Line ~275: `useAutoSave(book, loading, saveBook)` replaces the previous 14-line effect.
+- Line ~1157: `usePdfExport({ book, saveBook })` destructure replaces the previous 396-line inline `onExportPdf`.
+- `FileHealthWarningDialog` now wires straight to `onFileHealthCancel` / `onFileHealthProceed` (no inline closures).
+- Removed local state: `exporting`, `exportsBump`, `fileHealthProblems`, `pendingExport`, `autoSaveTimerRef` (all migrated into hooks).
+- Removed `PdfExportToast` import from Editor.jsx (now imported inside the hook).
+
+### Testing
+- Testing agent iteration 16 report: **frontend regressions 100% pass**. Zero console errors, zero page errors across three Playwright sessions. FileHealthWarningDialog opens/cancels/proceeds correctly. PDF job starts + progress toast renders identically to pre-refactor. `skipNextAutoSaveRef` still suppresses autosave on TOC refresh (line 714) and history restore (line 1619) — programmatic mutations don't trigger phantom saves.
+
+### Not extracted (deferred to Phase 2/3)
+- `PageSidebar`, `EditorToolbar`, `EditorCanvas` — user explicitly chose Phase 1 only. Editor.jsx is still 2461 lines; further reduction available in a future iteration.
+
+## Next Tasks
+- Phase 2 refactor: `PageSidebar` + `EditorToolbar` extraction (low-risk).
+- Phase 3 refactor: `EditorCanvas` extraction (higher risk — deeply coupled with page state, drag/drop, pinch-zoom).
+- Phase 3.2 — ICC profile picker (SWOP v2 vs Fogra39).
+- Phase 3.4 — Starter-pack templates.
+- WeasyPrint FontConfiguration startup registration (last ~1s/page perf gap).
+- Drag-to-reorder pages in the sidebar (P3).
+- Remaining keyboard shortcuts: ⌘D duplicate, ⌘] bring forward, Delete.
+
