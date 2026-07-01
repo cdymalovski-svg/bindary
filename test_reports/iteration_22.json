@@ -1,0 +1,27 @@
+{
+  "summary": "Frontend-only verification of BookDiagnoseDialog (iteration 22 review point #5). All 11 UI/integration steps passed end-to-end against the live preview URL. Confirmed: (1) admin sign-in with chris@dcsbuilt.com.au works; (2) 'Diagnose page…' item appears in the toolbar More menu (admin-gated, data-testid=more-menu-book-diagnose); (3) dialog opens with data-testid=book-diagnose-dialog; (4) the new checkbox is present with both data-testid=book-diagnose-include-text and its wrapping label data-testid=book-diagnose-include-text-label, defaulted ON (data-state='checked', aria-checked='true'); (5) with the checkbox ON the primary request URL is /api/admin/book-diagnose/{id}?page_no=1&probe_bytes=true&include_text_content=true — verified verbatim; (6) after toggling OFF the primary request URL is /api/admin/book-diagnose/{id}?page_no=1&probe_bytes=true — the include_text_content param is OMITTED, not sent as false (matches the spread-conditional at line 171 of BookDiagnoseDialog.jsx); (7) with page.route mocking a response containing fonts_missing_from_cache=['Comic Sans MS','Weird Font'] the amber banner renders with data-testid=book-diagnose-missing-fonts, carries the amber CSS classes 'border-amber-500/40 bg-amber-50', shows the header 'Warning: these fonts are not in the cache and may cause a render hang:' and lists both font names in a mono span.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "GOOD: line 171 uses `...(includeTextContent ? { include_text_content: true } : {})` — this is the correct pattern because axios' default `paramsSerializer` will emit `include_text_content=true` when the key is present and omit the param entirely when the key is absent. Sending `include_text_content=false` explicitly would have been equally correct semantically but this pattern produces a cleaner URL for the OFF case (as observed on the wire).",
+    "GOOD: neighbour requests at line 192 always send `probe_bytes=false, include_text_content=false` — the metadata-only scan is cheap regardless of the main-request toggle. The mocked-route filter `probe_bytes=true` in the test correctly targeted only the primary request so neighbour requests fell through to the real backend without polluting the assertion.",
+    "GOOD: default state `useState(true)` for includeTextContent (line 140) means operators get the full evidence on first click — matches the requirement in the comment at line 258-262. Verified live (data-state='checked').",
+    "GOOD: `onCheckedChange={(v) => setIncludeTextContent(v === true)}` (line 269) correctly coerces Radix's `'indeterminate' | boolean` union into a strict boolean, so the checkbox can never wedge into an indeterminate state.",
+    "GOOD: amber banner (lines 305-322) renders ONLY when `(pageReport?.fonts_missing_from_cache || []).length > 0` — empty arrays don't produce a noisy false-positive banner. Confirmed live: Belinda page 1 (fonts_missing_from_cache=[]) does not render the banner; mocked response with two entries does.",
+    "MINOR (nit only, not a bug): the amber banner and the neighbours block are placed BEFORE the main green/red diagnosis card in the DOM (lines 298-361 vs 365+). Visually this puts the warning above the healthy/error verdict, which is intentional per the comment at line 300-304 (\"amber banner rendered ABOVE the main diagnosis so it's the first thing the operator sees\"). Screenshot confirms the ordering."
+  ],
+  "updated_files": [],
+  "success_rate": { "backend": "N/A (frontend-only per review request)", "frontend": "100% (11/11 UI/integration steps passed)" },
+  "test_credentials": "chris@dcsbuilt.com.au / Redcar01 (admin, from /app/memory/test_credentials.md)",
+  "seed_data_creation": "None. Test used the existing 'Belinda and the Great Playground Challenge' book (id dc988a6f-5595-4d94-a959-d7e6affecf51) read-only. Amber-banner path exercised via page.route mocking (no persistent state changes).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "The frontend wiring for the include_text_content toggle and the fonts_missing_from_cache amber banner is fully verified against the live preview URL. If a future change moves the checkbox off the default-ON state, update the STEP7 expectation. To exercise the amber banner without mocking, create a book whose text block references a font not in fonts_cache.GOOGLE_FONTS_URL (e.g. font_family='Comic Sans MS') — the backend already returns fonts_missing_from_cache correctly, verified in /app/backend/tests/test_book_diagnose_text_content.py iteration 21.",
+  "rca of the issue": "No bug found. All four review points in the request confirmed working: dialog opens, checkbox present with both testids, ON sends include_text_content=true, OFF omits the param, and the amber banner renders when fonts_missing_from_cache is non-empty."
+}
