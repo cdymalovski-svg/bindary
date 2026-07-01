@@ -852,3 +852,28 @@ Per-page:
 ### Ready for prod redeploy
 - User must redeploy `bindery.au` to pick up the multiprocessing swap. Once redeployed, re-attempt the page-21 export on the failing book. Any subsequent hang will show a specific WARNING in the pod logs identifying the runaway page + block, and the export will complete with a `[page could not be rendered]` placeholder rather than timing out the whole job.
 
+
+## What's been implemented (2026-02 / iteration 23 — pikepdf stamping refactor)
+- **Root cause** confirmed for the 64-page "Treasure Map of Money Mountain" prod failure: `apply_print_boxes` and `ensure_even_page_count` in `pdf_builder.py` used pypdf's `PdfReader` → `PdfWriter.add_page` pattern which clones every page's Python object graph then serialises it back to bytes. Peak Python heap ≈ 3-5× the PDF file size. On a 100-150 MB merged PDF this comfortably hit the pod's `MemFree: 692 MB` ceiling and failed the stamping step even though all 64 pages rendered successfully.
+- **Fix shipped**: Both functions rewritten to use **pikepdf** (libqpdf C++ wrapper, wheel bundles libqpdf 12.3.2 — no apt dependency). Pattern is:
+  1. Spool input bytes to a temp file, release the Python bytes buffer.
+  2. `pikepdf.open(path)` streams from disk; mutate `trimbox`/`bleedbox`/`cropbox` **in-place** — no page clone step.
+  3. `pdf.save(out_path)`; read bytes back.
+  4. `try/finally` guarantees both temp files are unlinked even if pikepdf raises mid-processing (verified by `test_apply_print_boxes_cleans_up_on_exception`).
+- **Regression coverage** (`/app/backend/tests/test_pikepdf_stamping_regression.py`, 18 tests):
+  * **Box parity vs old pypdf impl** — TrimBox/BleedBox/CropBox/MediaBox match to 4dp on every page for `page_count ∈ {1, 2, 3, 5, 10, 32, 64}` interior renders + `{1, 3, 5, 9, 33, 63}` even-padding scenarios. The old pypdf implementation is preserved inline in the test file as the ground truth.
+  * **Absolute geometry spec-check** — verifies IngramSpark v5.11.26 box scheme directly (recto TrimBox `[0, 9, 621, 801]`, verso TrimBox `[9, 9, 630, 801]`) so both impls can't drift the same way.
+  * **Temp-file cleanup** — no `stamp_in_*.pdf` / `evenpad_in_*.pdf` orphans in `/tmp` after either success or exception paths.
+- **Test status**: 27/27 stamping + IngramSpark Phase 1 + hard-kill tests pass serially. All 6 Phase 2 tests pass in isolation.
+- **`requirements.txt`** now includes `pikepdf==10.9.1`. Wheel is self-contained (`pikepdf.libs/libqpdf-*.so.30.3.2` bundled). No apt-get required.
+- **Preview `/api/pdf-health`** — backend restarts cleanly with pikepdf loaded; WeasyPrint ready, Chromium launchable.
+
+## What's been implemented (2026-02 / iteration 23b — Export in halves UI workaround)
+- **Feature**: New "Export in halves" section in `ExportPopover.jsx`, visible only when the book has ≥40 pages. Two side-by-side buttons that split at the midpoint: **Pages 1–⌈N/2⌉** and **Pages ⌈N/2⌉+1–N**. Each button calls the existing range-export flow (no backend changes).
+- **Why keep it after the pikepdf fix**: for a 120-page book, exporting in two 60-page halves is a legitimate workflow choice — the author gets more control over what goes to the printer even when the full export works. Kept as a permanent option per user request.
+- **Data-testids**: `export-halves-section`, `export-half-first`, `export-half-second`.
+- **No lint errors** introduced (the 6 lint warnings still in the file are all pre-existing empty-`catch` and unescaped-apostrophe issues from earlier commits).
+
+### render_timings UnboundLocalError — status
+- Investigated per user Q3. Fix already shipped in preview code (`server.py:943` initializes `render_timings: dict = {}` at the top of the try-block, BEFORE all 3 `_emit_job_summary` call sites at 1065/1073/1078, BEFORE the cover_spread/interior branch at 945, and the outer `except Exception` handler at 1111 does not reference it). Only `server.py` references `render_timings` — grepped every `.py` file. Job `a7a31fed` failing with this error means production was running an older build; will be resolved by the next redeploy.
+

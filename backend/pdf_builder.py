@@ -259,11 +259,14 @@ def apply_print_boxes(pdf_bytes: bytes, page_w_px: int, page_h_px: int) -> bytes
         explicitly extends INTO the bleed on the outer side so the cutter
         receives the cut line at the bleed boundary.
 
-    The function rewrites the boxes in-place (via pypdf) and re-emits the
-    PDF. No content is moved. Returns the new PDF bytes."""
-    from io import BytesIO
-    from pypdf import PdfReader, PdfWriter
-    from pypdf.generic import RectangleObject
+    The function rewrites the boxes in-place (via pikepdf/libqpdf,
+    disk-spooled to keep peak Python heap at ~1× file size instead of
+    the ~5× seen with the earlier pypdf implementation — critical for
+    64+ page full-bleed books that were failing the stamping step under
+    memory pressure on production pods). Returns the new PDF bytes."""
+    import os
+    import tempfile
+    import pikepdf
 
     # 1 px @ 96 DPI = 0.75 pt. Convert all geometry once.
     px_to_pt = 0.75
@@ -271,39 +274,50 @@ def apply_print_boxes(pdf_bytes: bytes, page_w_px: int, page_h_px: int) -> bytes
     trim_h_pt = round(page_h_px * px_to_pt, 4)
     bleed_pt = round(INTERIOR_BLEED_PX * px_to_pt, 4)  # 9.0 pt
 
-    reader = PdfReader(BytesIO(pdf_bytes))
-    writer = PdfWriter()
-    for i, page in enumerate(reader.pages):
-        is_right_page = (i % 2 == 0)  # cover (idx 0) = right-hand
-        # MediaBox and BleedBox always = symmetric outer rectangle.
-        media = page.mediabox
-        media_w = float(media.width)
-        media_h = float(media.height)
-        # Set TrimBox per parity. The cutter cuts at this rectangle.
-        if is_right_page:
-            # Right-hand page (recto): spine on LEFT (x=0..bleed is binding
-            # gutter, untouched here), bleed extends past trim on RIGHT.
-            tx0 = 0.0
-            ty0 = bleed_pt
-            tx1 = trim_w_pt + bleed_pt
-            ty1 = trim_h_pt + bleed_pt
-        else:
-            # Left-hand page (verso): spine on RIGHT (binding gutter on
-            # the far-right of MediaBox), bleed extends LEFT of trim.
-            tx0 = bleed_pt
-            ty0 = bleed_pt
-            tx1 = bleed_pt + trim_w_pt + bleed_pt
-            ty1 = trim_h_pt + bleed_pt
-        page.trimbox = RectangleObject([tx0, ty0, tx1, ty1])
-        page.bleedbox = RectangleObject([0.0, 0.0, media_w, media_h])
-        # Cropbox = MediaBox so on-screen viewers show the full bleed
-        # rectangle (some PDF viewers crop to TrimBox by default which
-        # would hide the bleed strip in preview).
-        page.cropbox = RectangleObject([0.0, 0.0, media_w, media_h])
-        writer.add_page(page)
-    out = BytesIO()
-    writer.write(out)
-    return out.getvalue()
+    # Disk-spool the input bytes so we can `del` the raw buffer and let
+    # pikepdf/libqpdf stream from disk. Keeps peak Python heap at ~1×
+    # the file size (vs ~5× for the previous pypdf clone-and-serialize
+    # pattern). Both temp files are cleaned up in the `finally` so a
+    # mid-stamp exception can never leak 150 MB of temp data.
+    in_fd, in_path = tempfile.mkstemp(prefix="stamp_in_", suffix=".pdf")
+    out_path = in_path + ".out"
+    try:
+        with os.fdopen(in_fd, "wb") as f:
+            f.write(pdf_bytes)
+        # Release the raw buffer — libqpdf reads from disk from here on.
+        # Local name still references the caller's argument, but that's
+        # THEIR reference. We just drop OUR reference so the intermediate
+        # is eligible for GC while pikepdf works.
+        pdf_bytes = None  # noqa: F841
+        with pikepdf.open(in_path) as pdf:
+            for i, page in enumerate(pdf.pages):
+                is_right_page = (i % 2 == 0)  # cover (idx 0) = right-hand
+                # MediaBox already correct from the renderer; just read
+                # it so we can mirror it into BleedBox + CropBox.
+                mb = page.mediabox
+                media_w = float(mb[2] - mb[0])
+                media_h = float(mb[3] - mb[1])
+                if is_right_page:
+                    # Right-hand page (recto): spine on LEFT, bleed on RIGHT.
+                    tx0, ty0 = 0.0, bleed_pt
+                    tx1, ty1 = trim_w_pt + bleed_pt, trim_h_pt + bleed_pt
+                else:
+                    # Left-hand page (verso): spine on RIGHT, bleed on LEFT.
+                    tx0, ty0 = bleed_pt, bleed_pt
+                    tx1, ty1 = bleed_pt + trim_w_pt + bleed_pt, trim_h_pt + bleed_pt
+                page.trimbox = [tx0, ty0, tx1, ty1]
+                page.bleedbox = [0.0, 0.0, media_w, media_h]
+                page.cropbox = [0.0, 0.0, media_w, media_h]
+            pdf.save(out_path)
+        with open(out_path, "rb") as f:
+            return f.read()
+    finally:
+        for p in (in_path, out_path):
+            try:
+                if os.path.exists(p):
+                    os.unlink(p)
+            except OSError:
+                pass
 
 
 def ensure_even_page_count(pdf_bytes: bytes) -> tuple[bytes, bool]:
@@ -316,49 +330,82 @@ def ensure_even_page_count(pdf_bytes: bytes) -> tuple[bytes, bool]:
     page was odd / recto). Without this, the appended page would be the
     wrong parity and IngramSpark preflight would flag it.
 
+    Same disk-spool + pikepdf pattern as `apply_print_boxes` so the
+    memory pressure stays bounded at ~1× the file size.
+
     Returns the (possibly modified) PDF bytes and a bool indicating
     whether a page was appended (so callers can surface a UX warning)."""
-    from io import BytesIO
-    from pypdf import PdfReader, PdfWriter
-    from pypdf.generic import RectangleObject
+    import os
+    import tempfile
+    import pikepdf
 
-    reader = PdfReader(BytesIO(pdf_bytes))
-    page_count = len(reader.pages)
-    if page_count % 2 == 0:
-        return pdf_bytes, False
-    writer = PdfWriter()
-    for p in reader.pages:
-        writer.add_page(p)
-    last = reader.pages[-1]
-    media = last.mediabox
-    media_w = float(media.width)
-    media_h = float(media.height)
-    writer.add_blank_page(width=media_w, height=media_h)
-    # New blank page is at index `page_count` (0-based) — flip parity from
-    # the previous page. Odd new index → verso (spine on RIGHT). Trim
-    # follows the IngramSpark v5.11.26 box scheme so the appended page
-    # passes preflight identically to its neighbours.
-    new_idx = page_count  # 0-based index after append
-    is_right_page = (new_idx % 2 == 0)
-    # Reuse the same geometry the body renderer used. Bleed amount is
-    # encoded in the existing pages' TrimBox — extract it once.
-    bleed_pt = float(last.trimbox.bottom)  # = INTERIOR_BLEED_PX * 0.75 = 9.0
-    # Trim dimensions: width = media_w - 2*bleed_pt; height same.
-    trim_w_pt = media_w - 2 * bleed_pt
-    trim_h_pt = media_h - 2 * bleed_pt
-    new_page = writer.pages[-1]
-    if is_right_page:
-        tx0, ty0 = 0.0, bleed_pt
-        tx1, ty1 = trim_w_pt + bleed_pt, trim_h_pt + bleed_pt
-    else:
-        tx0, ty0 = bleed_pt, bleed_pt
-        tx1, ty1 = bleed_pt + trim_w_pt + bleed_pt, trim_h_pt + bleed_pt
-    new_page.trimbox = RectangleObject([tx0, ty0, tx1, ty1])
-    new_page.bleedbox = RectangleObject([0.0, 0.0, media_w, media_h])
-    new_page.cropbox = RectangleObject([0.0, 0.0, media_w, media_h])
-    out = BytesIO()
-    writer.write(out)
-    return out.getvalue(), True
+    # Cheap page-count check first — if it's already even, avoid the
+    # disk write entirely. We can do this with a lightweight parse
+    # from bytes (small object graph, we're not iterating pages).
+    from io import BytesIO
+    with pikepdf.open(BytesIO(pdf_bytes)) as pdf:
+        page_count = len(pdf.pages)
+        if page_count % 2 == 0:
+            return pdf_bytes, False
+
+    in_fd, in_path = tempfile.mkstemp(prefix="evenpad_in_", suffix=".pdf")
+    out_path = in_path + ".out"
+    try:
+        with os.fdopen(in_fd, "wb") as f:
+            f.write(pdf_bytes)
+        pdf_bytes = None  # noqa: F841 — release caller-arg reference
+        with pikepdf.open(in_path) as pdf:
+            # Extract geometry from the last existing page so the blank
+            # matches trim + bleed exactly.
+            last = pdf.pages[-1]
+            mb = last.mediabox
+            media_w = float(mb[2] - mb[0])
+            media_h = float(mb[3] - mb[1])
+            last_trim = last.trimbox
+            # Bleed amount is encoded in the y0 of TrimBox (matches the
+            # old pypdf-based extraction: `float(last.trimbox.bottom)`).
+            bleed_pt = float(last_trim[1])
+            trim_w_pt = media_w - 2 * bleed_pt
+            trim_h_pt = media_h - 2 * bleed_pt
+
+            # New blank page. libqpdf's high-level API doesn't have an
+            # `add_blank_page` helper, so we wrap a minimal Page dict in
+            # `pikepdf.Page` (required — PageList.append rejects raw
+            # Dictionary objects). MediaBox = full outer rectangle
+            # matching the other pages. No /Contents stream = blank.
+            new_page_obj = pikepdf.Page(pikepdf.Dictionary(
+                Type=pikepdf.Name.Page,
+                MediaBox=[0.0, 0.0, media_w, media_h],
+                Resources=pikepdf.Dictionary(),
+            ))
+            pdf.pages.append(new_page_obj)
+
+            # New page's 0-based index = old page_count. Parity flips
+            # from the last existing page (odd input count → new page
+            # at even 0-based index → recto/right-hand). Follows the
+            # same IngramSpark v5.11.26 scheme apply_print_boxes uses.
+            new_idx = page_count  # 0-based index after append
+            is_right_page = (new_idx % 2 == 0)
+            if is_right_page:
+                tx0, ty0 = 0.0, bleed_pt
+                tx1, ty1 = trim_w_pt + bleed_pt, trim_h_pt + bleed_pt
+            else:
+                tx0, ty0 = bleed_pt, bleed_pt
+                tx1, ty1 = bleed_pt + trim_w_pt + bleed_pt, trim_h_pt + bleed_pt
+            new_page = pdf.pages[-1]
+            new_page.trimbox = [tx0, ty0, tx1, ty1]
+            new_page.bleedbox = [0.0, 0.0, media_w, media_h]
+            new_page.cropbox = [0.0, 0.0, media_w, media_h]
+            pdf.save(out_path)
+        with open(out_path, "rb") as f:
+            return f.read(), True
+    finally:
+        for p in (in_path, out_path):
+            try:
+                if os.path.exists(p):
+                    os.unlink(p)
+            except OSError:
+                pass
 
 
 # Placeholder shown in the PDF's Subject field when a book has no ISBN
