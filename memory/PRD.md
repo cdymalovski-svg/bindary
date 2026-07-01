@@ -646,3 +646,47 @@ Static analysis pass; both endpoints stress-tested under live load; admin-only g
 - Drag-to-reorder pages in the sidebar (P3).
 - Remaining keyboard shortcuts: ⌘D duplicate, ⌘] bring forward, Delete.
 
+
+## 2026-07-01 — Iteration 17: PDF-Job Diagnostics (Three Surgical Changes)
+**Goal**: Close the diagnostic hole around production PDF-export timeouts. Zero changes to the render pipeline; only observability + retention.
+
+### Change 1 — Split TTL for pdf_jobs
+- `_PDF_JOB_TTL_READY_SECONDS = 30 min` — delivery-only retention
+- `_PDF_JOB_TTL_FAILED_SECONDS = 7 days` — diagnostic retention
+- Insert writes `expires_at = now + 7 days` (in case job stays pending forever). Success flips it to `now + 30 min`. Cancel/failure keep the 7-day window.
+- `_ensure_pdf_jobs_indexes()` drops and recreates `pdf_jobs_ttl` on every startup (idempotent) — safe against past in-place-modify attempts.
+- **Verified live**: ready job expires_at delta = 1800 s (30 min); cancelled job delta = 604800 s (7 days).
+
+### Change 2 — JOB SUMMARY moved after upload
+- `pdf_builder_weasy.build_book_pdf` now passes a **timings dict** to `summary_cb` (was: formatted string). Old `log.info(summary_text)` removed from the builder.
+- `server.py._emit_job_summary()` composes the authoritative log line AFTER upload in all three exit paths (success / TIMEOUT / other exception). Persisted onto `pdf_jobs.summary` for cross-pod visibility.
+- **New format** (verified live):
+  ```
+  WeasyPrint JOB SUMMARY: total=1.77s | prefetch=0.00s | render=1.31s | upload=0.47s | pages=1 | fonts: 1 used, 0 missing
+  ```
+  On upload timeout: `upload=FAILED (timeout after 120s)`. On other exception: `upload=FAILED (ConnectionError)` (or whatever the class name is).
+- **Note**: `total` in the new format = prefetch + render + upload (whole-job wall clock). Different from the old total which excluded upload.
+
+### Change 3 — Admin purge endpoint for orphaned 0-byte files
+- `POST /api/admin/purge-empty-files?confirm=true|false` (default: dry-run).
+- Deletes `db.files` rows where `size ∈ {0, null, missing}` AND row is not soft-deleted AND storage_path is NOT referenced by any book's pages/blocks.
+- Object-storage bytes untouched — reaped separately by storage backend GC.
+- Returns explicit counts: `candidates_matched`, `kept_because_referenced`, `eligible_for_delete`, `deleted`, `mode`.
+- Preview DB reports 0 candidates (accurate; my earlier "170+ zero-byte" claim was integer-KB rounding). Production count unknown until run there.
+
+### Testing (iteration 17 report)
+- **9/9 pytest cases pass** (new file `test_pdf_ttl_and_purge.py`). Zero regressions.
+- Index shape verified through supervisor restart.
+- TTL windows verified on real docs (both ready and cancelled paths).
+- JOB SUMMARY regex-matched against real export log line and persisted-doc content.
+- Purge endpoint response shape verified end-to-end.
+
+### Not changed
+- WeasyPrint config, CHUNK_SIZE, font subsetting, image handling, download endpoint, all timeout values, response shape of any pre-existing route.
+
+## Next Tasks
+- Deploy iteration 17 to production and use the new diagnostics to attribute the timeout: is it render, upload, or download? The 7-day retention + persisted summary means the next timeout is now forensically diagnosable.
+- Consider splitting server.py (2243 lines) — testing agent flagged it.
+- Consider awaiting the Mongo `summary` write instead of fire-and-forget for stronger delivery guarantees (or log on failure). Currently swallowed; log line in supervisor is the fallback authoritative record.
+- Longer term: Phase 2 refactor of Editor.jsx (PageSidebar + EditorToolbar) if user wants.
+
