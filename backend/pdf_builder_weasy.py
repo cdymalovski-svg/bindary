@@ -679,30 +679,27 @@ async def build_book_pdf(
         (render_elapsed_s * 1000) / page_count if page_count else 0.0
     )
     total_elapsed_s = prefetch_elapsed_s + render_elapsed_s
-    summary_text = (
-        "WeasyPrint JOB SUMMARY: total=%.2fs | prefetch=%.2fs (%d imgs, "
-        "avg %.0fms/img, %d blank-fallbacks) | render=%.2fs (%d pages, "
-        "avg %.0fms/page, %d placeholders) | fonts: %d used, %d missing%s"
-    ) % (
-        total_elapsed_s,
-        prefetch_elapsed_s, prefetch_total,
-        (prefetch_elapsed_s * 1000) / prefetch_total if prefetch_total else 0.0,
-        prefetch_blank_fallbacks["n"],
-        render_elapsed_s, page_count, render_per_page_ms,
-        render_placeholder_count,
-        len(used_font_families), len(missing_font_families),
-        # Spell out missing families when there ARE any — silent fallback
-        # to serif is the most common quality regression an operator will
-        # miss otherwise. When zero, omit so the line stays scannable.
-        f" {sorted(missing_font_families)}" if missing_font_families else "",
-    )
-    log.info(summary_text)
-    # Persist the summary onto the pdf_jobs doc via the caller-supplied
-    # callback. Cross-pod safe — the recent-exports admin UI reads from
-    # MongoDB, so any pod can see any export's summary line.
+    # Persist a machine-readable timings dict via the caller-supplied
+    # callback. The AUTHORITATIVE end-of-job log line is emitted from
+    # server.py AFTER the object-storage upload completes — that's the
+    # only place upload duration is known. We deliberately do not emit
+    # a `log.info` here anymore; a duplicate summary line would confuse
+    # the operator when they scan for "JOB SUMMARY".
     if summary_cb:
         try:
-            summary_cb(summary_text)
+            summary_cb({
+                "total_render_s": total_elapsed_s,   # prefetch + render, sans upload
+                "prefetch_s": prefetch_elapsed_s,
+                "render_s": render_elapsed_s,
+                "pages": page_count,
+                "render_per_page_ms": render_per_page_ms,
+                "prefetch_imgs": prefetch_total,
+                "prefetch_blank_fallbacks": prefetch_blank_fallbacks["n"],
+                "render_placeholders": render_placeholder_count,
+                "fonts_used": len(used_font_families),
+                "fonts_missing": len(missing_font_families),
+                "missing_font_families": sorted(missing_font_families) if missing_font_families else [],
+            })
         except Exception:
             pass
     # Phase 3.3 — stamp Info dict (Title/Author/ISBN/Publisher) AFTER

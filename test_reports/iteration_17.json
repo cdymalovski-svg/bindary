@@ -1,0 +1,44 @@
+{
+  "summary": "Backend-only verification of the three surgical PDF-job diagnostics changes: split TTL windows (30 min ready / 7 days failed) on db.pdf_jobs, new post-upload JOB SUMMARY log format, and new POST /api/admin/purge-empty-files admin endpoint with dry-run support. All 9 pytest cases pass on the preview environment; direct pymongo probes confirm both TTL windows on real docs and the exact index shape (single pdf_jobs_ttl, expireAfterSeconds=0, key=expires_at).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_pdf_ttl_and_purge.py",
+    "/app/test_reports/pytest/iteration_17_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is 2243 lines — well over the 700-line guideline. Consider splitting the PDF-job worker (_run_pdf_job, _emit_job_summary, _ensure_pdf_jobs_indexes) and the admin endpoints (purge-empty-files, recent-exports, storage audit) into separate modules. Not blocking this change, but worth queuing.",
+    "_emit_job_summary uses asyncio.ensure_future(db.pdf_jobs.update_one(...)) as fire-and-forget. This runs in the running loop (fine here since called from within an async task) but any exception in the Mongo write is silently swallowed. Consider awaiting the update inside the async caller, or attaching a done_callback that logs failures — the current comment says 'if we lose the doc update the log line itself is still there' which is fine but a WARN-level log on failure would be helpful for cross-pod diagnostics.",
+    "purge-empty-files response includes `mode` and `deleted` fields but they are added AFTER the initial dict construction depending on branch. Fine functionally, but a Pydantic response model would make the shape explicit and self-documenting for API consumers.",
+    "TTL sanity note: because expires_at is written via `datetime.now(timezone.utc) + timedelta(...)` in three different call sites, a drift bug (e.g. one path using a naive datetime) would only surface via tests. The end-to-end tests here now cover ready + failed(cancelled) + failed(pending-remnant); consider adding a unit test for the failed(exception) branch too."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_pdf_ttl_and_purge.py (new)"
+  ],
+  "success_rate": {"backend": "100% (9/9)", "frontend": "not tested (scope: backend only)"},
+  "test_credentials": "chris@dcsbuilt.com.au / Redcar01 (from /app/memory/test_credentials.md, read at runtime from backend/.env)",
+  "seed_data_creation": "None. Existing book 'X' (id=5e5eab0d-dcf6-4a5d-bef4-52cdea1b8d8b, 1 page) used for export tests. Tests created 2 new pdf_jobs docs (1 ready, 1 cancelled/failed) which will TTL out per the new windows (30 min and 7 days respectively).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "The new test file /app/backend/tests/test_pdf_ttl_and_purge.py is a regression suite for the split-TTL, JOB SUMMARY, and purge-empty-files features. It restarts the backend once (TTL-index-survives-restart test) so run it early in the session or expect ~5s of downtime mid-run. It relies on conftest.py's global Session monkey-patch for authed calls and uses urllib directly for the unauthenticated 401 check. Book 'X' must exist with at least 1 page — recreate if wiped.",
+  "test_evidence": {
+    "ttl_index": "single pdf_jobs_ttl idx, key={expires_at:1}, expireAfterSeconds=0, survives supervisor restart",
+    "ready_ttl_observed": "job created 01:25:57 → expires_at 01:55:57 (delta 1800.0s)",
+    "failed_ttl_observed": "cancelled job created 01:29:37 → expires_at 2026-07-08 01:29:37 (delta 604800s)",
+    "summary_line_example": "WeasyPrint JOB SUMMARY: total=1.77s | prefetch=0.00s | render=1.31s | upload=0.47s | pages=1 | fonts: 1 used, 0 missing",
+    "summary_regex_match": true,
+    "summary_persisted_on_doc": true,
+    "summary_served_by_recent_exports": true,
+    "log_line_grep_source": "/var/log/supervisor/backend.err.log (root logger emits to stderr — grep both .out and .err as instructed)",
+    "purge_endpoint_shape": "confirm, candidates_matched, kept_because_referenced, kept_because_no_id, eligible_for_delete, deleted, mode, ran_at, ran_by — all present. Preview DB reports 0 candidates / 0 eligible / 0 deleted for both dry-run and confirm=true, matching the pre-test probe.",
+    "unauth_403_check": "urllib POST returns 401 (auth middleware) — endpoint is not open to non-admins"
+  }
+}

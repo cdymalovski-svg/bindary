@@ -4,6 +4,7 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import re
+import time
 import logging
 import uuid
 import asyncio
@@ -706,13 +707,119 @@ async def export_book_pdf(book_id: str, request: Request):
 # replicas behind a load balancer — a job created on pod A must be
 # pollable from pod B). We store status in MongoDB and the PDF bytes in
 # object storage, the same way we handle book images.
-_PDF_JOB_TTL_SECONDS = 30 * 60  # auto-expire stale jobs after 30 min
 _PDF_OBJECT_PREFIX = "booktemplate/pdfjobs"
+# Split TTL for the pdf_jobs collection so we can retain failed/pending
+# jobs long enough to actually diagnose them, while still auto-expiring
+# successful jobs quickly (delivery only needs a short window).
+#
+# Semantics (enforced by writing `expires_at` on every state change,
+# NOT by the index — the index just watches whatever datetime is in the
+# field):
+#   - insert (status: pending)  → expires_at = now + 7 days
+#   - status: ready             → expires_at = now + 30 min
+#   - status: failed/cancelled  → expires_at = now + 7 days
+#
+# Before this change every job was reaped 30 min after insert, so any
+# production timeout that took longer than 30 min to look into was
+# unreproducible. 7 days for failed jobs is the diagnostic window.
+_PDF_JOB_TTL_READY_SECONDS = 30 * 60          # 30 min
+_PDF_JOB_TTL_FAILED_SECONDS = 7 * 24 * 60 * 60  # 7 days
+
+
+def _emit_job_summary(
+    job_id: str,
+    render_timings: dict,
+    upload_s: Optional[float],
+    upload_status: str,
+) -> None:
+    """Compose the authoritative end-of-job log line + persist it onto
+    the pdf_jobs doc.
+
+    `upload_status`:
+      - "ok"        → emits "upload=X.XXs"
+      - "TIMEOUT"   → emits "upload=FAILED (timeout after 120s)"
+      - other       → emits "upload=FAILED (<status>)" — the caller passes
+                       type(e).__name__ so operators see e.g.
+                       "upload=FAILED (ConnectionError)"
+
+    Fire-and-forget on the Mongo write — if we lose the doc update the
+    log line itself is still there in supervisor logs and that's the
+    authoritative record.
+    """
+    # `render_timings` may be empty if the render itself failed before
+    # `summary_cb` fired — in that case the log line still goes out but
+    # the render numbers show as "n/a".
+    total_render_s = render_timings.get("total_render_s")
+    prefetch_s = render_timings.get("prefetch_s")
+    render_s = render_timings.get("render_s")
+    pages = render_timings.get("pages")
+    fonts_used = render_timings.get("fonts_used")
+    fonts_missing = render_timings.get("fonts_missing")
+    missing_families = render_timings.get("missing_font_families") or []
+
+    def _fmt_s(v):
+        return f"{v:.2f}s" if isinstance(v, (int, float)) else "n/a"
+
+    if upload_status == "ok":
+        upload_str = _fmt_s(upload_s)
+    elif upload_status == "TIMEOUT":
+        upload_str = "FAILED (timeout after 120s)"
+    else:
+        upload_str = f"FAILED ({upload_status})"
+
+    # `total` here = prefetch + render + upload — the honest whole-job
+    # wall clock. Deliberately different from the old summary's total
+    # (which excluded upload); operators reading a new-format line will
+    # see it labelled with all three components on the same line so it's
+    # unambiguous.
+    if isinstance(total_render_s, (int, float)) and isinstance(upload_s, (int, float)):
+        grand_total = total_render_s + upload_s
+        total_str = f"{grand_total:.2f}s"
+    else:
+        total_str = "n/a"
+
+    missing_tail = f" {missing_families}" if missing_families else ""
+    summary_text = (
+        "WeasyPrint JOB SUMMARY: "
+        f"total={total_str} | prefetch={_fmt_s(prefetch_s)} | "
+        f"render={_fmt_s(render_s)} | upload={upload_str} | "
+        f"pages={pages if pages is not None else 'n/a'} | "
+        f"fonts: {fonts_used if fonts_used is not None else 'n/a'} used, "
+        f"{fonts_missing if fonts_missing is not None else 'n/a'} missing"
+        f"{missing_tail}"
+    )
+    logging.info(summary_text)
+    # Persist onto the job doc so the admin "Recent exports" panel can
+    # display it cross-pod. Fire-and-forget.
+    asyncio.ensure_future(db.pdf_jobs.update_one(
+        {"job_id": job_id},
+        {"$set": {"summary": summary_text}},
+    ))
 
 
 async def _ensure_pdf_jobs_indexes() -> None:
-    """Create the TTL index once so finished jobs auto-purge from Mongo."""
+    """Create the TTL index once so finished jobs auto-purge from Mongo.
+
+    We drop-and-recreate the TTL index on every startup rather than
+    attempting an in-place modification: MongoDB does not permit
+    changing `expireAfterSeconds` on an existing TTL index (the driver
+    silently no-ops), so drop → create is the correct sequence even
+    when the *parameter* is identical. This keeps the index definition
+    idempotent and defensively fresh across deploys. The TTL semantics
+    themselves come from the per-document `expires_at` value written by
+    the worker (see _PDF_JOB_TTL_*_SECONDS above) — the index just
+    honours whatever datetime is in the field.
+    """
     try:
+        # Drop only if it exists. `drop_index` on a missing index raises
+        # OperationFailure; swallow that specific case so first-ever boot
+        # (no index yet) is a no-op.
+        try:
+            await db.pdf_jobs.drop_index("pdf_jobs_ttl")
+        except Exception as e:
+            # "index not found with name" is expected on first boot.
+            if "index not found" not in str(e).lower():
+                logging.warning(f"pdf_jobs_ttl drop skipped: {e}")
         await db.pdf_jobs.create_index(
             "expires_at", expireAfterSeconds=0, name="pdf_jobs_ttl"
         )
@@ -854,14 +961,16 @@ async def _run_pdf_job(
                 existing = {row["storage_path"] async for row in cur}
                 return set(paths) - existing
 
-            # Capture the end-of-job JOB SUMMARY line and persist it onto
-            # the pdf_jobs doc so the admin "Recent exports" panel can
-            # display it cross-pod. Fire-and-forget; failure is non-fatal.
-            def _on_summary(summary_text: str) -> None:
-                asyncio.ensure_future(db.pdf_jobs.update_one(
-                    {"job_id": job_id},
-                    {"$set": {"summary": summary_text}},
-                ))
+            # Capture the RENDER-side timings dict so we can emit the
+            # authoritative JOB SUMMARY line AFTER the upload step
+            # completes (or fails) — upload duration is the only piece
+            # that's invisible to the render pipeline. See the try/finally
+            # around the put_object call below for where the final log
+            # line is composed and persisted onto pdf_jobs.summary.
+            render_timings: dict = {}
+
+            def _on_summary(timings: dict) -> None:
+                render_timings.update(timings or {})
 
             pdf_bytes = await _build_book_pdf(
                 book, get_object, public_base_url=base_url, progress_cb=_on_stage,
@@ -930,16 +1039,35 @@ async def _run_pdf_job(
         # toast and can retry instead of waiting indefinitely.
         _on_stage("uploading")
         object_path = f"{_PDF_OBJECT_PREFIX}/{job_id}.pdf"
+        # Time the upload separately so the authoritative JOB SUMMARY log
+        # (emitted right below) can attribute wall-clock time to render vs. upload.
+        upload_t0 = time.monotonic()
+        upload_s: Optional[float] = None
+        upload_status: str = "pending"  # "ok" | "TIMEOUT" | "<ExceptionName>"
         try:
             await asyncio.wait_for(
                 asyncio.to_thread(put_object, object_path, pdf_bytes, "application/pdf"),
                 timeout=120,
             )
+            upload_s = time.monotonic() - upload_t0
+            upload_status = "ok"
         except asyncio.TimeoutError:
+            upload_s = time.monotonic() - upload_t0
+            upload_status = "TIMEOUT"
+            _emit_job_summary(job_id, render_timings, upload_s, upload_status)
             raise RuntimeError(
                 "PDF upload to object storage timed out after 2 min — "
                 "storage backend may be unavailable. Please try again."
             ) from None
+        except Exception as e:
+            upload_s = time.monotonic() - upload_t0
+            upload_status = type(e).__name__
+            _emit_job_summary(job_id, render_timings, upload_s, upload_status)
+            raise
+        # Successful upload — emit the authoritative summary line now
+        # (before the "mark ready" write, so even a Mongo blip below still
+        # leaves the summary in supervisor logs and persisted onto the job doc).
+        _emit_job_summary(job_id, render_timings, upload_s, upload_status)
         await db.pdf_jobs.update_one(
             {"job_id": job_id},
             {"$set": {
@@ -951,6 +1079,10 @@ async def _run_pdf_job(
                 "end_page": applied_end,
                 "object_path": object_path,
                 "finished_at": _now_iso(),
+                # READY window — the client has ~30 min to download.
+                # Anything after that we consider abandoned; the doc TTLs
+                # out so the collection stays lean.
+                "expires_at": datetime.now(timezone.utc) + timedelta(seconds=_PDF_JOB_TTL_READY_SECONDS),
             }},
         )
     except _Cancelled:
@@ -963,7 +1095,10 @@ async def _run_pdf_job(
             {"job_id": job_id},
             {"$set": {"status": "failed",
                       "error": "Cancelled by user",
-                      "finished_at": _now_iso()}},
+                      "finished_at": _now_iso(),
+                      # FAILED window — 7 days so an operator can find
+                      # this in the recent-exports admin panel.
+                      "expires_at": datetime.now(timezone.utc) + timedelta(seconds=_PDF_JOB_TTL_FAILED_SECONDS)}},
         )
     except Exception as e:
         # Capture a snippet of the traceback so the client toast can show
@@ -978,7 +1113,10 @@ async def _run_pdf_job(
             {"$set": {"status": "failed",
                       "error": f"{e}".strip()[:300] or "PDF build failed",
                       "trace": last_lines[:500],
-                      "finished_at": _now_iso()}},
+                      "finished_at": _now_iso(),
+                      # FAILED window — 7 days so an operator can find
+                      # this in the recent-exports admin panel.
+                      "expires_at": datetime.now(timezone.utc) + timedelta(seconds=_PDF_JOB_TTL_FAILED_SECONDS)}},
         )
 
 
@@ -1094,7 +1232,11 @@ async def export_pdf_start(
         "dpi": dpi,
         "created_at": now.isoformat(),
         # Mongo TTL index uses a real Date — not an ISO string.
-        "expires_at": now + timedelta(seconds=_PDF_JOB_TTL_SECONDS),
+        # Freshly-inserted jobs get the FAILED window. If the render
+        # completes it will overwrite this with the READY window (30 min).
+        # This way a pod that dies mid-render leaves a diagnosable
+        # "pending" doc for 7 days instead of vanishing after 30 min.
+        "expires_at": now + timedelta(seconds=_PDF_JOB_TTL_FAILED_SECONDS),
     })
     asyncio.create_task(_run_pdf_job(
         job_id, book_id, str(request.base_url).rstrip("/"),
@@ -1855,6 +1997,103 @@ async def admin_recent_exports(user=Depends(_get_current_user_admin)):
                     j[k] = str(v)
         entries.append(j)
     return {"scope": "cluster-wide", "max": 20, "entries": entries}
+
+
+@api_router.post("/admin/purge-empty-files")
+async def admin_purge_empty_files(
+    confirm: bool = False,
+    user=Depends(_get_current_user_admin),
+):
+    """Delete `db.files` rows where size ∈ {0, null, missing} AND the
+    row is NOT soft-deleted AND no book still references its
+    storage_path. Object-storage bytes are NOT touched — those expire
+    through the storage backend's own GC.
+
+    Safety:
+      - `?confirm=false` (default) is a dry run: returns the counts
+        without modifying the DB. Use this to preview.
+      - `?confirm=true` performs the delete.
+      - Rows referenced by any book are ALWAYS kept, even if 0-byte —
+        they surface in the storage audit as "needs re-upload" so the
+        book owner can fix them. Silently deleting them here would
+        break that diagnostic surface.
+
+    Returns the exact counts so the operator has an auditable record."""
+    _require_admin(user)
+
+    # Build the set of every storage_path referenced by ANY book. Covers
+    # both block-level (image_path / image_url) and page-level
+    # (background_image_path / cover_image_path). One full scan of
+    # db.books, which is small.
+    referenced_paths: set[str] = set()
+    async for book in db.books.find({}, {"pages": 1}):
+        for pg in (book.get("pages") or []):
+            for k in ("background_image_path", "cover_image_path"):
+                v = pg.get(k)
+                if isinstance(v, str) and v:
+                    referenced_paths.add(v)
+            for blk in (pg.get("blocks") or []):
+                for k in ("image_path", "image_url"):
+                    v = blk.get(k)
+                    if isinstance(v, str) and v:
+                        referenced_paths.add(v)
+
+    size_filter = {
+        "is_deleted": {"$ne": True},
+        "$or": [
+            {"size": 0},
+            {"size": None},
+            {"size": {"$exists": False}},
+        ],
+    }
+
+    delete_ids: list[str] = []
+    kept_referenced = 0
+    kept_no_id = 0
+    async for f in db.files.find(size_filter, {"id": 1, "storage_path": 1}):
+        fid = f.get("id")
+        if not fid:
+            # Defensive — every valid file record should have an id. Skip
+            # so we never accidentally issue an empty $in query.
+            kept_no_id += 1
+            continue
+        sp = f.get("storage_path")
+        if sp and sp in referenced_paths:
+            kept_referenced += 1
+            continue
+        delete_ids.append(fid)
+
+    result_summary = {
+        "confirm": confirm,
+        "candidates_matched": len(delete_ids) + kept_referenced + kept_no_id,
+        "kept_because_referenced": kept_referenced,
+        "kept_because_no_id": kept_no_id,
+        "eligible_for_delete": len(delete_ids),
+        "ran_at": _now_iso(),
+        "ran_by": user.get("email"),
+    }
+    if not confirm:
+        # Dry run — report only.
+        result_summary["deleted"] = 0
+        result_summary["mode"] = "dry-run"
+        return result_summary
+
+    # Delete in chunks so a single 10 000-row cleanup never issues one
+    # 200 KB $in query — 500 ids per batch is well within the driver's
+    # comfortable range.
+    deleted = 0
+    BATCH = 500
+    for i in range(0, len(delete_ids), BATCH):
+        chunk = delete_ids[i:i + BATCH]
+        res = await db.files.delete_many({"id": {"$in": chunk}})
+        deleted += res.deleted_count
+    result_summary["deleted"] = deleted
+    result_summary["mode"] = "executed"
+    logging.info(
+        "admin_purge_empty_files by %s: deleted %d orphaned empty file records",
+        user.get("email"), deleted,
+    )
+    return result_summary
 
 
 @api_router.get("/books/{book_id}/file-health")
