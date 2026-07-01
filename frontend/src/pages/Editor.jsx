@@ -1738,13 +1738,14 @@ export default function Editor() {
                   onMoveUp={i > 0 ? () => movePage(i, 'up') : null}
                   onMoveDown={i < book.pages.length - 1 ? () => movePage(i, 'down') : null}
                 />
-                {/* Between-pages insert gutter — hidden until you hover it. */}
+                {/* Between-pages insert gutter — always visible at low
+                    opacity for discoverability, brightens on hover. */}
                 <button
                   type="button"
                   onClick={() => insertPageAfter(i)}
                   data-testid={`insert-page-after-${i}`}
                   title="Insert a new page here"
-                  className="group/insert w-full h-3 my-1 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity"
+                  className="group/insert w-full h-3 my-1 flex items-center justify-center opacity-40 hover:opacity-100 transition-opacity"
                 >
                   <span className="h-px flex-1 bg-terracotta/60" />
                   <span className="mx-1 flex items-center justify-center w-4 h-4 rounded-full bg-terracotta text-paper">
