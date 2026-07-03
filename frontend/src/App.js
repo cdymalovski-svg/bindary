@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { Toaster } from 'sonner';
 import Dashboard from '@/pages/Dashboard';
 import Editor from '@/pages/Editor';
+import Reader from '@/pages/Reader';
 import Login from '@/pages/Login';
 import Admin from '@/pages/Admin';
 import ErrorBoundary from '@/components/ErrorBoundary';
@@ -45,6 +46,16 @@ export default function App() {
               <ProtectedRoute>
                 <ErrorBoundary>
                   <Editor />
+                </ErrorBoundary>
+              </ProtectedRoute>
+            )}
+          />
+          <Route
+            path="/read/:id"
+            element={(
+              <ProtectedRoute>
+                <ErrorBoundary>
+                  <Reader />
                 </ErrorBoundary>
               </ProtectedRoute>
             )}

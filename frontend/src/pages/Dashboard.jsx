@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { toast } from 'sonner';
-import { Plus, BookOpen, Trash2, FileText, Bookmark, Copy, Search, Pencil, Upload, LogOut, ShieldCheck } from 'lucide-react';
+import { Plus, BookOpen, Trash2, FileText, Bookmark, Copy, Search, Pencil, Upload, LogOut, ShieldCheck, Eye } from 'lucide-react';
 import {
   listBooks, createBook, importBook, deleteBook, fileUrl,
   listTemplates, deleteTemplate, updateBook,
@@ -463,6 +463,7 @@ export default function Dashboard() {
                     key={b.id}
                     book={b}
                     onOpen={() => navigate(`/editor/${b.id}`)}
+                    onRead={() => navigate(`/read/${b.id}`)}
                     onDelete={() => onDelete(b.id)}
                     onDuplicate={() => onDuplicate(b.id)}
                     onEditDetails={(patch) => onEditDetails(b.id, patch)}
@@ -477,7 +478,7 @@ export default function Dashboard() {
   );
 }
 
-function BookCard({ book, onOpen, onDelete, onDuplicate, onEditDetails }) {
+function BookCard({ book, onOpen, onRead, onDelete, onDuplicate, onEditDetails }) {
   const fallbackCoverUrl = book.cover_image_url ? fileUrl(book.cover_image_url) : null;
   const coverPage = book.cover_page;
   const pageSize = PAGE_SIZES[book.page_size] || PAGE_SIZES.a4;
@@ -587,6 +588,15 @@ function BookCard({ book, onOpen, onDelete, onDuplicate, onEditDetails }) {
           {book.author || 'Anonymous'}
         </FitText>
         <div className="flex items-center justify-end gap-0.5 pt-1 mt-0.5 border-t border-rule/60">
+          <button
+            type="button"
+            onClick={onRead}
+            data-testid={`read-book-${book.id}`}
+            className="p-1 text-ink-mute hover:text-ink rounded-sm"
+            title="Read / Preview"
+          >
+            <Eye className="w-3.5 h-3.5" />
+          </button>
           <Dialog open={editOpen} onOpenChange={setEditOpen}>
             <DialogTrigger asChild>
               <button
