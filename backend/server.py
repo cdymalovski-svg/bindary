@@ -839,6 +839,7 @@ async def _run_pdf_job(
     spine_width_in: Optional[float] = None,
     binding: str = "perfect",
     dpi: int = 300,
+    preview: bool = False,
 ) -> None:
     """Background worker — builds the PDF, uploads bytes to object storage,
     flips the Mongo record to `ready` (or `failed`).
@@ -985,10 +986,11 @@ async def _run_pdf_job(
                 start_page=applied_start if is_range else None,
                 end_page=applied_end if is_range else None,
                 dpi=dpi,
-                # Always include 0.125" interior bleed so every export is
-                # print-ready. PDF/X conversion still happens on top when
-                # the user toggles Print-ready.
-                pdfx_bleed=True,
+                # Print bleed / TrimBox stamping / even-page padding are
+                # skipped in preview mode — the file is for on-screen
+                # edit review, not for submission to the printer. This
+                # halves render + memory in exchange for a non-print PDF.
+                pdfx_bleed=(not preview),
                 path_existence_check=_check_missing_paths,
                 summary_cb=_on_summary if engine != "chromium" else None,
             )
@@ -1029,17 +1031,20 @@ async def _run_pdf_job(
         base = isbn_digits if use_isbn else safe_title
         # "_pdfx" suffix makes print-ready exports unmistakable in Finder.
         pdfx_suffix = "_pdfx" if pdfx else ""
+        # "-PREVIEW" suffix for low-res edit-review exports so nobody
+        # accidentally submits one to IngramSpark.
+        preview_suffix = "-PREVIEW" if preview else ""
         if cover_spread:
             # IngramSpark cover-file naming convention.
             suffix = "_cvr" if use_isbn else "_cov"
-            filename = f"{base}{suffix}{pdfx_suffix}.pdf"
+            filename = f"{base}{suffix}{pdfx_suffix}{preview_suffix}.pdf"
         else:
             # IngramSpark interior-file naming convention.
             interior_suffix = "_txt" if use_isbn and not is_range else ""
             if is_range:
-                filename = f"{base}_pp_{applied_start}-{applied_end}{pdfx_suffix}.pdf"
+                filename = f"{base}_pp_{applied_start}-{applied_end}{pdfx_suffix}{preview_suffix}.pdf"
             else:
-                filename = f"{base}{interior_suffix}{pdfx_suffix}.pdf"
+                filename = f"{base}{interior_suffix}{pdfx_suffix}{preview_suffix}.pdf"
         # Upload PDF bytes to shared object storage so any pod can serve them.
         # We wrap the upload in a wall-clock timeout so a misbehaving
         # storage backend (network blip, slow upstream) can never leave
@@ -1151,6 +1156,12 @@ class PdfJobStartRequest(BaseModel):
     # in the embedded artwork at the cost of render time + PDF size.
     # Anything else snaps to 300.
     dpi: Optional[int] = 300
+    # Low-res preview mode — for edit review only. Skips TrimBox/BleedBox
+    # stamping, skips the even-page-count padding, skips PDF/X conversion,
+    # and clamps DPI to 150 regardless of the `dpi` field above. Produces
+    # a small, fast PDF the user can flick through and mark up; NOT for
+    # submission to IngramSpark. Filename gets a `-PREVIEW` suffix.
+    preview: bool = False
 
 
 @api_router.get("/books/{book_id}/preflight")
@@ -1207,6 +1218,15 @@ async def export_pdf_start(
     except (TypeError, ValueError):
         dpi_raw = 300
     dpi = dpi_raw if dpi_raw in (300, 450, 600) else 300
+    # Preview mode — clamps DPI to 150 and disables all print-oriented
+    # steps (see `_run_pdf_job`). Preview overrides any print-ready
+    # toggle: you can't have a "print-ready preview" — the two flags
+    # are mutually exclusive by design.
+    preview = bool(payload.preview) if payload else False
+    if preview:
+        pdfx = False
+        cover_spread = False
+        dpi = 150
     # Cover spread always overrides any explicit page range — the cover
     # is, by definition, only pages[0] + pages[-1].
     if cover_spread:
@@ -1238,6 +1258,7 @@ async def export_pdf_start(
         "spine_width_in": spine_width_in,
         "binding": binding,
         "dpi": dpi,
+        "preview": preview,
         "created_at": now.isoformat(),
         # Mongo TTL index uses a real Date — not an ISO string.
         # Freshly-inserted jobs get the FAILED window. If the render
@@ -1252,6 +1273,7 @@ async def export_pdf_start(
         cover_spread=cover_spread, spine_width_in=spine_width_in,
         binding=binding,
         dpi=dpi,
+        preview=preview,
     ))
     return {"job_id": job_id, "status": "pending"}
 

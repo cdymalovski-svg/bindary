@@ -22,10 +22,11 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ChevronLeft, ChevronRight, X, BookOpen, BookMarked } from 'lucide-react';
+import { ChevronLeft, ChevronRight, X, BookOpen, BookMarked, Download } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { toast } from 'sonner';
 import PagePreview from '@/components/PagePreview';
-import { getBook } from '@/lib/api';
+import { api, getStoredToken, getBook } from '@/lib/api';
 import { PAGE_SIZES } from '@/lib/pageSizes';
 
 const READER_MODE_KEY = 'bindery.reader.mode';
@@ -50,6 +51,12 @@ export default function Reader() {
   const [currentIndex, setCurrentIndex] = useState(0);
   const stageRef = useRef(null);
   const [stageBox, setStageBox] = useState({ width: 1200, height: 700 });
+
+  // Preview-PDF export state: `idle` | `queued` | `rendering` | `downloading`.
+  // Simple three-state to drive the button label without a full toast/hook —
+  // this export flow is intentionally minimal (low-res, no PDF/X, no ranges).
+  const [previewExportState, setPreviewExportState] = useState('idle');
+  const previewJobRef = useRef({ cancel: false });
 
   // Persist mode changes.
   useEffect(() => {
@@ -134,6 +141,92 @@ export default function Reader() {
     }
   }, [navigate]);
 
+  // --- Preview PDF export ------------------------------------------------
+  // Kicks off the shared /api/pdf-jobs endpoint with `preview: true`.
+  // Backend clamps DPI to 150, skips TrimBox/BleedBox stamping, skips
+  // PDF/X, appends `-PREVIEW` to the filename. Client polls status and
+  // streams the download when ready. Not for print — for edit review.
+  const startPreviewExport = useCallback(async () => {
+    if (!book || previewExportState !== 'idle') return;
+    const BASE = process.env.REACT_APP_BACKEND_URL;
+    const bookId = book.id;
+    previewJobRef.current.cancel = false;
+    setPreviewExportState('queued');
+    let toastId = toast.loading('Building preview PDF…', { duration: Infinity });
+
+    // Read the auth token via the same helper the axios client uses so
+    // we never drift from the app-wide auth convention.
+    const token = getStoredToken() || '';
+    const auth = token ? { Authorization: `Bearer ${token}` } : {};
+
+    try {
+      // Start the job — use axios so any 401/403 interceptor logic
+      // (session-expiry handling, auth refresh) still applies.
+      const startResp = await api.post(`/books/${bookId}/pdf-jobs`, { preview: true });
+      const { job_id } = startResp.data;
+      setPreviewExportState('rendering');
+      toast.dismiss(toastId);
+      toastId = toast.loading('Rendering pages…', { duration: Infinity });
+
+      // Poll status. Preview jobs are small, so keep polling cheap.
+      // Reader-preview timeout: 5 minutes is well over what a 64-page
+      // low-res render should take on preview + skips the printbox pass.
+      const deadline = Date.now() + 5 * 60_000;
+      let statusJson = null;
+      while (Date.now() < deadline) {
+        if (previewJobRef.current.cancel) throw new Error('Cancelled');
+        await new Promise((r) => setTimeout(r, 1500));
+        try {
+          const st = await api.get(`/books/${bookId}/pdf-jobs/${job_id}`);
+          statusJson = st.data;
+        } catch (_e) {
+          continue;  // transient — keep polling
+        }
+        if (statusJson.status === 'ready') break;
+        if (statusJson.status === 'failed') {
+          throw new Error(statusJson.error || 'Render failed');
+        }
+      }
+      if (!statusJson || statusJson.status !== 'ready') {
+        throw new Error('Timed out waiting for preview PDF (5 min).');
+      }
+
+      // Download the bytes. Raw fetch because axios's default response
+      // type stringifies binary blobs.
+      setPreviewExportState('downloading');
+      toast.dismiss(toastId);
+      toastId = toast.loading('Downloading…', { duration: Infinity });
+      const dl = await fetch(`${BASE}/api/books/${bookId}/pdf-jobs/${job_id}/download`, {
+        headers: auth,
+      });
+      if (!dl.ok) throw new Error(`Download failed (${dl.status})`);
+      const blob = await dl.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = statusJson.filename || `${book.title || 'book'}-PREVIEW.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      // Revoke the object URL after a beat — Chrome needs the URL alive
+      // long enough for the download to actually kick off.
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      toast.dismiss(toastId);
+      toast.success('Preview PDF downloaded.');
+    } catch (err) {
+      toast.dismiss(toastId);
+      toast.error(err?.message || 'Preview export failed.');
+    } finally {
+      setPreviewExportState('idle');
+    }
+  }, [book, previewExportState]);
+
+  // If the user closes/navigates away mid-export, cancel the poll loop
+  // so we don't fire toasts against an unmounted component.
+  useEffect(() => () => { previewJobRef.current.cancel = true; }, []);
+  // --------------------------------------------------------------------
+
+
   // Keyboard: ← / → / Esc.
   useEffect(() => {
     const onKey = (e) => {
@@ -202,6 +295,23 @@ export default function Reader() {
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
+          {/* Preview PDF export — low-res, no bleed, no PDF/X. Filename
+              gets a `-PREVIEW` suffix so it's obvious it's not for print. */}
+          <button
+            type="button"
+            onClick={startPreviewExport}
+            disabled={previewExportState !== 'idle'}
+            className="px-3 py-1.5 text-xs flex items-center gap-1.5 rounded-sm bg-rule-dark text-paper/80 hover:text-paper hover:bg-rule-dark/70 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            data-testid="reader-preview-pdf"
+            title="Download a low-res PDF of the whole book for edit review"
+          >
+            <Download className="w-3.5 h-3.5" />
+            {previewExportState === 'idle' ? 'PDF'
+              : previewExportState === 'queued' ? 'Starting…'
+              : previewExportState === 'rendering' ? 'Rendering…'
+              : 'Downloading…'}
+          </button>
+
           {/* Mode toggle — Single | Spread */}
           <div className="flex items-center bg-rule-dark rounded-sm overflow-hidden" role="tablist" aria-label="Reader mode">
             <button
